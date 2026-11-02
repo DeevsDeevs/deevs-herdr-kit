@@ -20,6 +20,10 @@ const newId = () => Math.random().toString(36).slice(2, 8);
 const KEEP_MS = 2 * 60 * 1000;
 const SWEEP_MS = 6 * 60 * 1000;
 const NO_PAINT_MS = 6000;
+// A machine that hasn't answered by then shows as not answering; its stuck call
+// is asked again only once a minute, so stuck calls don't pile up.
+const SLOW_MS = 8000;
+const RETRY_MS = 60 * 1000;
 
 // Herdr frees a shown picture when its file is deleted only after 0.1.11
 // (ccbc8c5, which also added this sentence to the AGENTS.md it writes). Older
@@ -92,6 +96,8 @@ class Overview {
   init(cx) {
     this.copy = newId();
     this.machines = [];
+    this.results = new Map();
+    this.asking = new Map();
     this.feeds = new Map();
     this.width = 0;
     this.scanned = false;
@@ -117,18 +123,12 @@ class Overview {
         try { others = await remoteMachines(); } catch (e) { othersError = reason(e); }
         let list = [{ name: null, state: "connected" }, ...others];
         if (SETTINGS.machines) list = list.filter((m) => SETTINGS.machines.includes(m.name));
-        this.machines = await Promise.all(list.map(async (m) => {
-          if (m.state !== "connected") return { ...m, sessions: [], error: String(m.state).replace(/_/g, " ") };
-          try {
-            const d = await discover(m.name);
-            return { ...m, os: d.os, sessions: d.sessions, error: null };
-          } catch (e) {
-            return { ...m, sessions: [], error: reason(e) };
-          }
-        }));
+        this.list = list;
+        for (const key of this.results.keys()) if (!list.some((m) => m.name === key)) this.results.delete(key);
+        for (const m of list) this.ask(cx, m);
         this.othersError = othersError;
         this.scanned = true;
-        this.sync(cx, started);
+        this.publish(cx, started);
       } finally {
         this.scanning = false;
         cx.notify();
@@ -136,10 +136,45 @@ class Overview {
     });
   }
 
-  // Cards stream only while they are drawn: every scan ends in a notify, so a
-  // shown overview renders at least once between two scans, and one that
-  // hasn't for a few is hidden. Measured from the scan's start, so a slow
-  // machine can't make a shown overview look hidden.
+  // Each machine answers on its own, so one stuck link holds back only its own section.
+  ask(cx, m) {
+    if (m.state !== "connected") {
+      // A call stuck on the old link is dropped: a reconnected machine is asked straight away.
+      this.asking.delete(m.name);
+      this.results.set(m.name, { ...m, sessions: [], error: String(m.state).replace(/_/g, " ") });
+      return;
+    }
+    const now = Date.now();
+    const prev = this.asking.get(m.name);
+    if (prev && now - prev.at < RETRY_MS) {
+      if (now - prev.since > SLOW_MS) this.results.set(m.name, { ...m, sessions: [], slow: true, error: `not answering for ${ago(now - prev.since)}` });
+      return;
+    }
+    const ask = { since: prev?.since ?? now, at: now };
+    this.asking.set(m.name, ask);
+    cx.spawn(async (cx) => {
+      let r;
+      try {
+        const d = await discover(m.name);
+        r = { ...m, os: d.os, sessions: d.sessions, error: null };
+      } catch (e) {
+        r = { ...m, sessions: [], error: reason(e) };
+      }
+      if (this.asking.get(m.name) === ask) this.asking.delete(m.name);
+      if (this.list?.some((x) => x.name === m.name)) this.results.set(m.name, r);
+      this.publish(cx, Date.now());
+    });
+  }
+
+  publish(cx, started) {
+    this.machines = (this.list ?? []).map((m) => this.results.get(m.name) ?? { ...m, sessions: [], waiting: true, error: null });
+    this.sync(cx, started);
+    cx.notify();
+  }
+
+  // Cards stream only while they are drawn: every scan and every machine's
+  // answer ends in a notify, so a shown overview renders at least once between
+  // two scans, and one that hasn't for a few is hidden.
   sync(cx, started) {
     const hidden = started - this.lastRender > SETTINGS.scanEveryMs * 2.5;
     const want = new Map();
@@ -249,9 +284,9 @@ class Overview {
             .gap(8)
             .items_center()
             .text_size(12)
-            .child(dot(m.error ? t.blocked : t.working))
+            .child(dot(m.waiting || m.slow ? t.idle : m.error ? t.blocked : t.working))
             .child(div().font_semibold().text_color(t.foreground).child(label))
-            .child(div().text_color(t.dim).child(m.error ? m.error : `${m.sessions.length} session${m.sessions.length === 1 ? "" : "s"}`)),
+            .child(div().text_color(t.dim).child(m.waiting ? "looking…" : m.error ? m.error : `${m.sessions.length} session${m.sessions.length === 1 ? "" : "s"}`)),
         )
         .when(m.sessions.length > 0, (el) =>
           el.child(h_flex().flex_wrap().gap(GAP).children(m.sessions.map((s) => this.card(t, m, s, cardW)))));

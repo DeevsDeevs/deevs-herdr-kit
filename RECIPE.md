@@ -48,8 +48,11 @@ take over the mouse and keyboard.
 
 - The dot on a card: `working` while streaming, `idle` while connecting, `blocked` on an
   error, `dim` when paused or without a stream.
-- Machines are asked for their sessions every 4 s. Sessions appear and disappear on
-  their own; a machine Herdr can't reach shows its state instead of cards.
+- Machines are asked for their sessions every 4 s, each on its own: a machine's
+  section fills in as soon as it answers ("looking…" until then). Sessions appear and
+  disappear on their own; a machine Herdr can't reach shows its state instead of cards.
+  One that hasn't answered in 8 s says "not answering for 12s" (`idle` dot) while the
+  others carry on, and its stuck call is repeated at most once a minute.
 - Cards stream at 1 fps while the overview is drawn, even under another window; an
   overview not drawn for about 10 s stops its streams until it is drawn again. A session
   window does the same at 8 fps.
