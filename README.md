@@ -117,6 +117,10 @@ mod how to ssh there with `ssh` in `settings.js`.
 **A session shows `no stream`.** Its stream is off (`agent-browser stream enable` turns it
 back on) or its daemon predates streaming.
 
+**A session says `the page hasn't painted`.** agent-browser sends a picture only when Chrome
+paints. A headed browser whose window is hidden never does, and neither does an idle page
+whose viewport changed. Show the window, or do anything on the page.
+
 **Pictures stop while Herdr is minimised or the overview's tab is in the background.** By
 design: streams run only while drawn, and come back a few seconds after.
 

@@ -19,6 +19,7 @@ const newId = () => Math.random().toString(36).slice(2, 8);
 // A quiet page sends no frames, so its last one is rewritten before the sweep would take it.
 const KEEP_MS = 2 * 60 * 1000;
 const SWEEP_MS = 6 * 60 * 1000;
+const NO_PAINT_MS = 6000;
 
 // Herdr frees a shown picture when its file is deleted only after 0.1.11
 // (ccbc8c5, which also added this sentence to the AGENTS.md it writes). Older
@@ -74,6 +75,8 @@ function statusOf(t, feed, session) {
   if (feed.phase === "live") {
     const kind = feed.live ? "live" : "still";
     const age = feed.frameAt ? ago(Date.now() - feed.frameAt) : null;
+    // agent-browser only sends a picture when Chrome paints: a hidden headed window or an idle page after a resize never does.
+    if (!age && Date.now() - feed.liveAt > NO_PAINT_MS) return { color: t.idle, text: "no picture: the page hasn't painted (hidden window or idle page)" };
     return { color: t.working, text: !age ? `${kind} · waiting for a frame` : age === "now" ? `${kind} · now` : `${kind} · frame ${age} old` };
   }
   if (feed.phase === "error") return { color: t.blocked, text: feed.error ?? "disconnected" };

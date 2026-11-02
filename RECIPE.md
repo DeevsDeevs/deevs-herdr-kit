@@ -23,8 +23,9 @@ take over the mouse and keyboard.
   - A wrapping row of cards 12px apart. Cards are at least 260px wide and fill the row.
 - A card: 10px corners, 1px `border` (`accent` on hover), `background` fill.
   - The picture: full card width, 16:9, on `canvas`. Until a frame arrives it says why in
-    the middle (11.5px `dim`): "connecting…", "live · waiting for a frame", the error, or
-    "no stream (engine)".
+    the middle (11.5px `dim`): "connecting…", "live · waiting for a frame", the error,
+    "no stream (engine)", or, 6 s after connecting without a frame, "no picture: the page
+    hasn't painted (hidden window or idle page)" (`idle` dot).
   - Under it, 10px padding: a status dot and the session name (13px semibold) with a
     small `tab` button on the right; the page title (12px `muted`); the address (11px
     `dim`); "→ click @e3 · 4s", the agent's last command, or the stream status.

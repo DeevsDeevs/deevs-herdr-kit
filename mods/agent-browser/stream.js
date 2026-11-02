@@ -73,6 +73,7 @@ export class Feed {
         this.ws = await WebSocket.connect(`ws://127.0.0.1:${port}/?maxFps=${this.fps}`);
         if (this.stopped) throw null;
         this.phase = "live";
+        this.liveAt = Date.now();
         this.error = null;
         backoff = 1000;
         cx.notify();
