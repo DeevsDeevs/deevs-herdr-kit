@@ -1,40 +1,39 @@
 # deevs-herdr-kit
 
-My mods for the [Herdr](https://herdr.dev) desktop app, and later layouts. The repo is laid out like `~/.config/herdr-app`, so a folder copies straight in.
+My mods for the [Herdr](https://herdr.dev) desktop app, and later layouts. Each folder is
+one item, laid out like `~/.config/herdr-app`:
 
-## agent-images
+```
+agent-browser/
+├── README.md     what it is, what it reaches for, how to use it
+├── RECIPE.md     the brief to build it from scratch
+├── preview.png
+├── keys.json     the keys it expects
+└── mods/agent-browser/
+```
 
-The images in the focused agent's conversation: Claude Code, Codex or pi, on this computer or on a machine Herdr reaches through herdr-core. Pasted images are marked apart from tool output.
-
-- Open it with `mod.open:agent-images` (I bind `ctrl-s i`). It follows the agent you focus.
-- Hover an image to see it large. Click it to step through with `←` `→`.
-- Copy puts the image on the clipboard as a PNG; paste it into any agent with `⌘V`.
-
-What it runs and reads:
-
-- `hc get` for the focused terminal, then `python3` with [`extract.py`](mods/agent-images/extract.py) on the agent's machine. The script reads the agent's transcript under `~/.claude`, `~/.codex` or `~/.pi`, and uses `ps` and `lsof` (or `/proc`) to find it.
-- It writes the images to `mods/agent-images-cache/` in the Herdr home.
-- Copying runs `osascript` and `sips`, and Open runs `open`, so those parts are macOS only.
-
-Needs `python3` wherever the agents run.
+| Mod | |
+| --- | --- |
+| [agent-browser](agent-browser/) | every browser your agents drive, here and on Herdr's machines, live in one window; watch or take over |
+| [agent-images](agent-images/) | the images in the focused agent's conversation: see them, hover them large, copy one into another agent |
 
 ## Install
 
-Copy `mods/<name>/` into `~/.config/herdr-app/mods/` and bind its key in `keys.json`:
+Copy an item's `mods/<name>/` into `~/.config/herdr-app/mods/`, merge its `keys.json`
+into yours, and run `herdr-app check ~/.config/herdr-app/mods/<name>`. Each item's README
+says what it runs and reads before you do.
 
-```json
-{ "global": { "ctrl-s i": "mod.open:agent-images" } }
-```
-
-Or let chezmoi keep it current:
+Or let chezmoi keep them current, one entry per mod:
 
 ```toml
-[".config/herdr-app/mods/agent-images"]
+{{ range list "agent-browser" "agent-images" -}}
+[".config/herdr-app/mods/{{ . }}"]
     type = "archive"
     url = "https://github.com/DeevsDeevs/deevs-herdr-kit/archive/refs/heads/main.tar.gz"
-    stripComponents = 3
-    include = ["*/mods/agent-images/**"]
+    stripComponents = 4
+    include = ["*/{{ . }}/mods/{{ . }}/**"]
     refreshPeriod = "24h"
+{{ end -}}
 ```
 
-Icons are from [Lucide](https://lucide.dev) (ISC, see `LICENSE-Lucide.txt` beside them). Everything else is MIT.
+MIT, except the Lucide icons in agent-images (ISC, license beside them).

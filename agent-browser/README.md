@@ -1,4 +1,4 @@
-# herdr-agent-browser
+# agent-browser
 
 A [Herdr](https://herdr.dev) mod for [agent-browser](https://github.com/vercel-labs/agent-browser):
 every browser your agents are driving, on this computer and on every machine Herdr is
@@ -12,8 +12,8 @@ this computer + every Herdr machine · 1 fps cards · 8 fps session windows · M
 ## Install
 
 ```sh
-git clone https://github.com/DeevsDeevs/herdr-agent-browser
-cp -R herdr-agent-browser/mods/agent-browser ~/.config/herdr-app/mods/
+git clone https://github.com/DeevsDeevs/deevs-herdr-kit
+cp -R deevs-herdr-kit/agent-browser/mods/agent-browser ~/.config/herdr-app/mods/
 herdr-app check ~/.config/herdr-app/mods/agent-browser
 ```
 
@@ -125,7 +125,7 @@ whose viewport changed. Show the window, or do anything on the page.
 design: streams run only while drawn, and come back a few seconds after.
 
 **Clicks land in the wrong place.** Open an
-[issue](https://github.com/DeevsDeevs/herdr-agent-browser/issues) with the page size from
+[issue](https://github.com/DeevsDeevs/deevs-herdr-kit/issues) with the page size from
 `agent-browser eval "[innerWidth, innerHeight, devicePixelRatio]"`.
 
 ## Layout
