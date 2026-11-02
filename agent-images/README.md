@@ -5,6 +5,8 @@ conversation: Claude Code, Codex or pi, on this computer or on any machine Herdr
 through herdr-core. The agent itself only shows `[Image #4]`; here you see the picture,
 hover it large, and copy it to paste into another agent.
 
+![Agent images](preview.png)
+
 ## Install
 
 ```sh

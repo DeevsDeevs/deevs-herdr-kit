@@ -5,6 +5,8 @@ pasted and the ones its tools produced (screenshots, files it read), for Claude 
 Codex or pi, here or on another machine. Hover one to see it large, click it to step
 through, copy it to paste into any agent.
 
+![Agent images](preview.png)
+
 ## What you see
 
 `mod.open:agent-images` opens a `window` overlay, 60% × 70% of the window.
