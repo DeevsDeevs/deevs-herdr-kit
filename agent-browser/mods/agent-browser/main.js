@@ -45,28 +45,52 @@ async function discover(name) {
   return found;
 }
 
-function button(t, id, label, onClick, { tip, on = false, danger = false } = {}) {
-  return h_flex()
-    .id(id)
-    .h(24)
-    .px(8)
-    .flex_none()
-    .items_center()
-    .justify_center()
-    .rounded(6)
-    .text_size(12)
-    .bg(on ? t.accent : danger ? t.blocked : t.raised)
-    .text_color(on ? t.accent_foreground : danger ? "#ffffff" : t.muted)
+const icon = (name) => svg(`mods/agent-browser/${name}.svg`);
+
+// A press on a control is not a window drag.
+function control(el, onClick) {
+  return el
     .cursor_pointer()
-    .hover((s) => s.bg(on ? t.accent : danger ? t.blocked : t.hover).text_color(on ? t.accent_foreground : danger ? "#ffffff" : t.foreground))
-    .when(Boolean(tip), (el) => el.tooltip(tip))
-    // A press on a control is not a window drag.
     .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
     .on_click((_e, cx) => {
       cx.stop_propagation();
       onClick(cx);
-    })
-    .child(label);
+    });
+}
+
+function iconButton(t, id, name, onClick, tip) {
+  return control(
+    h_flex()
+      .id(id)
+      .size(28)
+      .flex_none()
+      .items_center()
+      .justify_center()
+      .rounded(6)
+      .text_color(t.muted)
+      .hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .tooltip(tip)
+      .child(icon(name).size(15)),
+    onClick,
+  );
+}
+
+function textButton(t, id, label, onClick, { solid = false, danger = false } = {}) {
+  return control(
+    h_flex()
+      .id(id)
+      .h(26)
+      .px(12)
+      .flex_none()
+      .items_center()
+      .rounded(6)
+      .text_size(12)
+      .bg(danger ? t.blocked : solid ? t.solid : t.raised)
+      .text_color(danger ? "#ffffff" : solid ? t.solid_foreground : t.foreground)
+      .hover((s) => (danger || solid ? s.opacity(0.9) : s.bg(t.hover)))
+      .child(label),
+    onClick,
+  );
 }
 
 function dot(color) {
@@ -87,15 +111,16 @@ function statusOf(t, feed, session) {
   return { color: t.idle, text: "connecting…" };
 }
 
-function closeButton(t) {
+function closeButton(t, tip = "Close") {
   const overlay = props()?.overlay;
-  return overlay ? button(t, "ab-close", "✕", () => closeOverlay(overlay), { tip: "Close" }) : null;
+  return overlay ? iconButton(t, "ab-close", "x", () => closeOverlay(overlay), tip) : null;
 }
 
 class Overview {
   init(cx) {
     this.copy = newId();
     this.machines = [];
+    this.hover = null;
     this.results = new Map();
     this.asking = new Map();
     this.feeds = new Map();
@@ -168,6 +193,8 @@ class Overview {
 
   publish(cx, started) {
     this.machines = (this.list ?? []).map((m) => this.results.get(m.name) ?? { ...m, sessions: [], waiting: true, error: null });
+    // A card that vanished under the pointer never hears it leave.
+    if (this.hover && !this.machines.some((m) => m.sessions.some((s) => slug(sessionKey(m.name, s)) === this.hover))) this.hover = null;
     this.sync(cx, started);
     cx.notify();
   }
@@ -220,49 +247,75 @@ class Overview {
     const last = feed?.activity[0];
     const url = feed?.url ?? feed?.activeTab?.url ?? s.url;
     const id = slug(sessionKey(m.name, s));
-    return v_flex()
-      .id(`ab-card-${id}`)
-      .w(w)
-      .flex_none()
-      .rounded(10)
-      .border_1()
-      .border_color(t.border)
-      .bg(t.background)
-      .overflow_hidden()
-      .cursor_pointer()
-      .hover((x) => x.border_color(t.accent))
-      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-      .on_click((_e, cx) => {
-        cx.stop_propagation();
-        this.open(m, s, false);
-      })
-      .child(
-        div()
-          .relative()
-          .w_full()
-          .h(Math.round(w * 0.5625))
-          .bg(t.canvas)
-          .children(feed ? feed.frames.view() : [])
-          .when(!feed || feed.frames.empty, (el) =>
-            el.child(h_flex().absolute().inset_0().items_center().justify_center().px(12).text_size(11.5).text_color(t.dim).child(st.text))),
-      )
-      .child(
-        v_flex()
-          .p(10)
-          .gap(3)
-          .child(
-            h_flex()
-              .gap(7)
-              .items_center()
-              .child(dot(st.color))
-              .child(div().flex_1().min_w(0).truncate().font_semibold().text_size(13).text_color(t.foreground).child(s.session))
-              .when(Boolean(s.namespace), (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(s.namespace)))
-              .child(button(t, `ab-tab-${id}`, "tab", () => this.open(m, s, true), { tip: "Open as a tab" })),
-          )
-          .child(div().truncate().text_size(12).text_color(t.muted).child(feed?.title || host(url) || "—"))
-          .child(div().truncate().text_size(11).text_color(t.dim).child(brief(url)))
-          .child(div().truncate().text_size(11).text_color(t.dim).child(last ? `→ ${last.text} · ${ago(Date.now() - last.at)}` : st.text)),
-      );
+    const hovered = this.hover === id;
+    const healthy = st.color === t.working;
+    const title = feed?.title || host(url) || brief(url) || "—";
+    // The host only when the title doesn't already say it.
+    const site = host(url)?.split(".").slice(-2)[0]?.toLowerCase();
+    const where = site && !title.toLowerCase().includes(site) ? host(url) : null;
+    return control(
+      v_flex()
+        .id(`ab-card-${id}`)
+        .w(w)
+        .flex_none()
+        .gap(8)
+        .on_hover((inside, cx) => {
+          if (inside) this.hover = id;
+          else if (this.hover === id) this.hover = null;
+          cx.notify();
+        })
+        .child(
+          div()
+            .relative()
+            .w_full()
+            .h(Math.round(w * 0.5625))
+            .rounded(8)
+            .overflow_hidden()
+            .border_1()
+            .border_color(hovered ? t.accent : t.border)
+            .bg(t.canvas)
+            .children(feed ? feed.frames.view() : [])
+            .when(!feed || feed.frames.empty, (el) =>
+              el.child(h_flex().absolute().inset_0().items_center().justify_center().px(16).text_size(11.5).text_color(t.dim).child(st.text)))
+            .when(hovered, (el) => el.child(
+              control(
+                h_flex()
+                  .id(`ab-tab-${id}`)
+                  .absolute()
+                  .top(6)
+                  .right(6)
+                  .size(28)
+                  .items_center()
+                  .justify_center()
+                  .rounded(6)
+                  .bg(t.popover)
+                  .border_1()
+                  .border_color(t.border)
+                  .shadow_sm()
+                  .text_color(t.foreground)
+                  .hover((x) => x.bg(t.hover))
+                  .tooltip("Open as a tab")
+                  .child(icon("app-window").size(14)),
+                () => this.open(m, s, true),
+              ))),
+        )
+        .child(
+          v_flex()
+            .px(2)
+            .gap(2)
+            .child(
+              h_flex()
+                .gap(7)
+                .items_center()
+                .when(!healthy, (el) => el.child(dot(st.color)))
+                .child(div().flex_none().font_semibold().text_size(12.5).text_color(t.foreground).child(s.session))
+                .when(Boolean(s.namespace), (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(s.namespace)))
+                .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.muted).child(where ? `${title} · ${where}` : title)))
+            .child(div().truncate().text_size(11.5).text_color(st.color === t.blocked && feed && !feed.frames.empty ? t.blocked : t.dim).child(
+              !healthy && feed && !feed.frames.empty ? st.text : last ? `${last.text} · ${ago(Date.now() - last.at)}` : "no agent commands yet")),
+        ),
+      () => this.open(m, s, false),
+    );
   }
 
   render(cx) {
@@ -270,27 +323,29 @@ class Overview {
     const t = theme();
     const zoom = settings().zoom || 1;
     const width = (this.width || 900) / zoom;
-    const inner = Math.max(MIN_CARD, width - 28);
+    const inner = Math.max(MIN_CARD, width - 2 * 18);
     const cols = Math.max(1, Math.floor((inner + GAP) / (MIN_CARD + GAP)));
     const cardW = Math.floor((inner - GAP * (cols - 1)) / cols);
     const total = this.machines.reduce((n, m) => n + m.sessions.length, 0);
 
-    const section = (m) => {
-      const label = m.name ?? "this computer";
-      return v_flex()
-        .gap(8)
+    const label = (m) => m.name ?? "this computer";
+    // A dot only when a machine needs a look: still answering, slow, or failing.
+    const section = (m) =>
+      v_flex()
+        .gap(10)
         .child(
           h_flex()
             .gap(8)
             .items_center()
             .text_size(12)
-            .child(dot(m.waiting || m.slow ? t.idle : m.error ? t.blocked : t.working))
-            .child(div().font_semibold().text_color(t.foreground).child(label))
-            .child(div().text_color(t.dim).child(m.waiting ? "looking…" : m.error ? m.error : `${m.sessions.length} session${m.sessions.length === 1 ? "" : "s"}`)),
+            .when(Boolean(m.waiting || m.slow || m.error), (el) => el.child(dot(m.waiting || m.slow ? t.idle : t.blocked)))
+            .child(div().font_semibold().text_color(t.foreground).child(label(m)))
+            .child(div().text_color(t.dim).child(m.waiting ? "looking…" : m.error ? m.error : `${m.sessions.length}`)),
         )
         .when(m.sessions.length > 0, (el) =>
           el.child(h_flex().flex_wrap().gap(GAP).children(m.sessions.map((s) => this.card(t, m, s, cardW)))));
-    };
+    const shown = this.machines.filter((m) => m.sessions.length || m.waiting || m.slow || m.error);
+    const idle = this.machines.filter((m) => !shown.includes(m));
 
     return v_flex()
       .id("ab-root")
@@ -312,43 +367,47 @@ class Overview {
       })
       .child(
         h_flex()
-          .h(42)
+          .h(48)
           .flex_none()
-          .px(14)
-          .gap(9)
+          .pl(16)
+          .pr(10)
+          .gap(10)
           .items_center()
           .bg(t.chrome)
           .border_b(1)
           .border_color(t.border)
-          .child(svg(ICON).size(15).text_color(t.accent))
-          .child(div().font_semibold().text_size(13.5).child("Agent browsers"))
-          .child(div().text_size(12).text_color(t.dim).child(this.scanned ? `${total} ${total === 1 ? "session" : "sessions"}` : "looking…"))
+          .child(svg(ICON).size(15).text_color(t.muted))
+          .child(div().flex_none().font_semibold().text_size(13).child("Agent browsers"))
+          .child(div().flex_none().text_size(12).text_color(t.muted).child(this.scanned ? `${total} ${total === 1 ? "session" : "sessions"}` : "looking…"))
           .child(div().flex_1())
-          .when(Boolean(this.othersError), (el) => el.child(div().text_size(11).text_color(t.blocked).truncate().child(this.othersError)))
-          .child(closeButton(t) ?? div()),
+          .when(Boolean(this.othersError), (el) => el.child(div().min_w(0).text_size(11.5).text_color(t.blocked).truncate().child(this.othersError)))
+          .child(closeButton(t, "Close  Esc") ?? div()),
       )
       .when(this.live === false, (el) =>
-        el.child(div().flex_none().px(14).py(6).text_size(11.5).text_color(t.muted).bg(t.raised).child(`${STILLS} Each card shows its first frame.`)))
+        el.child(h_flex().flex_none().px(16).py(8).gap(8).items_start().text_size(11.5).text_color(t.muted).bg(t.raised)
+          .child(icon("camera").size(13).text_color(t.dim))
+          .child(div().flex_1().min_w(0).child(`${STILLS} Each card shows its first frame.`))))
       .child(
         v_flex()
           .id("ab-list")
           .flex_1()
           .min_h(0)
           .overflow_y_scrollbar()
-          .p(14)
-          .gap(18)
-          .children(this.machines.map(section))
+          .p(18)
+          .gap(22)
           .when(this.scanned && total === 0, (el) =>
             el.child(
               v_flex()
-                .gap(6)
-                .py(24)
+                .gap(8)
+                .py(32)
                 .items_center()
-                .text_size(12.5)
-                .text_color(t.dim)
-                .child("No agent-browser sessions right now.")
-                .child(div().text_size(11.5).child("They show up here as soon as an agent runs agent-browser open <url>.")),
-            )),
+                .child(svg(ICON).size(22).text_color(t.dim))
+                .child(div().text_size(13).text_color(t.muted).child("No agent browsers running"))
+                .child(div().text_size(12).text_color(t.dim).child("They show up here as soon as an agent runs agent-browser open <url>.")),
+            ))
+          .children(shown.map(section))
+          .when(this.scanned && total > 0 && idle.length > 0, (el) =>
+            el.child(div().text_size(12).text_color(t.dim).child(`Nothing running on ${idle.map(label).join(", ")}`))),
       );
   }
 }
@@ -367,7 +426,7 @@ class Viewer {
     this.ended = false;
     this.control = false;
     this.note = null;
-    this.armedClose = 0;
+    this.confirmEnd = false;
     this.showLog = false;
     this.pressed = null;
     this.lastPoint = null;
@@ -409,8 +468,9 @@ class Viewer {
           this.feed?.stop();
           this.feed = null;
           this.found = null;
-          // Another daemon under this name is another browser: start by only watching it.
+          // Another daemon under this name is another browser: start by only watching it, unasked.
           this.control = false;
+          this.confirmEnd = false;
           if (s?.port) {
             const m = this.machine ? (await remoteMachines()).find((x) => x.name === this.machine) : { name: null };
             if (!m) throw new Error(`${this.machine} is not one of Herdr's machines`);
@@ -494,6 +554,7 @@ class Viewer {
       .children(feed ? feed.frames.view() : [])
       .when(Boolean(message), (el) =>
         el.child(h_flex().absolute().inset_0().items_center().justify_center().px(20).text_size(12.5).text_color(t.dim).child(message)))
+      .when(this.control, (el) => el.child(div().absolute().inset_0().border_2().border_color(t.accent)))
       .on_mouse_down("left", (e, cx) => {
         cx.stop_propagation();
         this.h.focus();
@@ -557,66 +618,108 @@ class Viewer {
       this.url.set_value(current);
       this.shownUrl = current;
     }
-    const st = this.found ? statusOf(t, feed, this.found) : { color: t.dim, text: "looking…" };
+    const st = this.found ? statusOf(t, feed, this.found) : { color: t.dim, text: this.ended ? "ended" : "looking…" };
     const live = feed?.phase === "live";
     const tabs = feed?.tabs ?? [];
-    const closing = Date.now() - this.armedClose < 3000;
+    const segment = (id, name, label, on, tip) =>
+      control(
+        h_flex()
+          .id(id)
+          .h(24)
+          .px(9)
+          .gap(6)
+          .items_center()
+          .rounded(5)
+          .text_size(12)
+          .when(on, (el) => el.bg(t.surface).shadow_sm())
+          .text_color(on ? t.foreground : t.muted)
+          .hover((x) => x.text_color(t.foreground))
+          .tooltip(tip)
+          .child(icon(name).size(13).when(on && name === "mouse-pointer", (el) => el.text_color(t.accent)))
+          .child(label),
+        (cx) => {
+          if (this.control === (name === "mouse-pointer")) return;
+          this.control = !this.control;
+          if (this.control) this.h.focus();
+          cx.notify();
+        },
+      );
 
     const header = h_flex()
-      .h(42)
+      .h(48)
       .flex_none()
-      .px(10)
-      .gap(6)
+      .pl(16)
+      .pr(10)
+      .gap(4)
       .items_center()
       .bg(t.chrome)
       .border_b(1)
       .border_color(t.border)
-      .child(svg(ICON).size(14).text_color(t.accent))
-      .child(div().flex_none().font_semibold().text_size(13).child(this.session))
-      .child(div().flex_none().text_size(11.5).text_color(t.dim).child(this.machine ?? "this computer"))
-      .child(div().w(4))
-      .child(button(t, "ab-back", "‹", (cx) => this.act({ action: "back" }, cx), { tip: "Back" }))
-      .child(button(t, "ab-forward", "›", (cx) => this.act({ action: "forward" }, cx), { tip: "Forward" }))
-      .child(button(t, "ab-reload", "↻", (cx) => this.act({ action: "reload" }, cx), { tip: "Reload" }))
+      .child(svg(ICON).flex_none().size(15).text_color(t.muted))
+      .child(h_flex().min_w(0).ml(6).mr(6).gap(6).items_center().text_size(12)
+        .child(div().min_w(0).truncate().font_semibold().text_size(13).child(this.session))
+        .child(div().flex_none().text_color(t.muted).child(this.machine ?? "this computer")))
+      .child(iconButton(t, "ab-back", "chevron-left", (cx) => this.act({ action: "back" }, cx), "Back"))
+      .child(iconButton(t, "ab-forward", "chevron-right", (cx) => this.act({ action: "forward" }, cx), "Forward"))
+      .child(iconButton(t, "ab-reload", "rotate-cw", (cx) => this.act({ action: "reload" }, cx), "Reload"))
       .child(
         h_flex()
           .id("ab-url")
           .flex_1()
-          .min_w(80)
-          .h(26)
-          .px(8)
+          .min_w(140)
+          .h(28)
+          .mx(4)
+          .px(10)
           .items_center()
-          .rounded(7)
+          .rounded(6)
           .border_1()
           .border_color(t.border)
           .bg(t.background)
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
           .child(Input.new(this.url).flex_1().h_full().text_size(12).text_color(t.foreground)),
       )
-      .child(button(t, "ab-control", this.control ? "controlling" : "watching", (cx) => {
-        this.control = !this.control;
-        if (this.control) this.h.focus();
-        cx.notify();
-      }, { on: this.control, tip: this.control ? "Clicks and keys go to the page. Click to only watch." : "Take control: clicks and keys go to the page" }))
-      .when(feed?.live === false, (el) => el.child(button(t, "ab-still", "◉", (cx) => feed.refresh(cx), { tip: "Show the page as it is now" })))
-      .child(button(t, "ab-open", "↗", (cx) => {
+      .child(h_flex().flex_none().mx(4).p(2).gap(2).rounded(7).bg(t.raised)
+        .child(segment("ab-watch", "eye", "Watch", !this.control, "Only watch the page"))
+        .child(segment("ab-control", "mouse-pointer", "Control", this.control, "Clicks and keys go to the page")))
+      .when(feed?.live === false, (el) => el.child(iconButton(t, "ab-still", "camera", (cx) => feed.refresh(cx), "Show the page as it is now")))
+      .child(iconButton(t, "ab-open", "external-link", (cx) => {
         if (/^https?:\/\//.test(current)) cx.open_url(current);
-      }, { tip: "Open this address in your browser" }))
-      .child(button(t, "ab-end", closing ? "end it?" : "end", (cx) => {
-        if (closing) {
-          this.armedClose = 0;
-          this.act({ action: "close" }, cx);
-        } else {
-          this.armedClose = Date.now();
-          cx.timer.after(3100, (cx) => cx.notify());
-        }
+      }, "Open in your browser"))
+      .when(!this.ended, (el) => el.child(iconButton(t, "ab-end", "power", (cx) => {
+        this.confirmEnd = !this.confirmEnd;
         cx.notify();
-      }, { danger: closing, tip: "Close this browser session" }))
+      }, "End this session")))
       .child(closeButton(t) ?? div());
+
+    // Asked in place, not through Herdr's confirm: that runs a global command every open viewer would hear.
+    const confirmBar = this.confirmEnd && !this.ended
+      ? h_flex()
+        .h(44)
+        .flex_none()
+        .pl(16)
+        .pr(10)
+        .gap(8)
+        .items_center()
+        .bg(t.raised)
+        .border_b(1)
+        .border_color(t.border)
+        .text_size(12)
+        .child(icon("power").flex_none().size(14).text_color(t.blocked))
+        .child(div().flex_1().min_w(0).truncate().child(`End ${this.session}? Its browser closes for the agent too.`))
+        .child(textButton(t, "ab-end-cancel", "Cancel", (cx) => {
+          this.confirmEnd = false;
+          cx.notify();
+        }))
+        .child(textButton(t, "ab-end-confirm", "End session", (cx) => {
+          this.confirmEnd = false;
+          this.act({ action: "close" }, cx);
+          cx.notify();
+        }, { danger: true }))
+      : null;
 
     const tabStrip = tabs.length > 1
       ? h_flex()
-        .h(30)
+        .h(34)
         .flex_none()
         .px(10)
         .gap(4)
@@ -625,24 +728,25 @@ class Viewer {
         .border_b(1)
         .border_color(t.border)
         .children(tabs.map((tab) =>
-          h_flex()
-            .id(`ab-tabs-${tab.tabId}`)
-            .h(22)
-            .px(8)
-            .max_w(220)
-            .items_center()
-            .rounded(6)
-            .text_size(11.5)
-            .bg(tab.active ? t.selected : t.chrome)
-            .text_color(tab.active ? t.foreground : t.muted)
-            .cursor_pointer()
-            .hover((s) => s.bg(t.hover))
-            .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-            .on_click((_e, cx) => this.act({ action: "tab_switch", tabId: tab.tabId }, cx))
-            .child(div().truncate().child(tab.title || host(tab.url) || tab.tabId))))
+          control(
+            h_flex()
+              .id(`ab-tabs-${tab.tabId}`)
+              .h(24)
+              .px(10)
+              .max_w(220)
+              .items_center()
+              .rounded(6)
+              .text_size(12)
+              .when(tab.active, (el) => el.bg(t.selected))
+              .text_color(tab.active ? t.foreground : t.muted)
+              .hover((x) => x.bg(tab.active ? t.selected : t.hover).text_color(t.foreground))
+              .child(div().truncate().child(tab.title || host(tab.url) || tab.tabId)),
+            (cx) => this.act({ action: "tab_switch", tabId: tab.tabId }, cx),
+          )))
       : null;
 
     const log = feed?.activity ?? [];
+    const status = live ? (!feed.live ? "still" : feed.rate ? `live · ${feed.rate} fps` : "live") : st.text;
     const footer = v_flex()
       .flex_none()
       .bg(t.chrome)
@@ -654,37 +758,44 @@ class Viewer {
             .max_h(180)
             .id("ab-log")
             .overflow_y_scrollbar()
-            .px(10)
-            .py(6)
-            .gap(2)
+            .px(16)
+            .py(8)
+            .gap(3)
+            .border_b(1)
+            .border_color(t.border)
+            .when(!log.length, (l) => l.child(div().text_size(12).text_color(t.dim).child("No agent commands yet.")))
             .children(log.slice(0, 30).map((a, i) =>
               h_flex()
                 .id(`ab-log-${i}`)
-                .gap(8)
-                .text_size(11.5)
-                .child(div().w(40).flex_none().text_color(t.dim).child(ago(Date.now() - a.at)))
+                .gap(10)
+                .text_size(12)
+                .child(div().w(36).flex_none().text_color(t.dim).child(ago(Date.now() - a.at)))
                 .child(div().flex_1().truncate().text_color(t.foreground).child(a.text))
                 .child(div().flex_none().text_color(t.dim).child(a.done ? (a.ms != null ? `${a.ms} ms` : "done") : "…"))))))
-      .child(
+      .child(control(
         h_flex()
           .id("ab-status")
-          .h(26)
-          .px(10)
+          .h(30)
+          .pl(16)
+          .pr(10)
           .gap(8)
           .items_center()
-          .text_size(11.5)
-          .text_color(t.dim)
-          .cursor_pointer()
-          .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-          .on_click((_e, cx) => {
-            this.showLog = !this.showLog;
-            cx.notify();
-          })
+          .text_size(12)
+          .hover((x) => x.bg(t.hover))
           .child(dot(st.color))
-          .child(div().flex_none().child(live ? (feed.live ? `${feed.rate} fps` : "still") : st.text))
-          .child(div().flex_1().truncate().child(this.note ? this.note.text : log[0] ? `→ ${log[0].text} · ${ago(Date.now() - log[0].at)}` : "no agent commands yet"))
-          .child(div().flex_none().child(this.showLog ? "▾ activity" : "▸ activity")),
-      );
+          .child(div().flex_none().text_color(t.muted).child(status))
+          .child(div().flex_1().min_w(0).truncate()
+            .text_color(this.note ? t.blocked : t.dim)
+            .child(this.note ? this.note.text : log[0] ? `${log[0].text} · ${ago(Date.now() - log[0].at)}` : ""))
+          .child(h_flex().flex_none().gap(6).items_center().text_color(this.showLog ? t.foreground : t.muted)
+            .child("Activity")
+            .when(log.length > 0, (el) => el.child(div().text_color(t.dim).child(String(Math.min(log.length, 30)))))
+            .child(icon(this.showLog ? "chevron-down" : "chevron-up").size(13))),
+        (cx) => {
+          this.showLog = !this.showLog;
+          cx.notify();
+        },
+      ));
 
     return v_flex()
       .id("ab-viewer")
@@ -692,6 +803,7 @@ class Viewer {
       .bg(t.surface)
       .text_color(t.foreground)
       .child(header)
+      .child(confirmBar ?? div())
       .child(tabStrip ?? div())
       .child(this.screen(t))
       .child(footer);

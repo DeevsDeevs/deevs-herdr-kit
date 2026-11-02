@@ -38,18 +38,20 @@ nothing on it):
 ```
 
 The overview is a window of cards grouped by machine: a live picture of each session, its
-title and address, and the agent's last command. Click a card to open the session in a
-window of its own, or `tab` on the card to open it as a tab.
+title, and the agent's last command. Click a card to open the session in a window of its
+own, or the tab button that shows on the card's picture when you point at it to open it
+as a tab.
 
 | part | what |
 |---|---|
-| `‹` `›` `↻` | back, forward, reload |
+| back, forward, reload | the page's own |
 | address bar | follows the page; type an address and Enter to go there |
-| `watching` / `controlling` | only watch (the default), or send your clicks, scrolling and typing to the page |
-| `↗` | open the page in your own browser |
-| `end` | close the session; asks once |
+| Watch / Control | only watch (the default), or send your clicks, scrolling and typing to the page; an accent outline marks the page while you control it |
+| camera | stills only: show the page as it is now |
+| open in browser | open the page in your own browser |
+| power | end the session; a bar asks first |
 | tab strip | shown when the session has more than one tab; click to switch |
-| status line | frame rate and the agent's last command; click it for the last 30 |
+| Activity | the agent's last 30 commands |
 
 While controlling, Cmd-V (Ctrl-V on Linux) types the clipboard into the page and Cmd
 shortcuts reach a browser on Linux as Ctrl. Keys Herdr binds itself stay with Herdr.
@@ -100,7 +102,7 @@ Everything is in [`settings.js`](mods/agent-browser/settings.js), and every key 
 
 **Cards say pictures are stills.** Your Herdr is 0.1.11, which keeps every picture it ever
 showed in memory. The mod shows each session's first frame and updates a session window
-on `◉` or after your own input. A newer Herdr, or a build from main, makes them live.
+on the camera button or after your own input. A newer Herdr, or a build from main, makes them live.
 
 **A remote card shows `Permission denied`, `Host key verification failed` or another ssh
 error.** The tunnel runs plain `ssh <target>` with `BatchMode=yes` from your ssh config.
@@ -139,7 +141,8 @@ mods/agent-browser/
   lib.js        discovery script, parsing, coordinates, keys (no imports)
   settings.js   the knobs
   mod.json      opens as a window with mod.open
-  icon.svg
+  icon.svg      the mod's own icon
+  *.svg         Lucide icons for the controls (LICENSE-Lucide.txt)
 ```
 
 [`RECIPE.md`](RECIPE.md) is the brief to rebuild it from, and covers what isn't obvious
@@ -148,6 +151,7 @@ from the code: why every frame is a new file, why clicks use the JPEG's own size
 ## Credits
 
 Built on [Herdr](https://herdr.dev) and Vercel's
-[agent-browser](https://github.com/vercel-labs/agent-browser). Installed with a
+[agent-browser](https://github.com/vercel-labs/agent-browser). Icons are from
+[Lucide](https://lucide.dev) (ISC, `LICENSE-Lucide.txt` beside them). Installed with a
 [chezmoi external](https://www.chezmoi.io/user-guide/include-files-from-elsewhere/) from
 [my dotfiles](https://github.com/DeevsDeevs/dotfiles).
