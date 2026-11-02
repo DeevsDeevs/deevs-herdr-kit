@@ -14,7 +14,7 @@ take over the mouse and keyboard.
 **Overview** (`mod.open:agent-browser`, a `window` overlay 62% × 72% of the window):
 
 - A 42px header on `chrome` with a 1px `border` line under it: the mod's icon (15px,
-  `accent`), "Agent browsers" (13.5px semibold), the live count ("2 live", `dim`), and
+  `accent`), "Agent browsers" (13.5px semibold), the session count ("2 sessions", `dim`), and
   `✕` on the right when it is an overlay.
 - Below, on `surface`, one section per machine, 18px apart, 14px padding:
   - A line: a 7px dot (`working` when reachable, `blocked` when not), the machine name
@@ -77,7 +77,7 @@ take over the mouse and keyboard.
 - Sessions: `exec("sh", ["-c", script], {on})` per machine. The script looks where
   agent-browser keeps its state (`$AGENT_BROWSER_SOCKET_DIR`,
   `$XDG_RUNTIME_DIR/agent-browser`, `~/.agent-browser`, `$TMPDIR/agent-browser`, and
-  `namespaces/*/run` in each), keeps `<session>.pid` files whose process is alive in
+  `namespaces/*/run` in each), keeps `<session>.pid` files (not `dashboard.pid`, the dashboard server) whose process is alive in
   folders the user owns, and prints one JSON line per session with its folder, `.stream`
   (port), `.engine` and `.target` (url). A session is machine + folder + name: namespaces
   can reuse a name.

@@ -284,7 +284,7 @@ class Overview {
           .border_color(t.border)
           .child(svg(ICON).size(15).text_color(t.accent))
           .child(div().font_semibold().text_size(13.5).child("Agent browsers"))
-          .child(div().text_size(12).text_color(t.dim).child(this.scanned ? `${total} live` : "looking…"))
+          .child(div().text_size(12).text_color(t.dim).child(this.scanned ? `${total} ${total === 1 ? "session" : "sessions"}` : "looking…"))
           .child(div().flex_1())
           .when(Boolean(this.othersError), (el) => el.child(div().text_size(11).text_color(t.blocked).truncate().child(this.othersError)))
           .child(closeButton(t) ?? div()),

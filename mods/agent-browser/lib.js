@@ -11,6 +11,8 @@ export const DISCOVER = [
   // Only folders this user owns: /tmp/agent-browser could be anyone's.
   `  [ -n "$d" ] && [ -d "$d" ] && [ -O "$d" ] || continue`,
   `  for p in "$d"/*.pid "$d"/namespaces/*/run/*.pid; do`,
+  // dashboard.pid is agent-browser's dashboard server, not a browser.
+  `    case $p in */dashboard.pid) continue ;; esac`,
   `    [ -f "$p" ] || continue`,
   `    pid=$(cat "$p" 2>/dev/null)`,
   `    case $pid in ''|*[!0-9]*) continue ;; esac`,
