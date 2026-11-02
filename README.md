@@ -89,7 +89,7 @@ Everything is in [`settings.js`](mods/agent-browser/settings.js), and every key 
 
 | what | where | why |
 |---|---|---|
-| Herdr app newer than 0.1.11 | here | frees each shown picture; 0.1.11 can't, so there you get stills, refreshed on demand |
+| Herdr app after 0.1.11 (fix on main, unreleased) | here | frees each shown picture; 0.1.11 can't, so there you get stills that update after your input |
 | herdr-core | here and on each machine | `exec` on other machines, tunnels as terminals |
 | agent-browser (tested with 0.41) | wherever agents browse | the session stream |
 | macOS or Linux | here and on each machine | `sh`, `kill` and `sleep` find sessions and hold tunnels; no Windows |

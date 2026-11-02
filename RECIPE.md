@@ -63,8 +63,8 @@ take over the mouse and keyboard.
 - A session that ends says so in its window. A dropped stream reconnects with backoff. A
   new daemon under the same name starts in `watching`.
 - On Herdr 0.1.11 (it never frees a shown picture) a banner says pictures are stills:
-  cards keep their first frame, a session window shows a new one 600 ms after your input
-  and on `◉`.
+  cards keep their first frame, a session window shows the newest one 0.6, 1.5 and 3 s after
+  your input or a navigation, and on `◉`.
 
 ## Built from
 

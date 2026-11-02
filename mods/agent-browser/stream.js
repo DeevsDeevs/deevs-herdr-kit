@@ -32,6 +32,7 @@ export class Feed {
     this.queue = [];
     this.pending = 0;
     this.stopped = false;
+    this.settles = 0;
   }
 
   start(cx) {
@@ -115,6 +116,7 @@ export class Feed {
         this.tabs = Array.isArray(m.tabs) ? m.tabs : [];
         break;
       case "url":
+        if (m.url && m.url !== this.url) this.settle(cx);
         this.url = m.url ?? this.url;
         break;
       case "command":
@@ -161,6 +163,20 @@ export class Feed {
   refresh(cx) {
     this.want = true;
     this.show(cx);
+  }
+
+  // Without live pictures, after input or a navigation. A click's result paints a
+  // while later, so look again as it settles; a page that didn't repaint sends
+  // no new frame, so the later looks cost nothing.
+  settle(cx) {
+    if (this.live) return;
+    const n = ++this.settles;
+    for (const ms of [600, 1500, 3000]) {
+      cx.spawn(async (cx) => {
+        await cx.sleep(ms);
+        if (n === this.settles && !this.stopped) this.refresh(cx);
+      });
+    }
   }
 
   // Input keeps its order and stays within the socket's limit; pointer moves

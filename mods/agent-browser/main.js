@@ -32,7 +32,7 @@ async function livePictures() {
   return Boolean(doc?.includes(FREES_PICTURES));
 }
 
-const STILLS = "This Herdr keeps every picture it has shown in memory, so pictures here are stills. Herdr newer than 0.1.11 makes them live.";
+const STILLS = "Stills, not live: Herdr 0.1.11 keeps every picture it shows in memory, and the fix is not released yet. Pictures update after you click or type.";
 
 async function discover(name) {
   const r = await exec("sh", ["-c", DISCOVER], name ? { on: name } : {});
@@ -326,7 +326,6 @@ class Viewer {
     this.copy = newId();
     this.live = null;
     this.lastRender = Date.now();
-    this.pokes = 0;
     this.feed = null;
     this.found = null;
     this.os = null;
@@ -422,13 +421,8 @@ class Viewer {
     if (url) this.act({ action: "navigate", url }, cx);
   }
 
-  // Stills only: after input settles, show what it did.
   poke(cx) {
-    if (!this.feed || this.feed.live) return;
-    const n = ++this.pokes;
-    cx.timer.after(600, (cx) => {
-      if (n === this.pokes) this.feed?.refresh(cx);
-    });
+    this.feed?.settle(cx);
   }
 
   mouse(e, eventType, button) {
@@ -653,7 +647,7 @@ class Viewer {
           })
           .child(dot(st.color))
           .child(div().flex_none().child(live ? (feed.live ? `${feed.rate} fps` : "still") : st.text))
-          .child(div().flex_1().truncate().child(this.note ? this.note.text : this.live === false ? STILLS : log[0] ? `→ ${log[0].text} · ${ago(Date.now() - log[0].at)}` : "no agent commands yet"))
+          .child(div().flex_1().truncate().child(this.note ? this.note.text : log[0] ? `→ ${log[0].text} · ${ago(Date.now() - log[0].at)}` : "no agent commands yet"))
           .child(div().flex_none().child(this.showLog ? "▾ activity" : "▸ activity")),
       );
 
