@@ -88,6 +88,14 @@ export function host(url) {
   return m ? m[1] : brief(url);
 }
 
+// An address on the browser's own machine, which another machine can only reach
+// through a tunnel: its scheme, port and everything after the host.
+export function loopback(url) {
+  const m = /^(https?):\/\/(?:[^/?#@]*@)?(localhost|127(?:\.\d{1,3}){3}|\[::1\]|0\.0\.0\.0)(?::(\d+))?([/?#].*)?$/i.exec(url ?? "");
+  if (!m) return null;
+  return { scheme: m[1].toLowerCase(), port: Number(m[3] ?? (m[1].toLowerCase() === "https" ? 443 : 80)), rest: m[4] ?? "/" };
+}
+
 // What the address bar navigates to: agent-browser's own rule, https:// unless a scheme it knows is there.
 export function normalizeUrl(text) {
   const v = String(text ?? "").trim();

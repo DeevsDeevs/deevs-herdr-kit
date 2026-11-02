@@ -8,7 +8,7 @@ export const SETTINGS = {
   scanEveryMs: 4000,
   // Frames per second for the cards and for an open session.
   cardFps: 1,
-  viewerFps: 8,
+  viewerFps: 15,
   // A machine added with --via, or one whose ssh needs more than
   // `ssh <target>`: how to ssh there, per machine name.
   //   ssh: { "build-box": { args: ["-p", "2222"], target: "me@10.0.0.7" } }

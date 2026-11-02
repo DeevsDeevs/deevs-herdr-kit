@@ -6,19 +6,38 @@
 // and deleting a file is what frees its decoded copy.
 
 import { image, div } from "gpui-kit";
-import { appHome } from "herdr";
+import { appHome, watchFolder } from "herdr";
 import { writeFile, unlink, mkdir, readdir } from "fs/promises";
 
 export const FOLDER = "mods/agent-browser-frames";
-// Longer than Herdr's 80 ms watcher batch, so the write's own event has
-// passed before the path is first drawn.
-const HOLD_MS = 200;
+// Herdr drops a picture from its cache when its watcher reports the file. A
+// frame drawn before that report vanishes and loads again, the one under it
+// showing meanwhile: the page jumps back a frame. So a frame waits until the
+// watcher has reported it, then for the app's own 80 ms batch. A fixed wait was
+// too short where reports come late (macOS under load).
+const AFTER_REPORT_MS = 100;
+// A report that never comes (a batch another waiter took) holds a frame no longer.
+const MAX_HOLD_MS = 500;
 const abs = (rel) => `${appHome()}/${rel}`;
 // The time a frame was written is in its name, so any copy can sweep the folder.
 const stamp = (name) => parseInt(name.split("-").at(-2) ?? "", 36);
 // Pictures of other people's pages: backups that honour cache tags (restic
 // --exclude-caches, borg, tar --exclude-caches) leave the folder out.
 const TAG = "CACHEDIR.TAG";
+
+// Resolves once the watcher reported `name`, or after MAX_HOLD_MS. Started
+// before the write, so the report can't land before anyone listens.
+function reported(name, cx) {
+  let done = false;
+  const heard = (async () => {
+    while (!done) {
+      const paths = await watchFolder(abs(FOLDER));
+      // A batch naming the folder itself means "everything changed".
+      if (paths.some((p) => p.endsWith(`/${name}`) || p.endsWith(`/${FOLDER}`))) return;
+    }
+  })().catch(() => cx.sleep(MAX_HOLD_MS));
+  return Promise.race([heard, cx.sleep(MAX_HOLD_MS)]).finally(() => { done = true; });
+}
 
 export async function sweep(maxAgeMs) {
   try {
@@ -38,6 +57,7 @@ export class Frames {
   constructor(prefix) {
     this.prefix = prefix;
     this.seq = 0;
+    this.shownSeq = 0;
     this.shown = [];
     this.busy = false;
     this.last = null;
@@ -49,7 +69,10 @@ export class Frames {
   async push(bytes, cx) {
     if (this.busy) return false;
     this.busy = true;
-    const rel = `${FOLDER}/${this.prefix}-${Date.now().toString(36)}-${++this.seq}.jpg`;
+    const seq = ++this.seq;
+    const name = `${this.prefix}-${Date.now().toString(36)}-${seq}.jpg`;
+    const rel = `${FOLDER}/${name}`;
+    const heard = reported(name, cx);
     try {
       await writeFile(abs(rel), bytes);
     } catch {
@@ -59,11 +82,14 @@ export class Frames {
     }
     this.last = bytes;
     this.lastAt = Date.now();
-    await cx.sleep(HOLD_MS);
-    if (this.cleared) {
+    await heard;
+    await cx.sleep(AFTER_REPORT_MS);
+    // Frames overlap while they wait: one overtaken by a newer frame is never drawn.
+    if (this.cleared || seq < this.shownSeq) {
       unlink(abs(rel)).catch(() => {});
       return false;
     }
+    this.shownSeq = seq;
     this.shown.push(rel);
     cx.notify();
     while (this.shown.length > 2) {

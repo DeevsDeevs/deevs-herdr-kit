@@ -5,9 +5,9 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { exec, run, theme, settings, props, openOverlay, closeOverlay, updates, readTextFile, appHome } from "herdr";
-import { DISCOVER, parseDiscovery, sessionKey, slug, host, brief, ago, normalizeUrl, toPage, cdpModifiers, keyMessages, textMessages } from "./lib.js";
+import { DISCOVER, parseDiscovery, sessionKey, slug, host, brief, ago, normalizeUrl, loopback, toPage, cdpModifiers, keyMessages, textMessages } from "./lib.js";
 import { SETTINGS } from "./settings.js";
-import { remoteMachines, connector } from "./connect.js";
+import { remoteMachines, connector, pageTunnel } from "./connect.js";
 import { Feed } from "./stream.js";
 import { sweep } from "./frames.js";
 
@@ -494,8 +494,8 @@ class Viewer {
     this.feed = null;
   }
 
-  say(text, cx) {
-    this.note = { text, at: Date.now() };
+  say(text, cx, error = true) {
+    this.note = { text, at: Date.now(), error };
     cx.notify();
     cx.timer.after(4000, (cx) => {
       if (this.note && Date.now() - this.note.at >= 3900) this.note = null;
@@ -508,6 +508,26 @@ class Viewer {
     if (!feed) return;
     cx.spawn(async (cx) => {
       try { await feed.command(body); } catch (e) { this.say(`${body.action}: ${reason(e)}`, cx); }
+    });
+  }
+
+  // A remote browser's localhost is that machine's: go there through a tunnel.
+  openHere(url, cx) {
+    if (!/^https?:\/\//.test(url)) return;
+    const local = this.machine ? loopback(url) : null;
+    if (!local) return cx.open_url(url);
+    this.say(`opening ${local.scheme}://127.0.0.1:${local.port} on ${this.machine} through ssh…`, cx, false);
+    cx.spawn(async (cx) => {
+      try {
+        const m = (await remoteMachines()).find((x) => x.name === this.machine);
+        if (!m) throw new Error(`${this.machine} is not one of Herdr's machines`);
+        const port = await pageTunnel(cx, m, local.port);
+        cx.open_url(`${local.scheme}://127.0.0.1:${port}${local.rest}`);
+        this.note = null;
+        cx.notify();
+      } catch (e) {
+        this.say(`open: ${reason(e)}`, cx);
+      }
     });
   }
 
@@ -682,9 +702,7 @@ class Viewer {
         .child(segment("ab-watch", "eye", "Watch", !this.control, "Only watch the page"))
         .child(segment("ab-control", "mouse-pointer", "Control", this.control, "Clicks and keys go to the page")))
       .when(feed?.live === false, (el) => el.child(iconButton(t, "ab-still", "camera", (cx) => feed.refresh(cx), "Show the page as it is now")))
-      .child(iconButton(t, "ab-open", "external-link", (cx) => {
-        if (/^https?:\/\//.test(current)) cx.open_url(current);
-      }, "Open in your browser"))
+      .child(iconButton(t, "ab-open", "external-link", (cx) => this.openHere(current, cx), "Open in your browser"))
       .when(!this.ended, (el) => el.child(iconButton(t, "ab-end", "power", (cx) => {
         this.confirmEnd = !this.confirmEnd;
         cx.notify();
@@ -785,7 +803,7 @@ class Viewer {
           .child(dot(st.color))
           .child(div().flex_none().text_color(t.muted).child(status))
           .child(div().flex_1().min_w(0).truncate()
-            .text_color(this.note ? t.blocked : t.dim)
+            .text_color(this.note?.error ? t.blocked : this.note ? t.muted : t.dim)
             .child(this.note ? this.note.text : log[0] ? `${log[0].text} · ${ago(Date.now() - log[0].at)}` : ""))
           .child(h_flex().flex_none().gap(6).items_center().text_color(this.showLog ? t.foreground : t.muted)
             .child("Activity")

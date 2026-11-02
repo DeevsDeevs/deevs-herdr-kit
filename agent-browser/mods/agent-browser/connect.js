@@ -57,7 +57,7 @@ function sshFor(machine) {
   return { args: [], target: machine.target };
 }
 
-async function tunnel(cx, machine, remotePort) {
+async function tunnel(cx, machine, remotePort, seconds = 30, label = "tunnel") {
   const ssh = sshFor(machine);
   if (!ssh) throw new Error(`${machine.name} is reached through a command, not ssh: set SETTINGS.ssh for it`);
   await mkdir(LOGS(), { recursive: true }).catch(() => {});
@@ -75,9 +75,9 @@ async function tunnel(cx, machine, remotePort) {
       "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
       "-o", "LogLevel=DEBUG1", "-E", log,
       "-L", `127.0.0.1:${port}:127.0.0.1:${remotePort}`,
-      ssh.target, "sleep", "30",
+      ssh.target, "sleep", String(seconds),
     ];
-    const r = await hc(["run", "--bg", "--rm", "--no-parent", "--no-notify", "--json", "--name", name, "--label", "agent-browser=tunnel", "--", ...argv]);
+    const r = await hc(["run", "--bg", "--rm", "--no-parent", "--no-notify", "--json", "--name", name, "--label", `agent-browser=${label}`, "--", ...argv]);
     if (r.code !== 0) throw new Error(r.stderr.trim() || "hc run failed");
     let ok = 0;
     for (let i = 0; i < 60 && ok < 2; i++) {
@@ -98,6 +98,19 @@ async function tunnel(cx, machine, remotePort) {
     if (!/address already in use|cannot listen to port/i.test(err.text)) break;
   }
   throw new Error(last);
+}
+
+// A page the session's browser has on its own machine (127.0.0.1 there), for
+// your browser here: a tunnel that lasts ten minutes, or longer while your
+// browser keeps a connection open. One per machine and port, reused while up.
+const pages = new Map();
+export async function pageTunnel(cx, machine, remotePort) {
+  const key = `${machine.name}:${remotePort}`;
+  const had = pages.get(key);
+  if (had && (await alive(had.name))) return had.port;
+  const made = await tunnel(cx, machine, remotePort, 600, "page");
+  pages.set(key, made);
+  return made.port;
 }
 
 // One way into one session's stream port. `close` drops what `open` built.

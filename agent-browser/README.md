@@ -7,7 +7,7 @@ commands, or take the mouse and keyboard yourself.
 
 ![Agent browsers](preview.png)
 
-this computer + every Herdr machine · 1 fps cards · 8 fps session windows · MIT
+this computer + every Herdr machine · 1 fps cards · 15 fps session windows · MIT
 
 ## Install
 
@@ -48,7 +48,7 @@ as a tab.
 | address bar | follows the page; type an address and Enter to go there |
 | Watch / Control | only watch (the default), or send your clicks, scrolling and typing to the page; an accent outline marks the page while you control it |
 | camera | stills only: show the page as it is now |
-| open in browser | open the page in your own browser |
+| open in browser | open the page in your own browser; a page on a remote machine's localhost goes through an ssh tunnel |
 | power | end the session; a bar asks first |
 | tab strip | shown when the session has more than one tab; click to switch |
 | Activity | the agent's last 30 commands |
@@ -69,7 +69,7 @@ Everything is in [`settings.js`](mods/agent-browser/settings.js), and every key 
 | `machines` | where to look: `null` for this computer and every connected machine, or a list like `[null, "seine-river"]` | `null` |
 | `scanEveryMs` | how often each machine is asked for its sessions | `4000` |
 | `cardFps` | frames per second on a card | `1` |
-| `viewerFps` | frames per second in a session window | `8` |
+| `viewerFps` | frames per second in a session window | `15` |
 | `ssh` | per machine `{ args, target }`, for a machine added with `--via`, or one `ssh <target>` can't reach as is | `{}` |
 | `sshBinary` | the ssh to run | `"ssh"` |
 

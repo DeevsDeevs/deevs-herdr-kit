@@ -59,7 +59,7 @@ Lucide icons (`<name>.svg` in the mod folder, `currentColor`), 28px ghost icon b
   one on `selected`.
 - The page picture filling the rest on `canvas`, letterboxed to keep its shape. While
   controlling, a 2px `accent` outline is drawn over its edge.
-- A 30px status line on `chrome`: a dot, "live · 8 fps" (or "still", or the stream
+- A 30px status line on `chrome`: a dot, "live · 15 fps" (or "still", or the stream
   status, `muted`), the agent's last command with its age (`dim`; a failed command of
   yours in `blocked` for 4 s), and on the right "Activity", the count and a chevron.
   Clicking it opens up to 30 commands above it (age, command, duration).
@@ -76,14 +76,19 @@ Lucide icons (`<name>.svg` in the mod folder, `currentColor`), 28px ghost icon b
   others carry on, and its stuck call is repeated at most once a minute.
 - Cards stream at 1 fps while the overview is drawn, even under another window; an
   overview not drawn for about 10 s stops its streams until it is drawn again. A session
-  window does the same at 8 fps.
-- The session window streams at 8 fps. In Watch, the picture is all it does. In
+  window does the same at 15 fps.
+- The session window streams at 15 fps. In Watch, the picture is all it does. In
   Control, presses (left and right, with double-clicks), pointer moves (at most
   30/s), the wheel and keys go to the page; Cmd/Ctrl-V types the clipboard; on a Linux
   browser, Cmd becomes Ctrl.
 - The address bar follows the page until you type in it; Enter navigates. `https://` is
   added unless it starts with `http(s)://`, `about:`, `data:`, `file:` or `chrome://`.
 - Back, forward, reload, tab switching and ending are commands to the session's daemon.
+- Open in your browser opens the page's address. A session on another machine whose page
+  is on that machine (`localhost`, `127.x`, `[::1]`, `0.0.0.0`) gets a tunnel first, and
+  your browser opens `127.0.0.1:<local port>` with the same path. The tunnel is one per
+  machine and port, lasts 10 minutes (longer while your browser keeps a connection open)
+  and is reused while it's up.
 - A session that ends says so in its window. A dropped stream reconnects with backoff. A
   new daemon under the same name starts in Watch.
 - On Herdr 0.1.11 (it never frees a shown picture) a banner says pictures are stills:
@@ -126,8 +131,12 @@ Lucide icons (`<name>.svg` in the mod folder, `currentColor`), 28px ghost icon b
 - Herdr version: newer than 0.1.11, or the app home's `AGENTS.md` contains
   "Saving an asset under `mods/` updates every", means shown pictures are freed.
 - Frames: decode with `Buffer.from(b64, "base64")`, write with `fs/promises.writeFile`
-  to `mods/agent-browser-frames/<copy>-<feed>-<time36>-<seq>.jpg`, show it 200 ms later
-  with `image()` stacked over the previous one, delete the one before that.
+  to `mods/agent-browser-frames/<copy>-<feed>-<time36>-<seq>.jpg`; show it with `image()`
+  stacked over the previous one once `watchFolder` on that folder has reported it (and
+  100 ms more, at most 500 ms in all), then delete the one before that. A frame overtaken
+  by a newer one while waiting is never drawn.
+- Page tunnels: the same `ssh -L` as a stream's, with `sleep 600` and the label
+  `agent-browser=page`, kept by machine and port and reused while `hc get` says live.
 - Page coordinates: the frame's own JPEG size (from its SOF header) scaled to
   `deviceWidth`, then object-fit-contain maths against the element's `bounds`.
 
@@ -136,8 +145,11 @@ Lucide icons (`<name>.svg` in the mod folder, `currentColor`), 28px ghost icon b
 - `image()` caches by path and Herdr only clears that cache for paths its watcher sees
   (`mods/`, `layouts/`, `themes/`), never `data/` or hidden files. Writing under the mod's
   own folder reloads the mod. A sibling folder without `main.js` is the spot.
-- Hold a new frame's path back for longer than the watcher's 80 ms batch before drawing
-  it, and keep the previous frame under it, or the picture flickers.
+- Don't draw a new frame before Herdr's watcher has reported its file. The report drops
+  it from the cache, it loads again, and the frame under it shows meanwhile: the page
+  jumps back a frame, over and over while it scrolls. A fixed wait (200 ms) was too short
+  where reports come late (macOS). Wait for the report, and keep the previous frame under
+  the new one.
 - `metadata.deviceHeight` is the whole browser window, not the page: a 1280×720 window
   sends 1280×633 frames. Map clicks with the JPEG's own height.
 - agent-browser 0.41 sends `success: false` in every `result`; don't show it.
