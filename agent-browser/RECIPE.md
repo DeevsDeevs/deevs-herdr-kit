@@ -132,9 +132,12 @@ Lucide icons (`<name>.svg` in the mod folder, `currentColor`), 28px ghost icon b
   "Saving an asset under `mods/` updates every", means shown pictures are freed.
 - Frames: decode with `Buffer.from(b64, "base64")`, write with `fs/promises.writeFile`
   to `mods/agent-browser-frames/<copy>-<feed>-<time36>-<seq>.jpg`; show it with `image()`
-  stacked over the previous one once `watchFolder` on that folder has reported it (and
-  100 ms more, at most 500 ms in all), then delete the one before that. A frame overtaken
-  by a newer one while waiting is never drawn.
+  stacked over the previous ones once `watchFolder` on that folder has reported it (and
+  100 ms more, at most 500 ms in all). A layer is deleted only once the one above it has
+  been up 300 ms, at most 8 layers. A frame overtaken by a newer one is never drawn.
+- Live streams ask for `pacing=ack`: each frame is acked (`{"type":"ack","seq":n}`) once
+  its file is written, at most 2 frames between the socket and the picture, so the
+  daemon never sends faster than frames land.
 - Page tunnels: the same `ssh -L` as a stream's, with `sleep 600` and the label
   `agent-browser=page`, kept by machine and port and reused while `hc get` says live.
 - Page coordinates: the frame's own JPEG size (from its SOF header) scaled to
@@ -150,6 +153,10 @@ Lucide icons (`<name>.svg` in the mod folder, `currentColor`), 28px ghost icon b
   jumps back a frame, over and over while it scrolls. A fixed wait (200 ms) was too short
   where reports come late (macOS). Wait for the report, and keep the previous frame under
   the new one.
+- `image()` draws nothing until its picture decodes, says nobody when that is, and a file
+  deleted before it decoded never draws. Keeping only two layers deleted frames ~100 ms
+  after they showed, so on the Mac at 15+ fps neither layer had decoded: black for
+  seconds. Hence layers stay until the one above has been up a while.
 - `metadata.deviceHeight` is the whole browser window, not the page: a 1280×720 window
   sends 1280×633 frames. Map clicks with the JPEG's own height.
 - agent-browser 0.41 sends `success: false` in every `result`; don't show it.

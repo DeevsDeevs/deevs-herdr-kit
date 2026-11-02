@@ -18,6 +18,10 @@ export const FOLDER = "mods/agent-browser-frames";
 const AFTER_REPORT_MS = 100;
 // A report that never comes (a batch another waiter took) holds a frame no longer.
 const MAX_HOLD_MS = 500;
+// How long a layer stays up before the one under it goes.
+const SETTLE_MS = 300;
+// Layers at once: more means the decodes aren't landing, so new frames wait.
+const MAX_LAYERS = 8;
 const abs = (rel) => `${appHome()}/${rel}`;
 // The time a frame was written is in its name, so any copy can sweep the folder.
 const stamp = (name) => parseInt(name.split("-").at(-2) ?? "", 36);
@@ -59,16 +63,14 @@ export class Frames {
     this.seq = 0;
     this.shownSeq = 0;
     this.shown = [];
-    this.busy = false;
     this.last = null;
     this.lastAt = 0;
     this.cleared = false;
   }
 
-  // Newest frame wins: one arriving while the previous is being written is dropped.
-  async push(bytes, cx) {
-    if (this.busy) return false;
-    this.busy = true;
+  // Writes a frame, calls `written` once the file is saved (or failed), shows it
+  // once Herdr's watcher has reported it. Resolves whether it was shown.
+  async push(bytes, cx, written = () => {}) {
     const seq = ++this.seq;
     const name = `${this.prefix}-${Date.now().toString(36)}-${seq}.jpg`;
     const rel = `${FOLDER}/${name}`;
@@ -78,26 +80,37 @@ export class Frames {
     } catch {
       return false;
     } finally {
-      this.busy = false;
+      written();
     }
     this.last = bytes;
     this.lastAt = Date.now();
     await heard;
     await cx.sleep(AFTER_REPORT_MS);
-    // Frames overlap while they wait: one overtaken by a newer frame is never drawn.
-    if (this.cleared || seq < this.shownSeq) {
+    // Frames overlap while they wait: one overtaken by a newer frame is never
+    // drawn, and past MAX_LAYERS the picture waits for the layers to settle.
+    if (this.cleared || seq < this.shownSeq || this.shown.length >= MAX_LAYERS) {
       unlink(abs(rel)).catch(() => {});
       return false;
     }
     this.shownSeq = seq;
-    this.shown.push(rel);
+    this.shown.push({ rel, at: Date.now() });
     cx.notify();
-    while (this.shown.length > 2) {
-      const gone = this.shown.shift();
-      await cx.sleep(50);
-      unlink(abs(gone)).catch(() => {});
-    }
+    this.trim();
+    cx.spawn(async (cx) => {
+      await cx.sleep(SETTLE_MS);
+      this.trim();
+    });
     return true;
+  }
+
+  // image() draws nothing until a picture has decoded, and gpui-kit says when
+  // that is to nobody. So a layer goes only once the one above it has been up
+  // SETTLE_MS: whatever hasn't decoded yet, an older frame shows through.
+  trim() {
+    const now = Date.now();
+    while (this.shown.length > 1 && now - this.shown[1].at >= SETTLE_MS) {
+      unlink(abs(this.shown.shift().rel)).catch(() => {});
+    }
   }
 
   // A quiet page sends no frames; rewrite the last one before a sweep takes it.
@@ -110,12 +123,12 @@ export class Frames {
   }
 
   view() {
-    return this.shown.map((rel) => div().id(rel).absolute().inset_0().child(image(rel).size_full()));
+    return this.shown.map(({ rel }) => div().id(rel).absolute().inset_0().child(image(rel).size_full()));
   }
 
   clear() {
     this.cleared = true;
-    for (const rel of this.shown) unlink(abs(rel)).catch(() => {});
+    for (const { rel } of this.shown) unlink(abs(rel)).catch(() => {});
     this.shown = [];
     this.last = null;
   }

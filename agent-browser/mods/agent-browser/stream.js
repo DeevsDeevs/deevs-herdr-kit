@@ -9,6 +9,9 @@ const reason = (e) => String(e?.message ?? e ?? "failed").replace(/^Error: /, ""
 // The socket takes 8 writes in flight; past that it refuses them.
 const IN_FLIGHT = 6;
 
+// Frames written but not yet on screen, at most.
+const FRAMES_IN_FLIGHT = 2;
+
 export class Feed {
   // `live`: show every frame. Without it (a Herdr that never frees a shown
   // picture) only the first frame and the ones asked for with refresh() are shown.
@@ -31,6 +34,8 @@ export class Feed {
     this.ws = null;
     this.queue = [];
     this.pending = 0;
+    this.inFlight = 0;
+    this.taken = null;
     this.stopped = false;
     this.settles = 0;
   }
@@ -71,7 +76,9 @@ export class Feed {
         // Stopped meanwhile: the throw lands in the cleanup below.
         if (this.stopped) throw null;
         this.http = http;
-        this.ws = await WebSocket.connect(`ws://127.0.0.1:${port}/?maxFps=${this.fps}`);
+        // Live: the daemon sends the next frame only once this one is acked, so
+        // frames never pile up between it and the picture. Older daemons ignore it.
+        this.ws = await WebSocket.connect(`ws://127.0.0.1:${port}/?maxFps=${this.fps}${this.live ? "&pacing=ack" : ""}`);
         if (this.stopped) throw null;
         this.phase = "live";
         this.liveAt = Date.now();
@@ -108,7 +115,7 @@ export class Feed {
         this.arrivals.push(now);
         while (now - this.arrivals[0] >= 3000) this.arrivals.shift();
         if (typeof m.data !== "string") return;
-        this.latest = { data: m.data, at: m.metadata?.timestamp ?? now, width: m.metadata?.deviceWidth };
+        this.latest = { data: m.data, at: m.metadata?.timestamp ?? now, width: m.metadata?.deviceWidth, seq: m.seq };
         if (this.live || this.want) this.show(cx);
         return;
       }
@@ -141,21 +148,29 @@ export class Feed {
 
   // Writes the newest frame, unless one is still being written. Decoding
   // happens only here: the reader must keep reading, or the socket closes.
+  // At most FRAMES_IN_FLIGHT frames between the socket and the picture; a frame is
+  // acked once written, which lets the daemon send the next.
   show(cx) {
     const f = this.latest;
-    if (!f || this.frames.busy || f.at === this.frameAt) return;
+    if (!f || f === this.taken || this.inFlight >= FRAMES_IN_FLIGHT) return;
+    this.taken = f;
+    this.inFlight++;
     this.want = false;
     const bytes = Buffer.from(f.data, "base64");
     const page = pageOf(jpegSize(bytes), f.width);
     cx.spawn(async (cx) => {
-      if (await this.frames.push(bytes, cx)) {
+      const shown = await this.frames.push(bytes, cx, () => {
+        if (this.live && f.seq != null) this.send({ type: "ack", seq: f.seq });
+      });
+      this.inFlight--;
+      if (shown) {
         this.page = page ?? this.page;
         this.frameAt = f.at;
-        // A page that went quiet while this one was written still ends on its last frame.
-        if (this.live && !this.stopped && this.latest !== f) this.show(cx);
       } else if (!this.live) {
         this.want = true;
       }
+      // A page that went quiet meanwhile still ends on its last frame.
+      if (this.live && !this.stopped) this.show(cx);
     });
   }
 
