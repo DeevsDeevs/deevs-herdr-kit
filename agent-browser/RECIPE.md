@@ -36,7 +36,7 @@ Lucide icons (`<name>.svg` in the mod folder, `currentColor`), 28px ghost icon b
   - Under it: the session name (12.5px semibold), then the page title (12px `muted`,
     truncated), with the host after it only when the title doesn't already name it.
   - A second line (11.5px `dim`): the agent's last command and its age ("click @e3 ·
-    4s"). When something is wrong it says that instead ("connecting…", the error in
+    4s"), empty until there is one. When something is wrong it says that instead ("connecting…", the error in
     `blocked`, "no stream (engine)", or "no picture: the page hasn't painted (hidden
     window or idle page)" 6 s after connecting without a frame), and a status dot comes
     before the name.
@@ -59,10 +59,11 @@ Lucide icons (`<name>.svg` in the mod folder, `currentColor`), 28px ghost icon b
   one on `selected`.
 - The page picture filling the rest on `canvas`, letterboxed to keep its shape. While
   controlling, a 2px `accent` outline is drawn over its edge.
-- A 30px status line on `chrome`: a dot, "live · 15 fps" (or "still", or the stream
-  status, `muted`), the agent's last command with its age (`dim`; a failed command of
-  yours in `blocked` for 4 s), and on the right "Activity", the count and a chevron.
-  Clicking it opens up to 30 commands above it (age, command, duration).
+- A 30px status line on `chrome`: a dot whose tooltip says "live · 15 fps" (or "still",
+  or the stream status), then the agent's last command with its age (`dim`), or a stream
+  error or a failed command of yours (`blocked`, the latter for 4 s). Once the agent has
+  sent a command, "Activity", the count and a chevron sit on the right, and clicking the
+  line opens up to 30 commands above it (age, command, duration).
 
 ## How it behaves
 

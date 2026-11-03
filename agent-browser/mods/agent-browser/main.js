@@ -311,8 +311,8 @@ class Overview {
                 .child(div().flex_none().font_semibold().text_size(12.5).text_color(t.foreground).child(s.session))
                 .when(Boolean(s.namespace), (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(s.namespace)))
                 .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.muted).child(where ? `${title} · ${where}` : title)))
-            .child(div().truncate().text_size(11.5).text_color(st.color === t.blocked && feed && !feed.frames.empty ? t.blocked : t.dim).child(
-              !healthy && feed && !feed.frames.empty ? st.text : last ? `${last.text} · ${ago(Date.now() - last.at)}` : "no agent commands yet")),
+            .child(div().min_h(16).truncate().text_size(11.5).text_color(st.color === t.blocked && feed && !feed.frames.empty ? t.blocked : t.dim).child(
+              !healthy && feed && !feed.frames.empty ? st.text : last ? `${last.text} · ${ago(Date.now() - last.at)}` : "")),
         ),
       () => this.open(m, s, false),
     );
@@ -765,12 +765,13 @@ class Viewer {
 
     const log = feed?.activity ?? [];
     const status = live ? (!feed.live ? "still" : feed.rate ? `live · ${feed.rate} fps` : "live") : st.text;
+    const problem = this.note ?? (feed?.phase === "error" ? { text: st.text, error: true } : null);
     const footer = v_flex()
       .flex_none()
       .bg(t.chrome)
       .border_t(1)
       .border_color(t.border)
-      .when(this.showLog, (el) =>
+      .when(this.showLog && log.length > 0, (el) =>
         el.child(
           v_flex()
             .max_h(180)
@@ -781,7 +782,6 @@ class Viewer {
             .gap(3)
             .border_b(1)
             .border_color(t.border)
-            .when(!log.length, (l) => l.child(div().text_size(12).text_color(t.dim).child("No agent commands yet.")))
             .children(log.slice(0, 30).map((a, i) =>
               h_flex()
                 .id(`ab-log-${i}`)
@@ -800,15 +800,14 @@ class Viewer {
           .items_center()
           .text_size(12)
           .hover((x) => x.bg(t.hover))
-          .child(dot(st.color))
-          .child(div().flex_none().text_color(t.muted).child(status))
+          .child(h_flex().id("ab-state").size(16).flex_none().items_center().justify_center().tooltip(status).child(dot(st.color)))
           .child(div().flex_1().min_w(0).truncate()
-            .text_color(this.note?.error ? t.blocked : this.note ? t.muted : t.dim)
-            .child(this.note ? this.note.text : log[0] ? `${log[0].text} · ${ago(Date.now() - log[0].at)}` : ""))
-          .child(h_flex().flex_none().gap(6).items_center().text_color(this.showLog ? t.foreground : t.muted)
+            .text_color(problem?.error ? t.blocked : problem ? t.muted : t.dim)
+            .child(problem ? problem.text : log[0] ? `${log[0].text} · ${ago(Date.now() - log[0].at)}` : ""))
+          .when(log.length > 0, (el) => el.child(h_flex().flex_none().gap(6).items_center().text_color(this.showLog ? t.foreground : t.muted)
             .child("Activity")
-            .when(log.length > 0, (el) => el.child(div().text_color(t.dim).child(String(Math.min(log.length, 30)))))
-            .child(icon(this.showLog ? "chevron-down" : "chevron-up").size(13))),
+            .child(div().text_color(t.dim).child(String(Math.min(log.length, 30))))
+            .child(icon(this.showLog ? "chevron-down" : "chevron-up").size(13)))),
         (cx) => {
           this.showLog = !this.showLog;
           cx.notify();
