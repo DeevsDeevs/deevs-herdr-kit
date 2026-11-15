@@ -113,9 +113,7 @@ const folded = text(board.render(t, { ...m, items: [quietItem] }, ui));
 assert.ok(folded.includes("1 done · 1 idle") && !folded.includes("quiet"));
 
 // Hide text keeps the kind and drops the agent's words.
-sharedState = { "agent-tower.hideText": true };
-const hidden = text(board.render(t, m, ui));
-sharedState = {};
+const hidden = text(board.render(t, m, { ...ui, hideText: true }));
 assert.ok(hidden.includes("Needs permission") && !hidden.includes("docker"));
 
 // From the real taskModel: a task with a remote worker that asks lands in Needs you, in its area.

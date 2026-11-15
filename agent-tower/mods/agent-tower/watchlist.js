@@ -3,8 +3,7 @@
 // the research leads write to, read-only. It keeps no grouping of its own and fetches nothing: no
 // prices, only what is on disk. A task click selects it (Details follows).
 
-import { div } from "gpui-kit";
-import { v_flex, h_flex } from "gpui-base";
+import { div, v_flex, h_flex } from "./perf.js";
 import { rowMark, WORD, wordColor, duration } from "./marks.js";
 import { readTextFile, exec, window, home } from "herdr";
 
@@ -47,18 +46,29 @@ export function tasksFor(symbol, items) {
 // The newest lines of the notes, without trailing blank ones.
 export const lastLines = (text, n = NOTE_LINES) => text.replace(/\s+$/, "").split("\n").slice(-n).join("\n");
 
-// Reads both files into ui.state when due; the stage is told to draw again when they arrive.
-function load(ui) {
+// Reads both files into ui.state when due. Parsed and cut once per read, not per render; the stage
+// is told to draw again only when a file changed.
+export function load(ui) {
   const s = ui.state;
-  if (s.reading || (s.at && ui.now - s.at < READ_MS)) return;
+  if (s.reading || (s.at && ui.now - s.at < READ_MS)) return null;
   s.reading = true;
-  (async () => {
-    const own = parse(await readTextFile(`${ui.towerDir}/${FILE}`).catch(() => null));
-    const notesPath = own.notes ? own.notes.replace(/^~(?=\/)/, home()) : `${ui.towerDir}/${NOTES}`;
-    const notes = await readTextFile(notesPath).catch(() => null);
-    Object.assign(s, { at: Date.now(), reading: false, own, notesPath, notes });
-    ui.notify();
-  })();
+  // A read that fails (or a throw anywhere here) must not stop the next one.
+  return (async () => {
+    try {
+      const raw = await readTextFile(`${ui.towerDir}/${FILE}`).catch(() => null);
+      const own = raw === s.raw && s.own ? s.own : parse(raw);
+      const notesPath = own.notes ? own.notes.replace(/^~(?=\/)/, home()) : `${ui.towerDir}/${NOTES}`;
+      const text = await readTextFile(notesPath).catch(() => null);
+      const changed = !s.at || raw !== s.raw || notesPath !== s.notesPath || text !== s.text;
+      Object.assign(s, { at: Date.now(), raw, own, notesPath, text });
+      if (changed) {
+        s.notes = text == null ? null : lastLines(text);
+        ui.notify();
+      }
+    } finally {
+      s.reading = false;
+    }
+  })().catch(() => null);
 }
 
 const press = (el, act) => el.cursor_pointer().on_click((_e, cx) => {
@@ -89,7 +99,7 @@ export function render(t, m, ui) {
     .child(s.notes == null ? quiet(t, s.at ? "No notes" : "Reading…").id("watchlist-no-notes").when(Boolean(s.notesPath), (el) => el.tooltip(s.notesPath ?? ""))
       : ui.hideText ? quiet(t, "Text hidden")
         : div().p(10).rounded(8).bg(t.surface ?? t.raised).whitespace_normal().text_size(12).line_height("18px").text_color(t.muted)
-          .child(lastLines(s.notes)));
+          .child(s.notes));
   return v_flex().id("watchlist").size_full().min_h(0).overflow_y_scrollbar().bg(t.background).text_color(t.foreground).text_size(13)
     .px(16).pt(12).pb(16)
     .child(wide ? h_flex().items_start().gap(24).child(tickers).child(notes) : v_flex().gap(24).child(tickers).child(notes));

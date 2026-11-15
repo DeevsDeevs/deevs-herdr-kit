@@ -12,10 +12,18 @@ const el = () => {
     get(_, k) {
       if (k === "then") return undefined;
       if (k === "click") return target.click;
+      if (k === "wheel") return target.wheel;
+      if (k === "tip") return target.tip;
       return (...a) => {
         if (k === "id") els.set(a[0], self);
         if (k === "on_click") target.click = a[0];
+        if (k === "on_scroll_wheel") target.wheel = a[0];
+        if (k === "tooltip") target.tip = a[0];
         if (k === "when") return a[0] ? a[1](self) : self;
+        // Herdr refuses a child that is not an element or a string (null, undefined, a number).
+        const bad = (x) => x == null || (typeof x !== "string" && typeof x !== "function");
+        if (k === "child" && bad(a[0])) throw new Error("child(" + a[0] + ") is not an element or a string");
+        if (k === "children" && (a[0] ?? []).some(bad)) throw new Error("children() holds something that is not an element or a string");
         return self;
       };
     },
@@ -24,12 +32,13 @@ const el = () => {
 };
 globalThis.__tl = { els, shared, files: new Map() };
 export const div = el, svg = el, image = el, h_flex = el, v_flex = el;
-export function readTextFile(p) { return Promise.resolve(globalThis.__tl.files.get(p) ?? null); }
+export function readTextFile(p) { const v = globalThis.__tl.files.get(p); return v instanceof Error ? Promise.reject(v) : Promise.resolve(v ?? null); }
 export function sharedGet(k) { return shared.get(k); }
 export { sharedGet as shared };
 export function setShared(k, v) { shared.set(k, v); return null; }
 export function writeTextFile(p, text) { globalThis.__tl.files.set(p, text); return Promise.resolve(null); }
 export function exec(...a) { return globalThis.__tl.exec(...a); }
+export function hc(...a) { return globalThis.__tl.hc ? globalThis.__tl.hc(...a) : Promise.resolve({ code: 1, stdout: "" }); }
 export function appHome() { return "/made/up/app"; }
 `;
 const url = `data:text/javascript,${encodeURIComponent(stub)}`;
@@ -299,7 +308,8 @@ const recorded = {
   const lane = { a: "t1", t: {}, created: ago(300), since: ago(5) };
   assert.equal(TL.wantsBackfill(lane, ago(100), now), true);
   assert.equal(TL.wantsBackfill(lane, ago(299.5), now), false);
-  assert.equal(TL.wantsBackfill({ ...lane, ended: true }, null, now), false);
+  assert.equal(TL.wantsBackfill({ ...lane, t: null, ended: true }, null, now), true, "an ended one hc may still list");
+  assert.equal(TL.wantsBackfill({ ...lane, ended: true, fileOnly: true }, null, now), false, "not one only a task file has");
   assert.equal(TL.wantsBackfill(lane, null, now), true, "no recorder yet: up to hc's since");
   // One read.py run per machine, cached in backfill.json; the next render draws it outlined.
   const dir = "/made/up/agent-tower";
@@ -335,6 +345,469 @@ const recorded = {
   assert.ok(!drawn.some((m) => Math.abs(m - 240) < 0.01), "not inside a gap");
   TL.render(theme, mm, ui);
   assert.equal(sent.length, 2, "cached: read.py is not run again");
+}
+
+// ── a task that lives four weeks with sixty agents: Week and Month, the task files ──
+{
+  const DAY = 24 * 60 * MIN;
+  const c0 = now - 28 * DAY;
+  const until = now - 2 * DAY;
+  const thinTo = now - 7 * DAY;
+  const sec = (ms, created) => Math.round((ms - created) / 1000);
+  // The lead: a morning stretch each day, an ask most days, a Done near the end.
+  const lead = { a: "t100", role: "lead", name: "lead", title: "Ledger export", machine: null, parent: null, created: c0, ended: null, thinTo, w: [], asks: [], done: [], events: [] };
+  for (let d = 0; d < 21; d++) {
+    const day = c0 + d * DAY;
+    lead.w.push([sec(day + 60 * MIN, c0), sec(day + 180 * MIN, c0)]);
+    if (d % 2 === 0) lead.asks.push([sec(day + 180 * MIN, c0), sec(day + 200 * MIN, c0), `Keep column ${d}?`]);
+  }
+  lead.done.push([sec(thinTo - 60 * MIN, c0), "First pass done."]);
+  lead.events = [{ s: "working", turn: 40, at: thinTo + 10 * MIN, msg: null }, { s: "idle", turn: 40, at: thinTo + 70 * MIN, msg: null }];
+  const lanes = { [`t100@${c0}`]: lead };
+  const endedLanes = [];
+  // 59 workers, one started every ten hours; t101–t150 lived a day each and ended, t151–t159 still live.
+  for (let i = 1; i <= 59; i++) {
+    const a = `t${100 + i}`;
+    const created = c0 + i * 10 * 60 * MIN;
+    const ended = i <= 50 ? created + DAY : null;
+    lanes[`${a}@${created}`] = { a, role: "worker", name: `k7-w${i}`, title: null, machine: i % 3 ? null : "vps", parent: "t100", created, ended, thinTo,
+      w: [[0, 3600], [7200, 9000]], asks: i % 10 ? [] : [[9000, 9600, "Which ledger?"]], done: [], events: [] };
+    if (ended) endedLanes.push(`${a}@${created}`);
+  }
+  const k7 = { v: 1, task: "task:k7", taskId: "k7", title: "Ledger export rewrite", area: "work", from: c0, until, ended: null, lanes };
+  const q9 = { v: 1, task: "task:q9", taskId: "q9", title: "Quarter budget sheet", area: "work", from: now - 14 * DAY, until: now - 10 * DAY, ended: now - 10 * DAY,
+    lanes: { [`t90@${now - 14 * DAY}`]: { a: "t90", role: "lead", name: "lead", created: now - 14 * DAY, ended: now - 10 * DAY, thinTo: now - 10 * DAY, w: [[0, 7200]], asks: [], done: [[7200, "Sheet sent."]], events: [] } } };
+  const index = { v: 1, at: now, gaps: [{ m: "herdr", from: now - 5 * DAY, to: now - 5 * DAY + 8 * 60 * MIN }], tasks: {
+    "task:k7": { file: "tasks/task%3Ak7.json", taskId: "k7", title: k7.title, area: "work", from: c0, until, ended: null, agents: 60, endedLanes, bytes: 1 },
+    "task:q9": { file: "tasks/task%3Aq9.json", taskId: "q9", title: q9.title, area: "work", from: q9.from, until: q9.until, ended: q9.ended, agents: 1, endedLanes: [`t90@${now - 14 * DAY}`], bytes: 1 },
+    "task:old": { file: "tasks/task%3Aold.json", taskId: "old", title: "Old thing", area: "work", from: now - 50 * DAY, until: now - 40 * DAY, ended: now - 40 * DAY, agents: 2, endedLanes: [], bytes: 1 },
+    "../x": { file: "../../secret.json", from: 0, until: now },
+  } };
+
+  // The day axis: local midnights; a Month has 30 of them.
+  const days = T.dayTicks(now - 30 * DAY, now);
+  assert.equal(days.length, 30);
+  assert.ok(days.every((k) => new Date(k).getHours() === 0 && new Date(k).getMinutes() === 0));
+  assert.deepEqual(T.SPANS.slice(-2).map((x) => [x.name, x.ms / DAY, !!x.long]), [["Week", 7, true], ["Month", 30, true]]);
+
+  // The index is checked: a file outside tasks/ is dropped.
+  const idx = T.parseIndex(JSON.stringify(index));
+  assert.deepEqual(Object.keys(idx.tasks), ["task:k7", "task:q9", "task:old"]);
+  assert.equal(T.parseTaskFile("{oops"), null);
+
+  // A task file's lane as stretches: the thinned part in seconds from created, the raw events after thinTo.
+  const ls = T.fileStretches(lead, until);
+  assert.deepEqual(ls.slice(0, 2).map((x) => [x.s, (x.from - c0) / MIN, (x.to - c0) / MIN, x.msg]), [["working", 60, 180, null], ["blocked", 180, 200, "Keep column 0?"]]);
+  const done = ls.find((x) => x.s === "done");
+  assert.equal(done.from, thinTo - 60 * MIN);
+  assert.equal(done.to, thinTo, "a Done lasts until thinTo, where the raw events take over");
+  assert.deepEqual(ls.slice(-2).map((x) => [x.s, x.from, x.to]), [["working", thinTo + 10 * MIN, thinTo + 70 * MIN], ["idle", thinTo + 70 * MIN, until]]);
+
+  // Week and Month thinning: Working across gaps under a pixel, asks within 3px as one tick, idle gone.
+  const px = 30 * DAY / 700;
+  const st = (s, a, b, extra = {}) => ({ s, from: a, to: b, ongoing: false, ...extra });
+  const thin = T.forSpan([st("working", 0, 10 * MIN), st("idle", 10 * MIN, 20 * MIN), st("working", 20 * MIN, 30 * MIN), st("blocked", 30 * MIN, 31 * MIN, { msg: "A?" }),
+    st("blocked", 60 * MIN, 61 * MIN), st("done", 100 * MIN, 120 * MIN), st("blocked", 10 * DAY, 10 * DAY + MIN)], px);
+  assert.deepEqual(thin.map((x) => [x.s, x.n]), [["working", 2], ["blocked", 2], ["done", 1], ["blocked", 1]]);
+  assert.equal(thin[1].one.msg, "A?", "a shared tick picks its first ask");
+  assert.deepEqual(T.forSpan([st("done", 0, MIN)], px, "worker"), [], "a worker's Done is Idle, not drawn");
+
+  // The model now: the lead, two workers busy, seven quiet; one more ended an hour ago (events.json only).
+  const live = (i, status) => ({ t: term(`t${100 + i}`, { name: `k7-w${i}`, created_ms: c0 + i * 10 * 60 * MIN }), lines: ["├"], status });
+  const item = { key: "task:k7", taskId: "k7", title: k7.title, area: "work", machine: null, machines: [null], word: "working", status: "working", group: "working",
+    lead: term("t100", { created_ms: c0 }), leadGone: false, live: [], tree: [live(51, "working"), live(52, "working")],
+    activeTree: [live(51, "working"), live(52, "working")], quiet: [53, 54, 55, 56, 57, 58, 59].map((i) => live(i, "idle")) };
+  const mk = { areas: [{ id: "work", label: "Work" }], items: [item] };
+  const rec = { v: 1, beat: now, lanes: {
+    t100: { task: "task:k7", role: "lead", name: "lead", area: "work", created: c0 },
+    t160: { task: "task:k7", role: "worker", name: "k7-w60", area: "work", created: now - 5 * 60 * MIN },
+  }, events: [{ a: "t100", s: "working", at: now - 47 * 60 * MIN }, { a: "t160", s: "working", at: now - 5 * 60 * MIN }, { a: "t160", s: "ended", at: now - 60 * MIN }], looks: [], gaps: [] };
+
+  // "N ended" counts the whole task, even at 1h where none of them did anything.
+  const h = T.parseHistory(JSON.stringify(rec));
+  const pastNow = { index: idx, files: { "task:k7": k7 } };
+  const k7Task = T.lanesOf(mk, h, { now, start: now - 60 * MIN, past: pastNow })[0].tasks[0];
+  assert.equal(k7Task.endedTotal, 51);
+  assert.match(T.foldWords(k7Task), /51 ended/);
+  // At Month the file's lanes join: the live ones get their past, the ended ones fold.
+  const monthTask = T.lanesOf(mk, h, { now, start: now - 30 * DAY, past: pastNow })[0].tasks[0];
+  assert.ok(monthTask.lanes[0].past.length > 20, "the lead's own four weeks");
+  assert.equal(monthTask.folded.filter((l) => l.fileOnly).length, 50);
+
+  // Render at Month: only the index and the task files the span overlaps are read.
+  const dir = "/made/up/long";
+  const files = { [`${dir}/timeline/index.json`]: JSON.stringify(index), [`${dir}/timeline/tasks/task%3Ak7.json`]: JSON.stringify(k7), [`${dir}/timeline/tasks/task%3Aq9.json`]: JSON.stringify(q9) };
+  const read = [];
+  tl.files.set(`${dir}/timeline/events.json`, JSON.stringify(rec));
+  tl.shared.set(T.RECORDED, 10);
+  const picks = [];
+  const ui = { now, width: 1100, area: null, selectedKey: null, towerDir: dir, state: { span: 5, tasks: { "task:k7": true } }, select() {}, pick: (it, mo) => picks.push(mo), openTerminal() {}, notify() {},
+    readPast: (p) => (read.push(p.slice(dir.length + 1)), Promise.resolve(files[p] ?? null)) };
+  const theme = new Proxy({}, { get: (_, k) => `#${k}` });
+  for (let i = 0; i < 4; i++) {
+    tl.els.clear();
+    T.render(theme, mk, ui);
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  assert.deepEqual([...new Set(read)].sort(), ["timeline/index.json", "timeline/tasks/task%3Ak7.json", "timeline/tasks/task%3Aq9.json"], "an old task's file is not read");
+  const laneIds = [...tl.els.keys()].filter((k) => k.startsWith("l-"));
+  assert.deepEqual(laneIds.sort(), ["l-t100", "l-t151", "l-t152"], "sixty agents: the lead and the two busy ones on lanes");
+  assert.ok(tl.els.has("w-task:k7") && [...tl.els.keys()].some((k) => k.startsWith("wb-task:k7-")), "the rest as one Workers lane");
+  assert.ok(tl.els.has("f-task:k7"), "and an 'ended' fold");
+  assert.ok(tl.els.has("t-task:q9"), "a task only its file still has, ten days ago, is there at Month");
+  assert.ok(!tl.els.has("t-task:old"));
+  assert.ok(tl.els.has(`gap-t100-${index.gaps[0].from}`), "a gap from the index");
+  // The lead's asks are ticks, and a click is the moment.
+  const askAt = c0 + 2 * DAY + 180 * MIN;
+  assert.ok(tl.els.has(`s-t100-${askAt}`));
+  tl.els.get(`s-t100-${askAt}`).click();
+  assert.equal(tl.shared.get(T.MOMENT).word, "blocked");
+  assert.equal(tl.shared.get(T.MOMENT).msg, "Keep column 2?");
+  // A worker's ask on the Workers lane picks that worker.
+  const wAsk = [...tl.els.keys()].find((k) => k.startsWith("W-t110-"));
+  assert.ok(wAsk);
+  tl.els.get(wAsk).click();
+  assert.equal(tl.shared.get(T.MOMENT).address, "t110");
+  // The fold opens to the ended ones, each on its lane.
+  tl.els.get("f-task:k7").click();
+  tl.els.clear();
+  T.render(theme, mk, ui);
+  assert.ok(tl.els.has("l-t150"), "the newest ended agent first");
+  // Only the rows in view (and a margin) are built: the oldest of fifty waits below until scrolled to.
+  assert.ok(!tl.els.has("l-t101"), "a row far below the view is not built");
+  tl.els.get("timeline-body").wheel({ delta: { x: 0, y: -5000 } }, { notify() {} });
+  tl.els.clear();
+  T.render(theme, mk, ui);
+  assert.ok(tl.els.has("l-t101") && !tl.els.has("t-task:k7"), "scrolled down: the bottom rows are built, the top ones are not");
+  tl.els.get("timeline-body").wheel({ delta: { x: 0, y: 5000 } }, { notify() {} });
+  // At Day the files are not needed and the old task is gone again.
+  ui.state.span = 3;
+  tl.els.clear();
+  T.render(theme, mk, ui);
+  assert.ok(!tl.els.has("t-task:q9") && !tl.els.has("w-task:k7"));
+}
+
+// ── ended agents hc still lists (by folder and time), and agents hc forgot (by their brief) ──
+{
+  const F = await import("./mods/agent-tower/timeline.js?forgot");
+  // The terminals entry: a live lane by pid; an ended one by hc get, in seconds ago; gone or reused: none.
+  const live = { a: "t1", created: ago(50), t: { pid: 7, argv: ["claude"], cwd: "/home/me/x" } };
+  assert.deepEqual(F.turnsAsk(live, null, now), { key: `t1@${ago(50)}`, pid: 7, argv: ["claude"], cwd: "/home/me/x" });
+  const gone = { a: "t71", created: ago(300), ended: true };
+  const got = { state: "exited", created_ms: ago(300), finished_ms: ago(60), argv: ["claude", "brief"], cwd: "/home/me/work/e1" };
+  assert.deepEqual(F.turnsAsk(gone, got, now), { key: `t71@${ago(300)}`, pid: null, argv: ["claude", "brief"], cwd: "/home/me/work/e1", created_s: 18000, finished_s: 3600 });
+  assert.equal(F.turnsAsk(gone, { ...got, created_ms: ago(10) }, now), null, "the address is another agent's now");
+  assert.equal(F.turnsAsk(gone, null, now), null);
+
+  const mNow = now / 1000 + 100;
+  const sec = (m) => mNow - m * 60;
+  const dir = "/made/up/forgot";
+  tl.files.set("/made/up/app/mods/agent-tower-panel/read.py", "print()");
+  tl.files.set(`${dir}/timeline/events.json`, JSON.stringify({ v: 1, beat: now, lanes: {
+    t70: { task: "task:e1", taskId: "e1", role: "lead", name: "lead", area: "work", created: ago(100) },
+    t71: { task: "task:e1", taskId: "e1", role: "worker", name: "e1-fix", area: "work", created: ago(300) },
+    t72: { task: "task:e1", taskId: "e1", role: "worker", name: "e1-test", area: "work", created: ago(280) },
+  }, events: [{ a: "t70", s: "working", at: ago(100) }, { a: "t71", s: "working", at: ago(100) }, { a: "t71", s: "ended", at: ago(60) },
+    { a: "t72", s: "working", at: ago(90) }, { a: "t72", s: "ended", at: ago(70) }], looks: [], gaps: [] }));
+  tl.shared.set(F.RECORDED, 20);
+  const asked = [];
+  tl.hc = (args) => Promise.resolve(args[1] === "t71" ? { code: 0, stdout: JSON.stringify(got) } : { code: 1, stdout: "" });
+  tl.exec = (cmd, args, opts) => {
+    const req = JSON.parse(args[4]);
+    asked.push([opts.on, req]);
+    if (req.turns) {
+      const terminals = Object.fromEntries(req.turns.terminals.map((x) => [x.key, x.created_s ? { path: "/made/up/e1-fix.jsonl", covers: sec(300), turns: [{ start: sec(290), end: sec(200), ended: null, asks: [] }] } : null]));
+      return Promise.resolve({ code: 0, stdout: JSON.stringify({ now: mNow, turns: { terminals } }) });
+    }
+    const turns = (a, b) => [{ start: sec(a), end: sec(b), ended: null, asks: [] }];
+    return Promise.resolve({ code: 0, stdout: JSON.stringify({ now: mNow, tasks: [
+      { task: "e1", program: "claude", session: "s1", cwd: "/home/me/work/e1", first: sec(2000), last: sec(1900), name: "e1-old", path: "/made/up/s1.jsonl", mtime: 1, size: 2, covers: sec(2000), turns: turns(2000, 1950) },
+      { task: "e1", program: "claude", session: "s2", cwd: "/home/me/work/e1", first: sec(299.5), last: sec(60), path: "/made/up/s2.jsonl", covers: sec(299.5), turns: turns(299, 200) },
+    ] }) });
+  };
+  const item = { key: "task:e1", taskId: "e1", title: "Expense rules", area: "work", machine: null, machines: [null], word: "working", status: "working", group: "working",
+    lead: term("t70", { created_ms: ago(100) }), leadGone: false, live: [], tree: [], activeTree: [], quiet: [] };
+  const me = { areas: [{ id: "work", label: "Work" }], items: [item] };
+  const ui = { now, width: 1100, area: null, selectedKey: null, towerDir: dir, state: { span: 3, tasks: { "task:e1": true }, open: { "task:e1": true } }, select() {}, pick() {}, openTerminal() {}, notify() {} };
+  const theme = new Proxy({}, { get: (_, k) => `#${k}` });
+  for (let i = 0; i < 5; i++) {
+    F.render(theme, me, ui);
+    for (let j = 0; j < 4; j++) await new Promise((r) => setTimeout(r, 0));
+  }
+  // (1) The ended agent hc still lists: one turns request by folder and time; the one hc forgot is remembered as gone.
+  const turnsReq = asked.filter(([, r]) => r.turns);
+  assert.equal(turnsReq.length, 1);
+  assert.deepEqual(turnsReq[0][1].turns.terminals.map((x) => [x.key, x.created_s, x.finished_s, x.pid]), [[`t71@${ago(300)}`, 18000, 3600, null]]);
+  const cache = JSON.parse(tl.files.get(`${dir}/timeline/backfill.json`));
+  assert.equal(cache[`t71@${ago(300)}`].turns.length, 1);
+  assert.equal(cache[`t72@${ago(280)}`].gone, true, "hc forgot it: not asked again");
+  tl.els.clear();
+  F.render(theme, me, ui);
+  assert.ok([...tl.els.keys()].some((k) => k.startsWith("s-t71-")), "its rebuilt past is on its lane");
+  assert.ok(!asked.some(([, r]) => r.tasks), "Day does not look for forgotten agents");
+  // (2) Month: the task has a hole, so the transcripts naming it are asked for, once.
+  ui.state.span = 5;
+  for (let i = 0; i < 4; i++) {
+    tl.els.clear();
+    F.render(theme, me, ui);
+    for (let j = 0; j < 4; j++) await new Promise((r) => setTimeout(r, 0));
+  }
+  const tasksReq = asked.filter(([, r]) => r.tasks);
+  assert.equal(tasksReq.length, 1, "once");
+  assert.deepEqual(tasksReq[0][1].tasks.ids, ["e1"]);
+  assert.equal(tasksReq[0][1].tasks.since_s, 30 * 86400);
+  assert.ok(tl.els.has("l-transcript:claude:s1"), "a forgotten worker joins its task, ended");
+  assert.ok(!tl.els.has("l-transcript:claude:s2"), "the 2-minute rule: s2 is t71, already there");
+  const forgot = JSON.parse(tl.files.get(`${dir}/timeline/backfill.json`))["transcript:claude:s1"];
+  assert.deepEqual([forgot.task, forgot.name, Math.round((now - forgot.first) / MIN)], ["e1", "e1-old", 2000], "kept on this clock, for t44's writer");
+  const lanesNow = F.forgottenLanes({ lanes: [], folded: [] }, "e1", F.fillCache());
+  assert.deepEqual(lanesNow.map((l) => l.a).sort(), ["transcript:claude:s1", "transcript:claude:s2"]);
+}
+
+// ── speed: Herdr cuts a render off after 50 ms (gpui-kit shell sandbox.rs). The cache, and a guard. ──
+{
+  const P = await import("./mods/agent-tower/timeline.js?perf");
+  // A made-up record three times a busy real one: 120 tasks, ~250 lanes, ~1250 events in a day, and
+  // rebuilt pasts (one busy task with hundreds of short turns).
+  let seed = 5;
+  const r = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32);
+  const items = [];
+  const lanes = {};
+  const events = [];
+  const fill = {};
+  let n = 1;
+  for (let k = 0; k < 120; k++) {
+    const key = `task:p${k}`;
+    const mk = (role) => {
+      const address = `t${n++}`;
+      const created = now - (60 + Math.floor(r() * 1500)) * MIN;
+      lanes[address] = { task: key, taskId: `p${k}`, taskTitle: `Made-up task ${k}`, area: k % 3 ? "work" : "home", role, name: `${role}-${n}`, created };
+      return { address, name: `${role}-${n}`, created_ms: created, status_ms: now - 5 * MIN, status: "idle", state: "live", pid: 1000 + n };
+    };
+    const lead = mk("lead");
+    const workers = Array.from({ length: k < 18 ? 3 : k % 2 }, () => mk("worker"));
+    if (k < 6) workers.push(...Array.from({ length: 4 }, () => mk("worker")));
+    items.push({ key, taskId: `p${k}`, title: `Made-up task ${k}`, area: k % 3 ? "work" : "home", machine: null, machines: [null], lead, leadGone: false, status: "idle", word: "idle", group: "idle",
+      tree: workers.map((t) => ({ t, lines: ["├"], status: "idle" })), activeTree: [], quiet: workers.map((t) => ({ t, lines: ["├"], status: "idle" })), live: [lead, ...workers], changed: now - 5 * MIN, stale: false });
+    for (const t of [lead, ...workers]) {
+      const recFrom = now - 8 * 60 * MIN;
+      let at = recFrom + Math.floor(r() * 60) * MIN;
+      for (let i = 0; i < 5 && at < now; i++) {
+        events.push({ a: t.address, s: i % 2 ? "idle" : r() < 0.2 ? "blocked" : "working", turn: i, at, msg: null });
+        at += (5 + Math.floor(r() * 90)) * MIN;
+      }
+      const turns = [];
+      for (let ts = t.created_ms; ts < recFrom && turns.length < (k < 3 ? 40 : 1);) {
+        const len = (k < 3 ? 0.3 + r() * 2 : 5 + r() * 40) * MIN;
+        turns.push({ start: ts, end: Math.min(recFrom, ts + len), ended: r() < 0.1 ? "question" : "answer", asks: [] });
+        ts += len + (k < 3 ? 0.2 + r() * 1.5 : 10 + r() * 60) * MIN;
+      }
+      if (turns.length) fill[`${t.address}@${t.created_ms}`] = { at: now, covers: t.created_ms, path: "/made/up.jsonl", turns };
+    }
+  }
+  events.sort((x, y) => x.at - y.at);
+  const big = { areas: [{ id: "work", label: "Work" }, { id: "home", label: "Home" }], items };
+  const dir = "/made/up/speed";
+  tl.files.set(`${dir}/timeline/events.json`, JSON.stringify({ v: 1, beat: now, lanes, events, looks: [], gaps: [] }));
+  tl.files.set(`${dir}/timeline/backfill.json`, JSON.stringify(fill));
+  tl.exec = () => Promise.resolve({ code: 1, stdout: "" });
+  tl.shared.set(P.RECORDED, 30);
+  const theme = new Proxy({}, { get: (_, k) => `#${k}` });
+  const timed = async (span) => {
+    const ui = { now, width: 1100, area: null, selectedKey: null, towerDir: dir, state: { span, quiet: { work: true, home: true } }, select() {}, pick() {}, openTerminal() {}, notify() {} };
+    for (let i = 0; i < 3; i++) {
+      P.render(theme, big, ui);
+      await new Promise((res) => setTimeout(res, 0));
+    }
+    // node's JIT warms up first (Herdr's first render runs interpreted, which the 5x below covers).
+    for (let i = 0; i < 15; i++) {
+      ui.state.cache = undefined;
+      P.render(theme, big, ui);
+    }
+    const misses = [];
+    for (let i = 0; i < 11; i++) {
+      ui.state.cache = undefined;
+      const t0 = performance.now();
+      P.render(theme, big, ui);
+      misses.push(performance.now() - t0);
+    }
+    return misses.sort((x, y) => x - y)[5];
+  };
+  // Half the budget is 25 ms in Herdr's QuickJS, which runs this about 5 times slower than node: so a
+  // render that misses every cache must stay under 5 ms here (measured: about 1 to 2 ms).
+  for (const span of [0, 3, 4, 5]) {
+    // Over the line once may be the shared box's load: measure again and keep the lower.
+    let ms = await timed(span);
+    if (ms >= 5) ms = Math.min(ms, await timed(span));
+    assert.ok(ms < 5, `${P.SPANS[span].name}: a full render took ${ms.toFixed(1)} ms in node (about ${(ms * 5).toFixed(0)} ms in Herdr)`);
+  }
+  // No row makes more marks than MAX_MARKS, however much past it holds.
+  const many = Array.from({ length: 2000 }, (_, i) => ({ s: i % 2 ? "idle" : "working", from: ago(2000 - i), to: ago(1999 - i), ongoing: false }));
+  assert.ok(P.toPixels(many, 24 * 3600e3 / 700).length <= P.MAX_MARKS);
+  const asksToo = [...many.slice(0, 10), { s: "blocked", from: ago(1990), to: ago(1989.9), ongoing: false }, ...many.slice(11, 20)];
+  assert.ok(P.toPixels(asksToo, 24 * 3600e3 / 700).some((x) => x.s === "blocked" && !x.packed), "an ask keeps its own mark");
+
+  // The cache updates: a recorder write, a change in the model, the now-line moving a pixel.
+  const small = { areas: [{ id: "work", label: "Work" }], items: [{ ...billing, area: "work" }] };
+  const cdir = "/made/up/cache";
+  tl.files.set(`${cdir}/timeline/events.json`, JSON.stringify(recorded));
+  tl.shared.set(P.RECORDED, 31);
+  const ui = { now, width: 1100, area: null, selectedKey: null, towerDir: cdir, state: { span: 2, tasks: { "task:b1": true } }, select() {}, pick() {}, openTerminal() {}, notify() {} };
+  const draw = async () => {
+    tl.els.clear();
+    P.render(theme, small, ui);
+    await new Promise((res) => setTimeout(res, 0));
+    tl.els.clear();
+    P.render(theme, small, ui);
+  };
+  await draw();
+  assert.ok(!tl.els.has(`s-t10-${ago(15)}`));
+  tl.files.set(`${cdir}/timeline/events.json`, JSON.stringify({ ...recorded, events: [...recorded.events, { a: "t10", s: "working", at: ago(15) }] }));
+  tl.shared.set(P.RECORDED, 32);
+  await draw();
+  assert.ok(tl.els.has(`s-t10-${ago(15)}`), "a recorder write is drawn");
+  assert.ok(!tl.els.has("n-t11"));
+  small.items[0] = { ...small.items[0], tree: [{ ...billing.tree[0], status: "blocked", t: { ...billing.tree[0].t, status: "blocked" } }, billing.tree[1]] };
+  await draw();
+  assert.ok(tl.els.has("n-t11"), "a model change (a worker now asks) is drawn");
+  const before = ui.state.cache.key;
+  ui.now = now + 10 * MIN;
+  await draw();
+  assert.notEqual(ui.state.cache.key, before, "the now-line moved: drawn again");
+  assert.equal(ui.state.cache.groups[0].tasks[0].lanes.find((l) => l.a === "t11").stretches.at(-1).to, now + 10 * MIN);
+}
+
+// ── stale caches (review-cache-tl.md): each one updates ──
+{
+  const DAY = 24 * 60 * MIN;
+  const tick = () => new Promise((res) => setTimeout(res, 0));
+  const theme = new Proxy({}, { get: (_, k) => `#${k}` });
+  // 3. A mark's words follow its span: ten rebuilt 3-minute turns, drawn at 3h, then at Day, say what a
+  // fresh render at Day says (not the 3h words of the turn the merged mark starts with).
+  {
+    const A = await import("./mods/agent-tower/timeline.js?words");
+    const dir = "/made/up/words";
+    const created = ago(600);
+    const turns = Array.from({ length: 10 }, (_, i) => ({ start: ago(170 - i * 5), end: ago(167 - i * 5), ended: "answer", asks: [] }));
+    const files = { [`${dir}/timeline/backfill.json`]: JSON.stringify({ [`t10@${created}`]: { at: now, covers: created, path: "/made/up/x.jsonl", turns } }),
+      [`${dir}/timeline/events.json`]: JSON.stringify({ v: 1, lanes: { t10: { task: "task:a", role: "lead", created } }, events: [{ a: "t10", s: "working", at: ago(20) }], looks: [], gaps: [] }) };
+    for (const [k, v] of Object.entries(files)) tl.files.set(k, v);
+    tl.shared.set(A.RECORDED, 40);
+    const item = { key: "task:a", title: "Made-up task", area: "work", machine: null, machines: [null], word: "working", status: "working", group: "working",
+      lead: term("t10", { created_ms: created, pid: 7, status: "working" }), leadGone: false, tree: [], activeTree: [], quiet: [] };
+    const mw = { areas: [{ id: "work", label: "Work" }], items: [item] };
+    const tips = async (Mod, ui) => {
+      for (let i = 0; i < 4; i++) {
+        tl.els.clear();
+        Mod.render(theme, mw, ui);
+        await tick();
+      }
+      return [...tl.els.entries()].filter(([k]) => k.startsWith("s-t10-")).map(([k, e]) => [k, e.tip]).sort();
+    };
+    const ui = { now, width: 1100, towerDir: dir, state: { span: 1, tasks: { "task:a": true } }, notify() {} };
+    await tips(A, ui);
+    ui.state.span = 3;
+    const switched = await tips(A, ui);
+    const B = await import("./mods/agent-tower/timeline.js?words-fresh");
+    const fresh = await tips(B, { ...ui, state: { span: 3, tasks: { "task:a": true } } });
+    assert.deepEqual(switched, fresh, "after a span switch the marks say what a fresh render says");
+    assert.ok(fresh.some(([, tip]) => /Rebuilt · \d+× Working/.test(tip)), "the merged turns say how many");
+  }
+  // 1. The hourly move: the index is read again on the recorder's stamp, so the slice that moved into the
+  // task file is drawn at once (the pruned events.json no longer has it).
+  {
+    const A = await import("./mods/agent-tower/timeline.js?move");
+    const dir = "/made/up/move";
+    const c0 = now - 4 * DAY;
+    const askAt = now - 2.5 * DAY;
+    const events = [{ a: "t100", s: "working", at: c0 + 60 * MIN }, { a: "t100", s: "blocked", at: askAt, msg: "Keep it?" }, { a: "t100", s: "working", at: askAt + 30 * MIN }, { a: "t100", s: "idle", at: now - 1.5 * DAY }];
+    const lanesRec = { t100: { task: "task:k", role: "lead", name: "lead", area: "work", created: c0 } };
+    const lane1 = { a: "t100", role: "lead", name: "lead", created: c0, ended: null, thinTo: null, w: [], asks: [], done: [], events: [events[0]] };
+    const v1 = { v: 1, task: "task:k", taskId: "k", title: "Made-up", area: "work", from: c0 + 60 * MIN, until: now - 3 * DAY, ended: null, lanes: { [`t100@${c0}`]: lane1 }, looks: [] };
+    const entry = (f, bytes) => ({ file: "tasks/task%3Ak.json", taskId: "k", title: "Made-up", area: "work", from: f.from, until: f.until, ended: null, agents: 1, endedLanes: [], bytes });
+    const files = { [`${dir}/timeline/index.json`]: JSON.stringify({ v: 1, at: 0, gaps: [], tasks: { "task:k": entry(v1, 1) } }), [`${dir}/timeline/tasks/task%3Ak.json`]: JSON.stringify(v1) };
+    tl.files.set(`${dir}/timeline/events.json`, JSON.stringify({ v: 1, lanes: lanesRec, events, looks: [], gaps: [] }));
+    tl.shared.set(A.RECORDED, 100);
+    const item = { key: "task:k", taskId: "k", title: "Made-up", area: "work", machine: null, machines: [null], word: "idle", status: "idle", group: "idle",
+      lead: term("t100", { created_ms: c0, status: "idle" }), leadGone: false, tree: [], activeTree: [], quiet: [] };
+    const mk = { areas: [{ id: "work", label: "Work" }], items: [item] };
+    const reads = [];
+    const ui = { now, width: 1100, towerDir: dir, state: { span: 5, tasks: { "task:k": true } }, notify() {}, readPast: (p) => (reads.push(p.slice(dir.length + 1)), Promise.resolve(files[p] ?? null)) };
+    const askShown = () => ui.state.cache.groups[0].tasks[0].lanes[0].stretches.some((st) => st.s === "blocked" && st.from === askAt);
+    const draw = async (n = 4) => {
+      for (let i = 0; i < n; i++) {
+        tl.els.clear();
+        A.render(theme, mk, ui);
+        await tick();
+      }
+    };
+    await draw();
+    assert.ok(askShown(), "before the move");
+    const v2 = { ...v1, until: askAt + 30 * MIN, lanes: { [`t100@${c0}`]: { ...lane1, events: events.slice(0, 3) } } };
+    files[`${dir}/timeline/tasks/task%3Ak.json`] = JSON.stringify(v2);
+    files[`${dir}/timeline/index.json`] = JSON.stringify({ v: 1, at: now, gaps: [], tasks: { "task:k": entry(v2, 2) } });
+    tl.files.set(`${dir}/timeline/events.json`, JSON.stringify({ v: 1, lanes: lanesRec, events: events.slice(2), looks: [], gaps: [] }));
+    tl.shared.set(A.RECORDED, 101);
+    ui.now = now + MIN;
+    await draw();
+    assert.ok(askShown(), "a minute after the move the ask is still drawn, from the file");
+    // 2b. The file rewritten with the same until (a rebuilt past copied in): its new bytes have it read again.
+    reads.length = 0;
+    const v3 = { ...v2, lanes: { [`t100@${c0}`]: { ...v2.lanes[`t100@${c0}`], rebuilt: { covers: c0, turns: [{ start: c0 + 10 * MIN, end: c0 + 40 * MIN, ended: "answer", asks: [] }] } } } };
+    files[`${dir}/timeline/tasks/task%3Ak.json`] = JSON.stringify(v3);
+    files[`${dir}/timeline/index.json`] = JSON.stringify({ v: 1, at: now, gaps: [], tasks: { "task:k": entry(v3, 3) } });
+    tl.shared.set(A.RECORDED, 102);
+    ui.now = now + 2 * MIN;
+    await draw();
+    assert.ok(reads.includes("timeline/tasks/task%3Ak.json"), "same until, new bytes: read again");
+    assert.ok(ui.state.cache.groups[0].tasks[0].lanes[0].stretches.some((st) => st.how === "rebuilt" && st.from === c0 + 10 * MIN), "its rebuilt past is drawn");
+  }
+  // 2a. A closed task's line holds older work its file does not: a forgotten worker's two days.
+  {
+    const A = await import("./mods/agent-tower/timeline.js?line");
+    const dir = "/made/up/line";
+    const c0 = now - 12 * DAY;
+    const until = now - 8 * DAY;
+    const file = { v: 1, task: "task:q", taskId: "q", title: "Made-up ended", area: "work", from: c0 + 60 * MIN, until, ended: until,
+      lanes: { [`t200@${c0}`]: { a: "t200", role: "lead", name: "lead", created: c0, ended: until, thinTo: null, w: [], asks: [], done: [],
+        events: [{ s: "working", at: c0 + 60 * MIN }, { s: "idle", at: c0 + 120 * MIN }, { s: "ended", at: until }] } }, looks: [] };
+    const files = { [`${dir}/timeline/index.json`]: JSON.stringify({ v: 1, at: 0, gaps: [], tasks: { "task:q": { file: "tasks/task%3Aq.json", taskId: "q", title: file.title, area: "work", from: file.from, until, ended: until, agents: 1, endedLanes: [`t200@${c0}`], bytes: 1 } } }),
+      [`${dir}/timeline/tasks/task%3Aq.json`]: JSON.stringify(file) };
+    const first = now - 10 * DAY;
+    tl.files.set(`${dir}/timeline/backfill.json`, JSON.stringify({ "transcript:claude:s9": { at: now, covers: first, path: "/made/up/s9.jsonl", turns: [{ start: first, end: first + 2 * DAY, ended: "answer", asks: [] }], task: "q", cwd: null, program: "claude", session: "s9", name: "q-worker", machine: null, first, last: first + 2 * DAY } }));
+    tl.files.set(`${dir}/timeline/events.json`, JSON.stringify({ v: 1, lanes: {}, events: [], looks: [], gaps: [] }));
+    tl.shared.set(A.RECORDED, 200);
+    const ui = { now, width: 1100, towerDir: dir, state: { span: 5 }, notify() {}, readPast: (p) => Promise.resolve(files[p] ?? null) };
+    for (let i = 0; i < 5; i++) {
+      tl.els.clear();
+      A.render(theme, { areas: [{ id: "work", label: "Work" }], items: [] }, ui);
+      await tick();
+    }
+    const line = [...tl.els.entries()].filter(([k]) => k.startsWith("S-")).map(([k]) => Number(k.split("-").pop()));
+    assert.ok(line.some((at) => at >= first && at < first + 2 * DAY), "the closed line has a mark inside the forgotten worker's two days");
+  }
+}
+
+// ── backfill.json over Herdr's 1 MiB: read through cat, moved aside, written anew trimmed ──
+{
+  const B = await import("./mods/agent-tower/timeline.js?big");
+  const dir = "/made/up/big";
+  const path = `${dir}/timeline/backfill.json`;
+  tl.files.set(path, new Error("Text file exceeds 1 MiB"));
+  const ran = [];
+  tl.exec = (cmd, args) => {
+    ran.push([cmd, ...args]);
+    if (cmd === "cat") return Promise.resolve({ code: 0, stdout: JSON.stringify({ "t1@1": { at: now, missing: true } }) });
+    if (cmd === "mv") tl.files.delete(args[0]);
+    return Promise.resolve({ code: 0, stdout: "" });
+  };
+  let loaded = 0;
+  B.backfill(dir, [], () => null, now, () => loaded++);
+  for (let i = 0; i < 4; i++) await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(ran.map((r) => r[0]), ["cat", "mv"]);
+  assert.equal(ran[1].at(-1), `${path}.big`);
+  assert.equal(loaded, 1);
+  assert.deepEqual(JSON.parse(tl.files.get(path)), { "t1@1": { at: now, missing: true } }, "kept, and written anew");
 }
 
 console.log("timeline ok");

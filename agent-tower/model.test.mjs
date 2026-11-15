@@ -346,7 +346,7 @@ assert.deepEqual([badFile.config.agents, badFile.config.skill], [def.agents, "to
 // The lead's first message: with the skill, one plain line after the rules (no ids, paths or
 // usage text: those are in its environment); without, the contract.
 const r = { id: "r", rules: ["Use the repo's Makefile."], worker: "claude-sonnet" };
-assert.equal(model.firstMessage(r, def, "x1", "fix the build"), "Use the repo's Makefile.\nLead this with the tower skill (questions to me go through task.ask): fix the build");
+assert.equal(model.firstMessage(r, def, "x1", "fix the build"), "Use the repo's Makefile.\nLead task x1 with the tower skill (questions to me go through task.ask): fix the build");
 assert.deepEqual(model.withEnv({ TOWER_TASK: "x1", NONE: null, TOWER_WORKER: "claude --model sonnet" }, ["claude", "--model", "opus"]),
   ["env", "TOWER_TASK=x1", "TOWER_WORKER=claude --model sonnet", "claude", "--model", "opus"]);
 const noSkill = model.parseConfig({ skill: null }).config;
@@ -360,7 +360,8 @@ assert.equal(model.shellQuote(["claude", "--append", "it's a test", ""]), "claud
 assert.deepEqual(model.namerArgs(def.roles.namer, "P"), ["-p", "P", "--model", "haiku", "--no-session-persistence", "--tools", ""]);
 assert.deepEqual(model.namerArgs(["llm", "-m", "small"], "P"), ["-m", "small", "P"]);
 
-// The Eye: the newest live terminal labelled tower.eye=1; other Eyes are ordinary items.
+// The Eye: one per area (tower.eye=1, tower.area=<id>), the newest live one; an old Eye for all
+// areas (no tower.area) serves every area without its own; no Eye is ever a task.
 const eyes = [
   term("e1", "s1", { created_ms: 1, labels: { "tower.eye": "1" } }),
   term("e2", "s1", { created_ms: 5, labels: { "tower.eye": "1" } }),
@@ -368,6 +369,37 @@ const eyes = [
 ];
 assert.equal(model.findEye(eyes).address, "e2", "newest live one");
 assert.equal(model.findEye(terms), null);
+const areaEyes = [...eyes, term("w1", "s1", { created_ms: 3, labels: { "tower.eye": "1", "tower.area": "work" } }),
+  term("w2", "s1", { created_ms: 2, labels: { "tower.eye": "1", "tower.area": "work" } })];
+assert.equal(model.findEye(areaEyes, "work").address, "w1", "the area's own, newest");
+assert.equal(model.findEye(areaEyes, "personal").address, "e2", "the old one serves an area without its own");
+const noEyeCfg = model.parseConfig({ areas: [{ id: "work", label: "Work", eye: false }, { id: "personal", label: "Personal" }] }).config;
+assert.equal(model.findEye(areaEyes, "work", noEyeCfg), null, "eye: false, no Eye at all");
+assert.equal(model.findEye(areaEyes, "personal", noEyeCfg).address, "e2");
+const eyeItems = model.taskModel({ terms: areaEyes, listed: new Map(), spaces: [], config: def, changes: new Map(), now: NOW }).all;
+assert.equal(eyeItems.length, 0, "no Eye is a task, whichever area");
+assert.deepEqual([...model.eyeNeeds([term("w3", "s1", { created_ms: 9, status: "blocked", report: { kind: "question" }, labels: { "tower.eye": "1", "tower.area": "work" } })],
+  def, new Map())], [["work", 1]], "a waiting Eye adds 1 to its area's red count");
+// Each area's Eye: its agent, folder and rules from the area, else the global ones.
+const perArea = model.parseConfig({ eye: { rules: ["Speak English."] }, areas: [
+  { id: "work", label: "Work", eye: { agent: "codex", rules: ["Only the VPN."] } },
+  { id: "home/lab", label: "Lab", eye: { agent: "nope" } },
+  { id: "personal", label: "Personal", eye: { folder: "~/eyes/me" } },
+  { id: "bad", label: "Bad", eye: "yes" }] });
+assert.deepEqual(perArea.bad, ["areas[].eye"], "a wrong shape is named");
+assert.equal(perArea.config.areas.find((a) => a.id === "bad").eye, undefined, "and gets the default");
+assert.equal(model.eyeAgentOf(perArea.config, "work").id, "codex");
+assert.equal(model.eyeAgentOf(perArea.config, "home/lab").id, perArea.config.roles.eye, "an unknown agent falls back to roles.eye");
+assert.deepEqual(model.unknownEyeAgents(perArea.config), ["Lab"]);
+assert.equal(model.eyeFolder(perArea.config, "home/lab", "/home/me/.config/agent-tower"), "/home/me/.config/agent-tower/eye/home-lab");
+assert.equal(model.eyeFolder(perArea.config, "personal", "/x"), "~/eyes/me");
+assert.equal(model.eyeFolder({ ...perArea.config, eye: { folder: "/srv/eyes" } }, "work", "/x"), "/srv/eyes/work");
+assert.equal(model.eyeMessage(perArea.config, "work"), "Speak English.\nOnly the VPN.\nYou are the Eye of the Work area: follow the tower skill's Eye part.");
+// An area's Eye starts only its own area's recipes (tower-new sends its TOWER_AREA).
+assert.equal(model.checkRequest({ recipe: "personal-lead", words: "x", area: "work" }, model.parseConfig({}).config, 0).why,
+  "the recipe personal-lead is in Personal; this is Work's Eye");
+assert.ok(model.checkRequest({ recipe: "work-lead", words: "x", area: "work" }, model.parseConfig({}).config, 0).ok);
+assert.ok(model.checkRequest({ recipe: "personal-lead", words: "x" }, model.parseConfig({}).config, 0).ok, "no area: as before");
 assert.deepEqual(model.eyeLine(term("e4", "s1", { status: "blocked", report: { kind: "question" }, labels: { "task.ask": "Which recipe for the VPN work?" } }), new Map()),
   { kind: "Asks you", msg: "Which recipe for the VPN work?" }, "it waits on you: task.ask, Needs-you style");
 assert.equal(model.eyeLine(term("e5", "s1", { status: "working", report: { msg: "Starting two leads" } }), new Map()), null, "working: one line (its sentence is the tooltip)");
@@ -399,8 +431,9 @@ assert.equal(model.checkRequest({ recipe: "work-lead", words: "x" }, fullDefault
 assert.ok(model.checkRequest({ recipe: "work-lead", words: "x" }, fullDefault, -60e3).ok, "a small clock skew is fine");
 // The Eye's first message: its rules first; with the skill one plain line, without the full text.
 const eyeCfg = model.parseConfig({ eye: { rules: ["Speak English."] } }).config;
-assert.equal(model.eyeMessage(eyeCfg), "Speak English.\nYou are the Eye of the Tower: follow the tower skill's Eye part.");
-const eyeLong = model.eyeMessage({ ...eyeCfg, skill: null });
+assert.equal(model.eyeMessage(eyeCfg, "work"), "Speak English.\nYou are the Eye of the Work area: follow the tower skill's Eye part.");
+const eyeLong = model.eyeMessage({ ...eyeCfg, skill: null }, "work");
+assert.ok(!/above all/.test(eyeLong) && eyeLong.includes("$TOWER_AREA") && eyeLong.includes("which area's Eye to ask"), "one area, not all work");
 assert.ok(!/\/(Users|home)\//.test(eyeLong), "no paths on your screen");
 for (const words of ["hc ls --json", "task.role=lead", "task.ask", "$TOWER_NEW", "$TOWER_CONFIG", "hc send <lead address>", "never from memory", "Never do task work yourself", "Never end or close anything unless they ask", "ask them", "one or two plain sentences"]) {
   assert.ok(eyeLong.includes(words), words);
@@ -412,6 +445,79 @@ assert.ok(model.mayAct(null, "a", NOW));
 assert.ok(model.mayAct({ id: "a", at: NOW - 1000 }, "a", NOW));
 assert.ok(!model.mayAct({ id: "b", at: NOW - 1000 }, "a", NOW), "another copy holds it");
 assert.ok(model.mayAct({ id: "b", at: NOW - 50e3 }, "a", NOW), "nobody renewed it for 45 s: free");
+// The lease keeper (inbox and recorder): a compare-and-swap file, one write at a time per copy.
+{
+  const files = {};
+  let clock = NOW;
+  let slowRead = 0;
+  const read = async (p) => {
+    if (slowRead) await new Promise((r) => setTimeout(r, slowRead));
+    return files[p] ?? null;
+  };
+  const write = async (p, text, expected) => {
+    if ((files[p] ?? null) !== expected) throw new Error("changed");
+    files[p] = text;
+  };
+  const make = (id) => model.leaseKeeper({ path: "/l", id, read, write, now: () => clock });
+  const a = make("a");
+  const b = make("b");
+  assert.equal(await a.take(), true, "free: taken");
+  assert.equal(await b.take(), false, "held by a live copy: not taken");
+  clock += model.LEASE_MS - 1000;
+  assert.equal(await b.take(), false);
+  clock += 2000;
+  assert.equal(await b.take(), true, "a copy gone without closing: taken within LEASE_MS");
+  assert.equal(await a.take(), false, "and the old one knows it lost it");
+  // A renewal and a take in one copy at once (the 30 s tick and a request's batch): both hold.
+  slowRead = 5;
+  const [x, y] = await Promise.all([b.take(), b.take()]);
+  slowRead = 0;
+  assert.ok(x && y && b.held(), "one write at a time: neither loses to the other");
+  // A write that lost to its own earlier write still counts as held.
+  const c = model.leaseKeeper({ path: "/l", id: "b", read, write: async (p, text, expected) => {
+    files[p] = JSON.stringify({ id: "b", at: clock });
+    throw new Error("changed meanwhile");
+  }, now: () => clock });
+  assert.equal(await c.take(), true, "lost the write, but the file names this copy");
+  assert.ok(b.due(model.LEASE_RENEW_MS) === false && make("z").due() === true);
+  clock += model.LEASE_RENEW_MS;
+  assert.ok(b.due(), "renewal due after LEASE_RENEW_MS");
+  // A holder renews by writing alone: no read.
+  let reads = 0;
+  const counted = model.leaseKeeper({ path: "/r", id: "k", read: async (p) => (reads++, files[p] ?? null), write, now: () => clock });
+  await counted.take();
+  reads = 0;
+  for (let i = 0; i < 5; i++) {
+    clock += model.LEASE_RENEW_MS;
+    assert.equal(await counted.take(), true);
+  }
+  assert.equal(reads, 0, "renewals read nothing");
+  // Another copy's last renewal, as read: a takeover's sign of life.
+  files["/o"] = JSON.stringify({ id: "gone", at: clock - 30e3 });
+  const next = model.leaseKeeper({ path: "/o", id: "new", read, write, now: () => clock, ms: model.REC_LEASE_MS });
+  assert.equal(await next.take(), false);
+  assert.equal(next.otherAt(), clock - 30e3);
+  clock += 20e3;
+  assert.equal(await next.take(), true, "free after REC_LEASE_MS");
+  const rec = { ...model.newRecord(), beat: clock - 3600e3 };
+  model.recordStart(rec, clock, next.otherAt());
+  assert.deepEqual(rec.gaps, [], "alive until 50 s ago: no Herdr gap, though the beat is an hour old");
+  model.recordStart({ ...rec, beat: clock - 3600e3, gaps: [] }, clock, 0).gaps.length === 1 || assert.fail("without it, the hour is a gap");
+  await b.release();
+  assert.ok(!b.held() && files["/l"] === "null");
+  assert.equal(await a.take(), true, "released: the next copy takes it at once");
+}
+// The inbox watch: an idle inbox does nothing; only the requests a batch names are read.
+{
+  const ib = "/home/me/.config/agent-tower/inbox";
+  assert.deepEqual(model.inboxBatch([`${ib}/.req-1.json.tmp`, `${ib}/.lease`], ib), [], "dotfiles and temp files: nothing to read");
+  assert.deepEqual(model.inboxBatch([], ib), []);
+  assert.deepEqual(model.inboxBatch([`${ib}/req-1.json`, `${ib}/req-1.json`, `${ib}/.req-2.tmp`], ib), [`${ib}/req-1.json`]);
+  assert.deepEqual(model.inboxBatch([`${ib}/sub/x.json`], ib), [], "nothing below the inbox");
+  assert.equal(model.inboxBatch([ib], ib), null, "the folder itself: read it all");
+  assert.equal(model.inboxBatch(null, ib), null, "the timer fallback: read it all");
+  assert.equal(model.inboxBatch(["/private/home/me/.config/agent-tower/inbox/req-1.json"], ib), null, "spelled otherwise: read it all");
+}
 // Requests: what to start, or why not, in words.
 const inCfg = model.parseConfig({}).config;
 assert.deepEqual(model.checkRequest({ recipe: "work-lead", words: "  fix the VPN  ", agent: "pi" }, inCfg, 5000),
@@ -571,7 +677,28 @@ assert.equal(model.nextSelection({ items, selectedKey: null, pin: { key: "task:x
   assert.deepEqual(Object.keys(rec.lanes).sort(), ["r1", "vps/t2"]);
   assert.deepEqual([rec.lanes["vps/t2"].task, rec.lanes["vps/t2"].taskTitle, rec.lanes["vps/t2"].role, rec.lanes["vps/t2"].machine], ["task:rx", "Rec", "worker", "vps"]);
   assert.deepEqual(rec.events.map((e) => [e.a, e.s, e.at, e.msg]), [["r1", "working", T0 - 5e3, null], ["vps/t2", "blocked", T0, "Which one?"]], "local time from status_ms, remote time ours");
-  assert.deepEqual(r1.toRead, [{ a: "vps/t2", at: T0 }]);
+  assert.deepEqual(r1.toRead, [{ a: "vps/t2", at: T0 }], "first seen: only an ask's screen");
+  {
+    const fresh = model.newRecord();
+    const idle = term("q1", "s1", { status: "idle", turn: 2, labels: { "task.id": "rq", "task.role": "lead" } });
+    const allQ = model.taskModel({ terms: [idle], listed: new Map(), spaces, config: tmConfig, changes: new Map(), now: T0 }).all;
+    assert.deepEqual(model.recordStep(fresh, { terms: [idle], all: allQ, now: T0, look: undefined }).toRead, [], "no screen for an idle agent seen at a start");
+    const working = { ...idle, status: "working", turn: 3 };
+    model.recordStep(fresh, { terms: [working], all: allQ, now: T0 + 1, look: undefined });
+    const back = { ...idle, turn: 3 };
+    assert.deepEqual(model.recordStep(fresh, { terms: [back], all: allQ, now: T0 + 2, look: undefined }).toRead.map((x) => x.a), ["q1"], "a change to idle is read");
+    // The last-event cache follows each push, and a new events array (prune, merge) starts it again.
+    assert.equal(model.recordStep(fresh, { terms: [back], all: allQ, now: T0 + 3, look: undefined }).dirty, false, "no change, no event");
+    fresh.events = fresh.events.slice();
+    assert.equal(model.recordStep(fresh, { terms: [back], all: allQ, now: T0 + 4, look: undefined }).dirty, false, "a copied array is read afresh");
+    fresh.events.push({ a: "q1", s: "working", turn: 4, at: T0 + 5, msg: null });
+    assert.equal(model.recordStep(fresh, { terms: [back], all: allQ, now: T0 + 6, look: undefined }).dirty, true, "an event added from outside is seen");
+    // Out of order (a remote time behind a local one): sorted.
+    const late = model.newRecord();
+    late.events.push({ a: "z", s: "idle", turn: 1, at: T0 + 100, msg: null });
+    model.recordStep(late, { terms: [{ ...idle, address: "q2", status: "working", status_ms: T0 + 50 }], all: [{ key: "agent:q2", lead: { ...idle, address: "q2" }, live: [] }], now: T0 + 200, look: undefined });
+    assert.deepEqual(late.events.map((e) => e.at), [...late.events.map((e) => e.at)].sort((x, y) => x - y));
+  }
   assert.deepEqual(rec.gaps.at(-1), { m: "vps", from: T0 - 1e3, to: null });
   assert.deepEqual(model.recordStep(rec, { terms: [lead, wk], all: all1, now: T0 + 1e3, reach: down, look: "r1" }).dirty, false, "nothing new");
   const up = [{ name: null, reachable: true }, { name: "vps", reachable: true }];
@@ -586,6 +713,228 @@ assert.equal(model.nextSelection({ items, selectedKey: null, pin: { key: "task:x
   const old = { ...model.newRecord(), lanes: { o: { created: 0 } }, events: [{ a: "o", s: "idle", at: 1 }, { a: "o", s: "done", at: 2 }, { a: "o", s: "working", at: NOW }] };
   assert.deepEqual(model.pruneRecord(old, NOW).events.map((e) => e.at), [2, NOW], "the last event before the cut stays");
   assert.deepEqual(Object.keys(model.keepScreens({ [`a@${NOW}`]: "x", [`a@${NOW - 27 * H}`]: "y" }, NOW)), [`a@${NOW}`]);
+}
+
+// The perf log's switch: off by default, a boolean or named.
+assert.equal(model.parseConfig({}).config.perf, false);
+assert.equal(model.parseConfig({ perf: true }).config.perf, true);
+assert.deepEqual(model.parseConfig({ perf: "yes" }).bad, ["perf"]);
+
+// The long past: events.json past 2 days moves into one file per task, thinned with age.
+{
+  const D = 86400e3;
+  const C = NOW - 40 * D;
+  const rec = model.newRecord();
+  rec.lanes["mac/t12"] = { task: "task:k7", taskId: "k7", taskTitle: "Ledger export rewrite", area: "Work", role: "lead", name: "lead", machine: "mac", created: C };
+  rec.lanes["t13"] = { task: "task:k7", taskId: "k7", taskTitle: "Ledger export rewrite", area: "Work", role: "worker", name: "k7-csv", machine: null, created: C + D };
+  rec.lanes["t40"] = { task: "agent:t40", role: "lead", eye: true, created: C };
+  // Every 6 hours for 40 days: working, then an ask or a Done now and then, then idle.
+  for (let at = C, i = 0; at < NOW - H; at += 6 * H, i++) {
+    rec.events.push({ a: "mac/t12", s: "working", turn: i, at, msg: null });
+    if (i % 5 === 0) rec.events.push({ a: "mac/t12", s: "blocked", turn: i, at: at + H, msg: `Keep the old columns, case ${i}? ${"z".repeat(150)}` });
+    if (i % 7 === 0) rec.events.push({ a: "mac/t12", s: "done", turn: i, at: at + H + 60e3, msg: `Part ${i} done. ${"z".repeat(150)}` });
+    rec.events.push({ a: "mac/t12", s: "idle", turn: i, at: at + 2 * H, msg: null });
+    if (at > C + D) rec.events.push({ a: "t13", s: i % 2 ? "working" : "done", turn: i, at: at + 3 * H, msg: null });
+    rec.events.push({ a: "t40", s: "working", turn: i, at, msg: null });
+    rec.looks.push({ a: "mac/t12", at: at + 10e3 }, { a: "mac/t12", at: at + 20e3 });
+  }
+  rec.events.sort((x, y) => x.at - y.at);
+  rec.gaps.push({ m: "herdr", from: NOW - 20 * D, to: NOW - 19 * D }, { m: "vps", from: NOW - D, to: null });
+  const asksIn = rec.events.filter((e) => e.a === "mac/t12" && e.s === "blocked" && e.at < NOW - 2 * D).length;
+  const part = model.takeOlder(rec, NOW);
+  assert.equal(part.cut, NOW - 2 * D);
+  assert.deepEqual(part.tasks.map((t) => t.key), ["task:k7"], "the Eye is no task");
+  assert.deepEqual(part.gaps.map((g) => g.m), ["herdr"], "closed gaps past the cut");
+  const k7 = part.tasks[0];
+  assert.deepEqual(Object.keys(k7.lanes), [`mac/t12@${C}`, `t13@${C + D}`], "lanes keyed address@created");
+  assert.ok(k7.looks.every((l) => l.a === `mac/t12@${C}` && l.at < NOW - 2 * D));
+  const file = model.addToTaskFile(null, k7);
+  const again = model.addToTaskFile(structuredClone(file), k7);
+  assert.deepEqual(again, file, "adding the same part twice changes nothing");
+  assert.equal(file.task, "task:k7");
+  assert.equal(file.title, "Ledger export rewrite");
+  assert.equal(model.taskFileName("task:k7"), "tasks/task%3Ak7.json");
+  model.thinTaskFile(file, NOW);
+  const lead = file.lanes[`mac/t12@${C}`];
+  assert.ok(lead.thinTo >= NOW - 7 * D - 6 * H && lead.events.every((e) => e.at >= lead.thinTo), "raw from thinTo on, never both");
+  assert.equal(lead.asks.length + lead.events.filter((e) => e.s === "blocked").length, asksIn, "every ask kept");
+  assert.ok(lead.asks.every(([a, b]) => b > a), "each ask with its end");
+  const old = (sec) => C + sec * 1000 < NOW - 30 * D;
+  assert.ok(lead.asks.every(([a, , m]) => m.length <= (old(a) ? 60 : 120)), "messages cut by age");
+  assert.ok(lead.done.length > 0 && file.lanes[`t13@${C + D}`].done.length === 0, "Dones only for the lead");
+  assert.ok(lead.w.every(([a, b], i) => b > a && (i === 0 || a - lead.w[i - 1][1] >= (old(a) ? 3600 : 600))), "stretches merged by the form's gap");
+  assert.ok(file.looks.filter((l) => l.at < NOW - 7 * D).length <= Math.ceil(33 * 24 / 6), "old looks: one an hour");
+  const entry = model.indexEntry(file, 1234, NOW);
+  assert.deepEqual([entry.file, entry.agents, entry.endedLanes, entry.bytes, entry.ended], ["tasks/task%3Ak7.json", 2, [], 1234, null]);
+  // Timeline's rebuilt pasts: a lane's own, and an agent hc forgot as a lane of its own.
+  const fillMade = {
+    [`mac/t12@${C}`]: { at: NOW, covers: C, turns: [{ start: C, end: C + H, ended: "answer", asks: [] }] },
+    "transcript:claude:5f2c": { at: NOW, task: "k7", name: "k7-fix", first: C - D, last: C - D + H, covers: C - D, turns: [] },
+    "transcript:pi:9a1b": { at: NOW, task: "q2", first: 1, last: 2, turns: [] },
+  };
+  const filled = model.addRebuilt(structuredClone(file), fillMade);
+  assert.deepEqual(filled.lanes[`mac/t12@${C}`].rebuilt, { covers: C, turns: fillMade[`mac/t12@${C}`].turns });
+  const forgot = filled.lanes["transcript:claude:5f2c"];
+  assert.deepEqual([forgot.a, forgot.name, forgot.created, forgot.ended, forgot.thinTo], [null, "k7-fix", C - D, C - D + H, C - D + H]);
+  assert.ok(!filled.lanes["transcript:pi:9a1b"], "another task's transcript stays out");
+  assert.equal(filled.from, C - D);
+  const filledEntry = model.indexEntry(filled, 1, NOW);
+  assert.ok(filledEntry.agents === 3 && filledEntry.endedLanes.includes("transcript:claude:5f2c"));
+  assert.deepEqual([...model.rebuiltTasks(fillMade, rec, { tasks: { "task:k7": { thinned: NOW - H } } })], ["task:k7"]);
+  assert.deepEqual([...model.rebuiltTasks(fillMade, rec, { tasks: { "task:k7": { thinned: NOW } } })], [], "already written");
+  assert.deepEqual([...model.rebuiltTasks(fillMade, rec, { at: NOW, tasks: { "task:k7": {} } })], [], "no time of its own: the index's");
+  assert.deepEqual(model.thinDue({ at: NOW - H, tasks: { x: { from: NOW - 20 * D } } }, NOW), [], "no time of its own: the index's");
+  // Ends: the row left the list; lives again when it comes back.
+  const index = { ...model.newIndex(), tasks: { "task:k7": entry, "task:q2": { ...entry, ended: NOW - 100 * D } } };
+  assert.deepEqual(model.settleEnds(index, new Set(["task:q2"]), NOW), ["task:k7", "task:q2"]);
+  assert.deepEqual([index.tasks["task:k7"].ended, index.tasks["task:q2"].ended], [NOW, null]);
+  // Thinning: a few files a pass, only those due and holding something over 7 days old.
+  const due = { tasks: {
+    a: { thinned: NOW - 2 * D, from: NOW - 20 * D }, b: { thinned: NOW - 3 * D, from: NOW - 9 * D },
+    c: { thinned: NOW - H, from: NOW - 20 * D }, d: { thinned: NOW - 5 * D, from: NOW - 3 * D } } };
+  assert.deepEqual(model.thinDue(due, NOW), ["b", "a"], "longest since the last first; none thinned within a day or all younger than 7 days");
+  assert.deepEqual(model.thinDue(due, NOW, 1), ["b"]);
+  due.tasks.b.thinned = NOW;
+  assert.deepEqual(model.thinDue(due, NOW), ["a"], "a thinned file is not due again");
+  assert.equal(model.taskSummary({ ...file, ended: NOW - 5 * D }).to, NOW - 5 * D, "a folded task ends when the index says, not at its last moved event");
+  const sum = model.taskSummary(file);
+  assert.equal(sum.asks, asksIn);
+  assert.ok(sum.workMs > 0 && sum.longestAskMs === H && sum.agents === 2 && sum.title === "Ledger export rewrite");
+  const ended = { v: 1, tasks: { a: { to: NOW - 400 * D }, b: { to: NOW - 10 * D } } };
+  assert.deepEqual(Object.keys(model.pruneEnded(ended, NOW).tasks), ["b"], "a year in ended.json at most");
+  index.tasks["task:k7"].ended = NOW - D;
+  assert.deepEqual(model.budgetSteps(index).map((x) => x.step), ["looks", "looks", "fold", "coarsen"], "looks, then the ended oldest first, then live ones");
+  // events.json then keeps 2 days, and never what has not moved yet.
+  rec.moved = part.cut;
+  model.pruneRecord(rec, NOW);
+  const byA = new Map();
+  for (const e of rec.events) if (e.at < NOW - 2 * D) byA.set(e.a, (byA.get(e.a) ?? 0) + 1);
+  assert.ok([...byA.values()].every((n) => n === 1), "only each agent's state at the cut");
+  const unmoved = { ...model.newRecord(), events: [{ a: "x", s: "idle", at: NOW - 5 * D }, { a: "x", s: "working", at: NOW - 4 * D }, { a: "x", s: "idle", at: NOW }] };
+  assert.equal(model.pruneRecord(unmoved, NOW).events.length, 3, "nothing moved yet: 7 days");
+  assert.ok(model.mergeRecords({ ...model.newRecord(), moved: 5 }, model.newRecord()).moved === 5);
+  // A task file over 900 KiB: coarser, oldest third first, every ask kept.
+  const huge = structuredClone(file);
+  const big = huge.lanes[`mac/t12@${C}`];
+  big.events = [];
+  for (let at = NOW - 6 * D, i = 0; at < NOW - 2 * D; at += 15e3, i++) big.events.push({ s: i % 50 ? (i % 2 ? "working" : "idle") : "blocked", turn: i, at, msg: i % 50 ? null : "Which?" });
+  huge.until = NOW - 2 * D;
+  const asksBefore = big.asks.length + big.events.filter((e) => e.s === "blocked").length;
+  assert.ok(model.utf8Bytes(JSON.stringify(huge)) > model.REC_FILE_MAX);
+  assert.ok(model.fitTaskFile(huge, NOW) > 0);
+  assert.ok(model.utf8Bytes(JSON.stringify(huge)) <= model.REC_FILE_MAX);
+  assert.equal(big.asks.length + big.events.filter((e) => e.s === "blocked").length, asksBefore, "asks survive the 900 KiB rule");
+}
+
+// The 1 MiB guard: made-up recorder files past Herdr's limit come back under it, asks and Dones kept.
+{
+  const MiB = model.FILE_LIMIT;
+  assert.equal(model.utf8Bytes("a─é"), 1 + 3 + 2);
+  assert.equal(model.utf8Bytes("plain"), 5);
+  assert.ok(model.fitsBytes("a".repeat(300), 900) && !model.fitsBytes("─".repeat(301), 900) && model.fitsBytes("a".repeat(800), 900));
+  // A screen's measured size is kept per key and measured again when its text differs.
+  const k = `vps/t7@${NOW}`;
+  assert.ok(k in model.keepScreens({ [k]: "a".repeat(100) }, NOW));
+  assert.ok(!(k in model.keepScreens({ [k]: "─".repeat(250000) }, NOW)), "the same key with a new text is measured again (750 KB > 600 KB)");
+  assert.ok(k in model.keepScreens({ [k]: "b".repeat(100) }, NOW));
+  assert.ok(!(k in model.keepScreens({ [k]: "─".repeat(250000) }, NOW)) && k in model.keepScreens({ [k]: "c".repeat(250000) }, NOW), "same length, other bytes: measured again");
+  // A busy week: 40 agents, working and idle every few minutes, an ask and a Done now and then.
+  const big = model.newRecord();
+  for (let n = 0; n < 40; n++) big.lanes[`vps/t${n}`] = { task: `task:job${n % 6}`, role: n % 6 ? "worker" : "lead", name: `agent-${n}`, machine: "vps", created: NOW - 7 * 24 * H };
+  let at = NOW - 7 * 24 * H;
+  for (let i = 0; i < 14000; i++) {
+    const a = `vps/t${i % 40}`;
+    const s = i % 97 === 0 ? "blocked" : i % 89 === 0 ? "done" : i % 2 ? "working" : "idle";
+    big.events.push({ a, s, turn: i, at: (at += 40e3), msg: s === "blocked" || s === "done" ? `Which way for part ${i}? ${"x".repeat(200)}` : null });
+    if (i % 3 === 0) big.looks.push({ a, at });
+  }
+  assert.ok(model.utf8Bytes(JSON.stringify(big)) > MiB, "the made-up file is over the limit");
+  const asks = big.events.filter((e) => e.s === "blocked" || e.s === "done").map((e) => `${e.a}|${e.at}`);
+  const lastOf = new Map(big.events.map((e) => [e.a, e]));
+  const gone = model.fitRecord(big);
+  assert.ok(gone > 0);
+  assert.ok(model.utf8Bytes(JSON.stringify(big)) <= model.REC_FILE_MAX, "under the guard");
+  assert.deepEqual(big.events.filter((e) => e.s === "blocked" || e.s === "done").map((e) => `${e.a}|${e.at}`), asks, "every ask and Done stays");
+  for (const [a, e] of lastOf) assert.ok(big.events.at(-1) === e || big.events.filter((x) => x.a === a).at(-1) === e, "each agent's last event stays");
+  assert.equal(big.looks.length, 0, "looks go first");
+  assert.equal(model.fitRecord(big), 0, "a second pass has nothing to do");
+  // Even all asks cannot hold it: the oldest go, never a failed write.
+  const asksOnly = { ...model.newRecord(), events: Array.from({ length: 9000 }, (_, i) => ({ a: "w", s: "blocked", turn: i, at: i, msg: "é".repeat(300) })) };
+  model.fitRecord(asksOnly);
+  assert.ok(model.utf8Bytes(JSON.stringify(asksOnly)) <= model.REC_FILE_MAX && asksOnly.events.at(-1).turn === 8999);
+  // Screens measured as written: box drawing is 3 bytes a character, and JSON escapes a terminal's
+  // control characters. A string-length cap would keep about 1.9 MB of these; idle ones go first.
+  const rec = { ...model.newRecord(), events: [] };
+  const screens = {};
+  for (let i = 0; i < 300; i++) {
+    const t = NOW - (300 - i) * 60e3;
+    screens[`vps/t1@${t}`] = `\u001b[2m${"─".repeat(1400)}\u001b[0m`;
+    rec.events.push({ a: "vps/t1", s: i % 2 ? "idle" : "blocked", at: t });
+  }
+  const kept = model.keepScreens(screens, NOW, rec);
+  assert.ok(model.utf8Bytes(JSON.stringify(kept)) <= model.SCREENS_MAX_BYTES, "the cap is in bytes");
+  const idleKept = Object.keys(kept).filter((k) => rec.events.find((e) => `${e.a}@${e.at}` === k).s === "idle");
+  assert.equal(idleKept.length, 0, "idle screens went before any ask's");
+  assert.ok(Object.keys(kept).includes(`vps/t1@${NOW - 60e3 * 2}`), "the newest ask's screen stays");
+  // backfill.json: the entries read longest ago go first.
+  const fill = Object.fromEntries(Array.from({ length: 700 }, (_, i) => [`vps/t${i}@0`, { at: i, turns: Array.from({ length: 40 }, () => ({ start: 1, end: 2, ended: "done", asks: [] })) }]));
+  assert.ok(model.utf8Bytes(JSON.stringify(fill)) > MiB);
+  const fit = model.fitBackfill(fill);
+  assert.ok(model.utf8Bytes(JSON.stringify(fit)) <= model.REC_FILE_MAX && !("vps/t0@0" in fit) && "vps/t699@0" in fit);
+}
+
+// An Eye's space never shows as a shell row, even while its Eye runs no agent.
+{
+  const sp = [{ id: "se1", name: "Eye · Work", machine: null }, { id: "se2", name: "scratch", machine: null }];
+  const eyeShell = term("e1", "se1", { program: zsh, status: undefined, labels: { "tower.eye": "1", "tower.area": "work", "herdr.space": "se1" } });
+  const plain = term("p1", "se2", { program: zsh, status: undefined, labels: { "herdr.space": "se2" } });
+  assert.deepEqual(model.shellSpaces(sp, [eyeShell, plain]).map((s) => s.id), ["se2"]);
+}
+
+// A member labelled task.role=shell (tower-adopt's plain shell in a task's space) gets no row.
+{
+  const lead = term("sh1", "s1", { status: "working", labels: { "task.id": "shx", "task.role": "lead" } });
+  const shell = term("sh2", "s1", { program: zsh, status: undefined, parent: "sh1", labels: { "task.id": "shx", "task.role": "shell" } });
+  const worker = term("sh3", "s1", { status: "idle", parent: "sh1", labels: { "task.id": "shx", "task.role": "worker" } });
+  const [it] = model.workItems([lead, shell, worker], new Map(), spaces);
+  assert.deepEqual(it.tree.map((r) => r.t.address), ["sh3"], "the shell has no row");
+  assert.ok(it.live.some((t) => t.address === "sh2"), "but stays a member (close ends it)");
+  assert.ok(!model.displayRows(it, () => true).some((r) => r.t?.address === "sh2" || r.rows?.some((x) => x.t.address === "sh2")));
+}
+
+// The model once per change: the same inputs (a fresh copy of them, as Herdr gives) reuse it; a
+// changed terminal, settings, time past the minute or a second caller's own memo never get a stale one.
+{
+  const memo = {};
+  const lead = term("m1", "s1", { status: "working", turn: 1, labels: { "task.id": "mx", "task.role": "lead", "task.title": "Cache me" } });
+  const ctx = { terms: [lead], listed: new Map(), spaces, config: tmConfig, changes: new Map(), now: NOW };
+  const a = model.taskModelOnce(ctx, memo);
+  assert.equal(model.taskModelOnce({ ...ctx, terms: structuredClone(ctx.terms), now: NOW + 1000 }, memo), a, "nothing new: the same model");
+  const b = model.taskModelOnce({ ...ctx, terms: [{ ...lead, status: "blocked", report: { kind: "question", msg: "Which?" } }] }, memo);
+  assert.notEqual(b, a);
+  assert.equal(b.items[0].state, "needs", "a changed status is in the new model");
+  assert.notEqual(model.taskModelOnce({ ...ctx, config: { ...tmConfig } }, memo), b, "new settings: a new model");
+  const c = model.taskModelOnce(ctx, memo);
+  assert.notEqual(model.taskModelOnce({ ...ctx, now: NOW + 60e3 }, memo), c, "a new minute: a new model");
+  assert.notEqual(model.taskModelOnce({ ...ctx, listed: new Map([["m1", "idle"]]) }, memo).items[0].state, "working", "Herdr's word counts");
+  const other = {};
+  assert.equal(model.taskModelOnce({ ...ctx, changes: new Map([["m1", { at: NOW }]]) }, other).items.length, 1);
+  assert.equal(model.taskModelOnce(ctx, memo).items[0].state, "working", "another caller's memo is its own");
+  // A caller that owns its changes map gives a version: the same version reuses, a new one does not.
+  const own = {};
+  const changes = new Map();
+  const v1 = model.taskModelOnce({ ...ctx, changes, changesVersion: 1 }, own);
+  changes.set("m1", { word: "working", turn: 1, at: NOW - 30 * 60e3, had: true });
+  assert.equal(model.taskModelOnce({ ...ctx, changes, changesVersion: 1 }, own), v1, "same version: the same model");
+  const v2 = model.taskModelOnce({ ...ctx, changes, changesVersion: 2 }, own);
+  assert.notEqual(v2, v1);
+  assert.equal(v2.items[0].stale, true, "the new version's changes are in it (working, quiet for 30 minutes)");
+  assert.equal(model.machineOf("vps/t1"), "vps");
+  assert.equal(model.machineOf("t1"), null);
+  const sp = [{ id: "s1" }, { id: "vps/s2" }];
+  assert.equal(model.spaceOf({ address: "vps/t3", labels: { "herdr.space": "s2" } }, sp), sp[1]);
+  sp.push({ id: "s9" });
+  assert.equal(model.spaceOf({ address: "t4", labels: { "herdr.space": "s9" } }, [...sp]), sp[2], "a new spaces read is indexed anew");
 }
 
 // use.md: switches counted per target, keys apart; time only while active, cut at a quit.
