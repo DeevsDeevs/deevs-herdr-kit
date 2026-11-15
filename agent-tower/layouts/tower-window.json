@@ -1,0 +1,117 @@
+{
+  "id": "root",
+  "type": "row",
+  "titlebar": "none",
+  "traffic_lights": [
+    12,
+    16
+  ],
+  "background": "canvas",
+  "terminal_padding": [
+    14,
+    12
+  ],
+  "divider": {
+    "width": 1,
+    "color": "border"
+  },
+  "toast": "agent-tower",
+  "children": [
+    {
+      "id": "sidebar",
+      "type": "column",
+      "size": {
+        "px": 268
+      },
+      "min": 44,
+      "max": 480,
+      "background": "chrome",
+      "resizable": false,
+      "hidden": true,
+      "children": [
+        {
+          "id": "tower",
+          "type": "block",
+          "content": {
+            "mod": "agent-tower"
+          }
+        }
+      ]
+    },
+    {
+      "id": "work",
+      "type": "column",
+      "resizable": false,
+      "children": [
+        {
+          "id": "work-body",
+          "type": "row",
+          "padding": 8,
+          "gap": 8,
+          "children": [
+            {
+              "id": "tower-stage-column",
+              "type": "column",
+              "children": [
+                {
+                  "id": "tower-stage-bar",
+                  "type": "block",
+                  "size": {
+                    "px": 36
+                  },
+                  "window_drag": true,
+                  "content": {
+                    "mod": "agent-tower",
+                    "props": {
+                      "stageBar": true
+                    }
+                  }
+                },
+                {
+                  "id": "tower-stage",
+                  "type": "block",
+                  "content": {
+                    "mod": "agent-tower",
+                    "props": {
+                      "stage": true,
+                      "bar": false
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "id": "tower-detail",
+              "type": "column",
+              "hidden": false,
+              "size": {
+                "px": 340
+              },
+              "min": 260,
+              "max": 560,
+              "children": [
+                {
+                  "id": "tower-panel",
+                  "type": "block",
+                  "content": {
+                    "mod": "agent-tower-panel"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "status",
+          "type": "block",
+          "size": {
+            "px": 28
+          },
+          "content": {
+            "mod": "workspace-status"
+          }
+        }
+      ]
+    }
+  ]
+}

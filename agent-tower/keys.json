@@ -1,0 +1,13 @@
+{
+  "global": {
+    "ctrl-s t": "mod.open:agent-tower",
+    "ctrl-s /": "agent-tower.search",
+    "ctrl-s s": "agent-tower.view-list",
+    "ctrl-s o": "agent-tower.view-board",
+    "ctrl-s g": "agent-tower.view-timeline",
+    "ctrl-s r": "agent-tower.view-radar",
+    "ctrl-s v": "agent-tower.view-watchlist",
+    "ctrl-s a": "agent-tower.area-next",
+    "ctrl-s m": "agent-tower.view-shape"
+  }
+}

@@ -1,0 +1,40 @@
+#!/bin/sh
+# tower-new <recipe id> "<words>" [agent id]
+# Asks Agent Tower (the Herdr mod) to start a task, exactly as its composer does: writes a request
+# to ~/.config/agent-tower/inbox, waits up to 25 seconds for the answer in .../outbox and prints it
+# as one line of JSON. Exits 0 when the task started, 1 when not, 2 on wrong usage.
+set -u
+if [ $# -lt 2 ] || [ $# -gt 3 ]; then
+  echo 'usage: tower-new <recipe id> "<words>" [agent id]' >&2
+  exit 2
+fi
+dir="${AGENT_TOWER_DIR:-$HOME/.config/agent-tower}"
+mkdir -p "$dir/inbox" "$dir/outbox" || exit 1
+
+# JSON string body: backslash, quote, tab, carriage return and newlines escaped.
+esc() {
+  printf '%s' "$1" | awk 'BEGIN { ORS = "" } { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); gsub(/\t/, "\\t"); gsub(/\r/, "\\r"); if (NR > 1) printf "\\n"; print }'
+}
+
+id="req-$(date +%s)-$$"
+agent=""
+[ $# -eq 3 ] && agent=", \"agent\": \"$(esc "$3")\""
+# Written aside, then moved in, so the mod never reads half a request.
+printf '{ "recipe": "%s", "words": "%s"%s, "at": %s000 }\n' "$(esc "$1")" "$(esc "$2")" "$agent" "$(date +%s)" > "$dir/inbox/.$id.tmp" || exit 1
+mv "$dir/inbox/.$id.tmp" "$dir/inbox/$id.json" || exit 1
+
+i=0
+# The mod answers as soon as the lead's space is asked for; an agent's tool may cut a call at 30 s.
+while [ $i -lt 25 ]; do
+  if [ -f "$dir/outbox/$id.json" ]; then
+    answer=$(tr -d '\n' < "$dir/outbox/$id.json")
+    rm -f "$dir/outbox/$id.json"
+    printf '%s\n' "$answer"
+    case "$answer" in *'"ok":true'*|*'"ok": true'*) exit 0 ;; *) exit 1 ;; esac
+  fi
+  sleep 1
+  i=$((i + 1))
+done
+rm -f "$dir/inbox/$id.json"
+echo '{"ok":false,"why":"no answer in 25 seconds: Agent Tower is not showing in Herdr on this computer, so nothing was started"}'
+exit 1

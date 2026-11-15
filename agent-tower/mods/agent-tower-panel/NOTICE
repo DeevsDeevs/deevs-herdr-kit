@@ -1,0 +1,6 @@
+agent-tower-panel adapts code from Herdr's shipped mods (defaults/mods/agents, spaces, files and
+changes in herdrdev/herdr-app): the panel card and header, the status marks, the space avatar
+colours and the program icon helper.
+Copyright Herdr contributors, licensed under the Apache License 2.0:
+https://www.apache.org/licenses/LICENSE-2.0
+Icons are drawn from Herdr's own workspace-chrome mod at run time; none are copied here.
