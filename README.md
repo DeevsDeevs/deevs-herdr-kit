@@ -16,6 +16,7 @@ agent-browser/
 | --- | --- |
 | [agent-browser](agent-browser/) | every browser your agents drive, here and on Herdr's machines, live in one window; watch or take over |
 | [agent-images](agent-images/) | the images in the focused agent's conversation: see them, hover them large, copy one into another agent |
+| [agent-tower](agent-tower/) | your agents' work as tasks instead of terminals, on every machine: one list, a Details card, Board, Timeline and Radar views, a window per area, and the Eye, one agent above it all |
 
 ## Install
 

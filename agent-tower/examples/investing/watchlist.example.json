@@ -1,0 +1,9 @@
+{
+  "tickers": [
+    { "symbol": "VWCE", "name": "Vanguard FTSE All-World", "note": "Core holding. Buy on the first Monday of the month, whatever the price." },
+    { "symbol": "ASML", "name": "ASML Holding", "note": "Wait for the results on 22 January before adding." },
+    { "symbol": "NOVO", "name": "Novo Nordisk", "note": "Read the trial news; no position yet." },
+    { "symbol": "EUNA", "name": "iShares Core Euro Govt Bond", "note": "The bond part: top up when it falls under 20 %." }
+  ],
+  "notes": "~/investing/notes.md"
+}

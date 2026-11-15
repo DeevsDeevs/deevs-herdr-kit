@@ -1,0 +1,8 @@
+agent-tower adapts code from Herdr's shipped mods (defaults/mods/agents, spaces and menu in
+herdrdev/herdr-app): the row, group-label and tree-line layout, the status marks, the space
+avatar colours, the fold chip, the program icon helper, the popup menu, the narrow-sidebar
+(rail) test, the repeated-title note pass, and the machine line with its Copy and Connect
+(reconnect) controls.
+Copyright Herdr contributors, licensed under the Apache License 2.0:
+https://www.apache.org/licenses/LICENSE-2.0
+Icons are drawn from Herdr's own workspace-chrome mod at run time; none are copied here.

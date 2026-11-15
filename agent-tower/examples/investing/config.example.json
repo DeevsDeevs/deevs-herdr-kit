@@ -1,0 +1,75 @@
+{
+  "areas": [
+    {
+      "id": "work",
+      "label": "Work",
+      "machines": [
+        "work-vps"
+      ],
+      "layout": "tower-work",
+      "views": [
+        "list",
+        "board",
+        "timeline"
+      ]
+    },
+    {
+      "id": "personal",
+      "label": "Personal",
+      "default": true,
+      "layout": "tower-personal",
+      "views": [
+        "board",
+        "list"
+      ]
+    },
+    {
+      "id": "investing",
+      "label": "Investing",
+      "layout": "tower-investing",
+      "views": [
+        "list",
+        "timeline"
+      ],
+      "buttons": [
+        "research",
+        "weekly-review"
+      ]
+    }
+  ],
+  "recipes": [
+    {
+      "id": "work-lead",
+      "label": "Lead on work-vps",
+      "area": "work",
+      "machine": "work-vps",
+      "rules": []
+    },
+    {
+      "id": "here",
+      "label": "Lead here",
+      "area": "personal",
+      "rules": []
+    },
+    {
+      "id": "research",
+      "label": "Research a company",
+      "area": "investing",
+      "rules": [
+        "Work in ~/investing.",
+        "Write a one-page memo and append it to the notes file under a heading with the ticker and today's date.",
+        "No orders, no logins: read public filings and news only."
+      ]
+    },
+    {
+      "id": "weekly-review",
+      "label": "Weekly portfolio review",
+      "area": "investing",
+      "rules": [
+        "Work in ~/investing.",
+        "Compare the watchlist with last week's memos and list what changed.",
+        "No orders, no logins."
+      ]
+    }
+  ]
+}
