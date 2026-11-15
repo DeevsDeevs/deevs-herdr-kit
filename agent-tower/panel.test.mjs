@@ -6,6 +6,8 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync, readdirSync, syml
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as panel from "./mods/agent-tower-panel/panel.js";
+// The read.py runs below leave no __pycache__ in the mod folder.
+process.env.PYTHONDONTWRITEBYTECODE = "1";
 
 // The whole test takes under a second; a hang (a call that waits on the machine) fails it fast.
 setTimeout(() => {
@@ -241,12 +243,14 @@ assert.equal(panel.prose("Short version:\n---\nPlan *A*"), "Short version: Plan 
 assert.equal(panel.folderOf("/home/me/work/tasks/rate-limiter"), "rate-limiter");
 assert.equal(panel.folderOf("/Users/a/japan/"), "japan");
 
-// Reads: at once the first time and on a status change; then every 60 s while working, 5 min
-// otherwise; 5 min after three failures; 30 min when python3 is missing.
+// Reads: at once the first time; on a status change once READ_FLOOR_MS has passed since the last
+// read (a busy task changes every second); then every 60 s while working, 5 min otherwise; 5 min
+// after three failures; 30 min when python3 is missing.
 assert.equal(panel.readDue(undefined, { signature: "a", now: NOW }), 0);
 const ok = { at: NOW - 30000, signature: "a", fails: 0 };
 assert.ok(panel.readDue(ok, { anyWorking: true, signature: "a", now: NOW }) > 0);
-assert.equal(panel.readDue(ok, { anyWorking: true, signature: "b", now: NOW }), 0);
+assert.ok(panel.readDue(ok, { anyWorking: true, signature: "b", now: NOW }) <= 0, "a change after the floor reads now");
+assert.equal(panel.readDue({ ...ok, at: NOW - 5000 }, { anyWorking: true, signature: "b", now: NOW }), panel.READ_FLOOR_MS - 5000, "a change inside the floor waits for it");
 assert.equal(panel.readDue({ ...ok, at: NOW - 61000 }, { anyWorking: true, signature: "a", now: NOW }) <= 0, true);
 assert.equal(panel.readDue({ ...ok, at: NOW - 61000 }, { anyWorking: false, signature: "a", now: NOW }) > 0, true);
 assert.equal(panel.readDue({ fails: 3, failedAt: NOW - 2 * M, signature: "a" }, { anyWorking: true, signature: "b", now: NOW }), 3 * M);
@@ -255,6 +259,9 @@ assert.equal(panel.readDue({ missing: true, failedAt: NOW - 10 * M, signature: "
 // read.py: a Claude transcript (by --session), a worker quiet for 20 minutes, a repo with changes and no upstream.
 const dir = mkdtempSync(join(tmpdir(), "tower-read-"));
 const at = (s) => new Date(Date.now() - s * 1000).toISOString();
+// Seconds between a made-up time and read.py's now, to 10 s: the time passing between writing the
+// file and reading it (Python starts slowly on a Mac) must not move an exact check.
+const ago10 = (now, x) => (x == null ? null : Math.round((now - x) / 10) * 10);
 const lines = [
   { type: "user", timestamp: at(900), message: { role: "user", content: '<hc from="t2 x1-build">Built it. Result in /tmp/r.md</hc>' } },
   { type: "assistant", timestamp: at(600), message: { id: "m1", role: "assistant", content: [{ type: "text", text: "First part." }] } },
@@ -310,6 +317,29 @@ print(list(r.open_jsonl([])))
 `], { encoding: "utf8" }).trim();
 assert.equal(noProc, "[]");
 
+// One ps for every agent a run asks about, and on macOS one lsof for all their processes; each agent
+// still gets its own transcript from it.
+const batched = execFileSync("python3", ["-c", `
+import importlib.util, json, os, sys
+sys.argv = ["read.py", "{}"]
+spec = importlib.util.spec_from_file_location("read", ${JSON.stringify(new URL("./mods/agent-tower-panel/read.py", import.meta.url).pathname)})
+r = importlib.util.module_from_spec(spec); spec.loader.exec_module(r)
+r.os.path.isdir = lambda p: False if p == "/proc" else os.path.isdir(p)
+calls = []
+class Out:
+    def __init__(self, text): self.stdout = text
+def fake(cmd, *a, **k):
+    calls.append(cmd[0])
+    if cmd[0] == "ps": return Out("100 1\\n101 100\\n200 1\\n201 200\\n")
+    if cmd[0] == "lsof": return Out("p101\\nn/home/me/.codex/sessions/2026/11/15/a.jsonl\\np201\\nn/home/me/.pi/agent/sessions/--home-me--/b.jsonl\\n")
+    raise AssertionError(cmd)
+r.subprocess.run = fake
+r.HOME = "/nowhere"
+r.open_prefetch([p for root in (100, 200) for p in r.tree(root)])
+print(json.dumps([r.find_transcript(100, ["codex"], None), r.find_transcript(200, ["pi"], None), calls]))
+`], { encoding: "utf8" }).trim();
+assert.deepEqual(JSON.parse(batched), ["/home/me/.codex/sessions/2026/11/15/a.jsonl", "/home/me/.pi/agent/sessions/--home-me--/b.jsonl", ["ps", "lsof"]]);
+
 // read.py turns (Timeline's backfill): start, end, how each turn ended, its question-tool waits.
 const tl = [
   { type: "user", timestamp: at(3600), message: { role: "user", content: "plan the release" } },
@@ -326,7 +356,7 @@ const tl = [
 writeFileSync(join(dir, "turns.jsonl"), tl.map((l) => JSON.stringify(l)).join("\n") + "\n");
 const tAnswer = JSON.parse(execFileSync("python3", ["-c", script, JSON.stringify({ turns: { terminals: [{ key: "t9", argv: ["claude", "--session", join(dir, "turns.jsonl")] }] } })], { encoding: "utf8" }));
 const T = tAnswer.turns.terminals.t9;
-const rel = (x) => (x == null ? null : Math.round(tAnswer.now - x));
+const rel = (x) => ago10(tAnswer.now, x);
 assert.equal(T.program, "claude");
 assert.ok(Math.abs(rel(T.covers) - 3600) < 5, "covers: the earliest time read");
 assert.deepEqual(T.turns.map((t) => [rel(t.start), rel(t.end), t.ended, t.question ?? null, t.asks.map(([f, to]) => [rel(f), rel(to)])]), [
@@ -348,7 +378,7 @@ const cx = [
 execFileSync("mkdir", ["-p", join(dir, ".codex")]);
 writeFileSync(join(dir, ".codex", "rollout.jsonl"), cx.map((l) => JSON.stringify(l)).join("\n") + "\n");
 const cAnswer = JSON.parse(execFileSync("python3", ["-c", script, JSON.stringify({ turns: { terminals: [{ key: "c", argv: ["codex", "--session", join(dir, ".codex", "rollout.jsonl")] }] } })], { encoding: "utf8" }));
-assert.deepEqual(cAnswer.turns.terminals.c.turns.map((t) => [Math.round(cAnswer.now - t.start), t.ended, t.asks.length]), [[900, "answer", 1]]);
+assert.deepEqual(cAnswer.turns.terminals.c.turns.map((t) => [ago10(cAnswer.now, t.start), t.ended, t.asks.length]), [[900, "answer", 1]]);
 
 // Read back only as far as since_s: a 10-hour transcript of about 6 MB, asked for its last hour,
 // is read in 1 MB blocks to just past the hour, not whole; asked for a day, whole.
@@ -365,6 +395,71 @@ assert.ok(hour.turns.every((t) => t.end >= Date.now() / 1000 - 3600 - 5) && hour
 const day = span(86400);
 assert.equal(day.read, day.size, "a day reaches the start: read whole");
 assert.ok(Math.abs(longWritten - day.covers - 36000) < 10, "covers: the file's first record");
+
+// Timeline's long past, on a made-up home: transcripts of agents in /home/me/work/ledger.
+const me = join(dir, "me");
+const cwd = "/home/me/work/ledger";
+const jsonl = (path, lines) => {
+  execFileSync("mkdir", ["-p", join(path, "..")]);
+  writeFileSync(path, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+};
+const claudeSay = (start, end, said, extra = {}) => [
+  { type: "user", timestamp: at(start), cwd, sessionId: extra.sid, message: { role: "user", content: said } },
+  { type: "assistant", timestamp: at(end), cwd, message: { id: `m${start}`, role: "assistant", content: [{ type: "text", text: "Done." }] } },
+];
+const ledger = join(me, ".claude/projects/-home-me-work-ledger");
+const briefA = "Export the ledger to CSV. You are a worker on task k7-ledger; use the tower skill if you have it.";
+const briefB = "Check the totals. You are a worker on task k7-ledger; use the tower skill if you have it.";
+jsonl(join(ledger, "aaaa.jsonl"), claudeSay(7200, 3700, briefA, { sid: "aaaa" }));
+jsonl(join(ledger, "bbbb.jsonl"), claudeSay(7190, 7000, briefB, { sid: "bbbb" }));
+jsonl(join(ledger, "cccc.jsonl"), claudeSay(3000, 2000, "what is on my calendar?", { sid: "cccc" }));
+// Codex writes its instructions first: the brief sits past 64 KB.
+const local = (s) => { const d = new Date(Date.now() - s * 1000); return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`; };
+const codexDay = local(5000);
+const codexRun = (start, end, folder, said) => [
+  { timestamp: at(start), type: "session_meta", payload: { id: `cx-${start}`, cwd: folder } },
+  { timestamp: at(start), type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "x".repeat(150000) }] } },
+  { timestamp: at(start - 1), type: "event_msg", payload: { type: "user_message", message: said } },
+  { timestamp: at(end), type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "Checked." }] } },
+];
+jsonl(join(me, ".codex/sessions", codexDay, "rollout-a.jsonl"), codexRun(5000, 4000, cwd, "Review the export. You are a worker on task k7-ledger; use the tower skill if you have it."));
+jsonl(join(me, ".codex/sessions", codexDay, "rollout-b.jsonl"), codexRun(5001, 4100, "/home/me/elsewhere", "Plan the trip. You are a worker on task q2-trip;"));
+jsonl(join(me, ".pi/agent/sessions/--home-me-work-ledger--/2026_pi.jsonl"), [
+  { type: "session", id: "pi-1", timestamp: at(900), cwd },
+  { type: "message", id: "u", timestamp: at(900), message: { role: "user", content: [{ type: "text", text: "<hc from=\"t3 lead\">Sum the rows. You are a worker on task k7-ledger.</hc>" }] } },
+  { type: "message", id: "a", timestamp: at(800), message: { role: "assistant", content: [{ type: "text", text: "Summed." }] } },
+]);
+// The lead's run line, its brief in a variable on the line before.
+jsonl(join(me, ".claude/projects/-home-me-work/lead.jsonl"), [
+  { type: "user", timestamp: at(7300), cwd: "/home/me/work", message: { role: "user", content: "rewrite the ledger export" } },
+  { type: "assistant", timestamp: at(7210), cwd: "/home/me/work", message: { id: "l1", role: "assistant", content: [{ type: "tool_use", id: "b1", name: "Bash", input: {
+    command: `B="${briefA}"\nhc run --bg --outlive-parent --label task.id=k7-ledger --label task.role=worker --name k7-ledger-export --cwd ~/work/ledger claude "$B"` } }] } },
+]);
+const readAs = (req) => JSON.parse(execFileSync("python3", ["-c", script, JSON.stringify(req)], { encoding: "utf8", env: { ...process.env, HOME: me } }));
+
+// (e) An ended agent has no pid: its transcript is found by program, folder and [created, finished].
+const ended = (program, created_s, finished_s, argv = [program], folder = cwd) => readAs({ turns: { since_s: 86400, terminals: [{ key: "x", pid: null, argv, cwd: folder, created_s, finished_s }] } }).turns.terminals.x;
+assert.equal(ended("claude", 7205, 3690, ["claude", briefA])?.path, join(ledger, "aaaa.jsonl"), "two fit the window: the brief on the argv tells them apart");
+assert.equal(ended("claude", 7205, 3690), null, "two fit and both started at once: none rather than a guess");
+assert.equal(ended("claude", 7195, 6990)?.path, join(ledger, "bbbb.jsonl"), "only one fits a short window");
+assert.equal(ended("claude", 3005, 1990)?.turns.length, 1, "the ended agent's turns, as for a live one");
+assert.equal(ended("codex", 5010, 3990)?.path, join(me, ".codex/sessions", codexDay, "rollout-a.jsonl"), "Codex: the created day, session_meta's cwd");
+assert.equal(ended("codex", 5010, 3990, ["codex"], "/home/me/nowhere"), null);
+assert.equal(ended("pi", 905, 790)?.program, "pi");
+assert.equal(ended("pi", 600, 100), null, "started before created: not this agent");
+
+// (f) Agents hc has forgotten: transcripts whose first message names the task.
+const found = readAs({ tasks: { ids: ["k7-ledger"], since_s: 86400 } });
+const rows = found.tasks.map((t) => [t.task, t.program, t.cwd, t.session, t.name ?? null, ago10(found.now, t.first), ago10(found.now, t.last), t.turns.length]);
+assert.deepEqual(rows, [
+  ["k7-ledger", "claude", cwd, "aaaa", "k7-ledger-export", 7200, 3700, 1],
+  ["k7-ledger", "claude", cwd, "bbbb", null, 7190, 7000, 1],
+  ["k7-ledger", "codex", cwd, "cx-5000", null, 5000, 4000, 1],
+  ["k7-ledger", "pi", cwd, "pi-1", null, 900, 800, 1],
+], "workers of the task only, oldest first; a name where a lead's run line on this machine gives one");
+assert.deepEqual(readAs({ tasks: { ids: ["q2-trip"] } }).tasks.map((t) => t.session), ["cx-5001"]);
+const unchanged = readAs({ tasks: { ids: ["k7-ledger"], since_s: 86400, have: { [found.tasks[0].path]: [found.tasks[0].mtime, found.tasks[0].size] } } });
+assert.deepEqual([unchanged.tasks[0].same, unchanged.tasks[0].turns], [true, undefined]);
 
 // The chain link's title when chain.mjs falls back to the file name: saved with --title from text
 // that starts with "##", or carrying a frontmatter title.

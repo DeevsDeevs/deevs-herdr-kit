@@ -3,8 +3,9 @@
 A [Herdr](https://herdr.dev) sidebar that shows your work as tasks instead of terminals:
 what needs you, what is done, what is working, on this computer and on every machine
 herdr-core reaches. You start a task in a line of words; a lead agent plans it and starts
-workers, and the panel beside the list shows where each task stands. Above it all sits the
-Eye, one agent you can tell what you want; it starts leads and passes messages on.
+workers, and the panel beside the list shows where each task stands. Each area can have its
+own Eye, one agent you tell what you want done there; it starts that area's leads and passes
+messages on.
 
 ![Agent tower](preview.png)
 
@@ -20,7 +21,7 @@ herdr-app check ~/.config/herdr-app/mods/agent-tower
 
 `tower` puts the list in the sidebar and Details in its own column; `tower-solo` lets Files
 and Details take turns; `tower-wide` gives Details 420px. The start script for the Eye,
-`tower-new`, ships inside the mod folder. Bind the window in `keys.json`
+`tower-new`, and `tower-adopt` (below) ship inside the mod folder. Bind the window in `keys.json`
 ([keys.json](keys.json)): `{ "global": { "ctrl-s t": "mod.open:agent-tower" } }`.
 
 Optional: the `tower` skill at `~/.agents/skills/tower/SKILL.md` on each machine where
@@ -46,21 +47,28 @@ falls back to its default and a toast names it.
   - `views`: the views it offers (`list`, `board`, `timeline`, `radar`, `watchlist`), the first
     where it opens;
   - `buttons`: recipe ids shown as buttons in its window;
-  - `todo`: true keeps an empty Todo column for it in Board.
+  - `todo`: true keeps an empty Todo column for it in Board;
+  - `eye`: its Eye, `{ "agent", "folder", "rules" }` (each optional: an agent id, where it
+    starts, lines put first in its message after the global `eye.rules`), or `false` for an
+    area without an Eye.
 - `recipes`: what `+` starts, `[{ "id", "label", "area" }]`, plus `machine` (the hc machine for
   the lead), `folder`, `rules` (lines put first in the lead's message), `lead` and `worker`
   (agent ids), and the old `argv` (below).
-- `eye`: `folder` (where the Eye starts; default `<tower folder>/eye`) and `rules` (lines put
-  first in its message). Its agent is `roles.eye`.
+- `eye`: for every area's Eye, `folder` (an area's Eye starts in `<folder>/<area id>`; default
+  `<tower folder>/eye/<area id>`) and `rules` (lines put first in its message). Its agent is
+  `roles.eye` unless the area names one.
 - `skill`: the skill leads and the Eye follow (default `"tower"`); `null` sends the full rules
   (`contract`) in the first message instead.
 - `contract`: those full rules, as text (`{id}` is the task id).
+- `perf`: `true` appends one line per render (view, milliseconds, elements) and per command (its
+  kind, milliseconds) to `<tower folder>/perf.jsonl`, no terminal text; past 1 MiB the file moves
+  to `perf.jsonl.1`. Off by default.
 - `doneSignal`: how another area shows a finish: `dot`, `pulse`, `line` or `off` (the
   right-click on the area row sets it too).
 
 **Which agent starts.** A lead: the agent picked in the composer for that recipe ("Led by"),
 else the recipe's `argv`, else its `lead`, else `roles.lead`. Workers: the recipe's `worker`,
-else `roles.worker`. The Eye: `roles.eye`.
+else `roles.worker`. An area's Eye: the area's `eye.agent`, else `roles.eye`.
 
 **An old file with `argv` in its recipes** still loads, but that `argv` wins over the recipe's
 `lead` and over `roles.lead`: changing either does nothing for that recipe, and nothing says so.
@@ -80,9 +88,9 @@ The Eye on Codex, leads on Opus, workers on Sonnet:
 ## What it reaches for
 
 - **This computer:** `hc machine ls`, `label`, `kill`, `rm`, `ls --all` and `send` (to the
-  Eye, only what you type; never `--force`); `claude -p --model haiku` to name a new task
+  shown area's Eye, only what you type; never `--force`); `claude -p --model haiku` to name a new task
   (`roles.namer`); `mkdir`, `ls`, `date`, `rm` on `~/.config/agent-tower/inbox` and
-  `outbox`, which `tower-new` writes; `grep -qx '## Eye'` on the tower skill before
+  `outbox`, which `tower-new` and `tower-adopt` write; `grep -qx '## Eye'` on the tower skill before
   starting the Eye; Herdr's `knownAgents()` for the picker's icons; `open` or `xdg-open`
   for a pull request link; `sh -c 'mkdir -p … && printf … >> …'` to append a line to
   `~/.config/agent-tower/use.jsonl` when you switch a view, shape or variant; `mkdir` and
@@ -106,16 +114,61 @@ The Eye on Codex, leads on Opus, workers on Sonnet:
 
 ## Use
 
-- `+` opens the composer: pick the Eye or a recipe, type, Enter. The agent after "led by"
+- `+` opens the composer: pick the area's Eye or one of its recipes, type, Enter. The agent after "led by"
   picks who leads. "New space" beside them is Herdr's own new space (its ▾: on which machine).
 - A row is a task, on every machine it runs on. Click it to select it (Details follows);
   click its lead or a worker under it to open that terminal. Right-click for Details, Pin to
   the top, Rename, End.
 - The magnifier (`ctrl-s /`) searches every task, agent and machine in every area.
-- The eye icon in the header starts the Eye; right-click the Eye to end it.
+- The eye icon in the header starts the shown area's Eye (in the whole window, the icon in the
+  bar); right-click the Eye to end it.
 - A right-click on the area row flips the variants (how "done in another area" shows, what
   stands at the left of a task); each flip is logged in `~/.config/agent-tower/use.jsonl`.
 - Narrow the sidebar below 160px for the rail.
+- A row that isn't a task yet has "Make a task" in its right-click menu.
+- A space made with the list's "New space" is a task from birth: titled with the space's name, in
+  the area shown. An agent you open later in one of its tabs joins it as a worker.
+- Earlier lists its tasks A–Z, one line each.
+
+## The Eye
+
+One Eye per area, started by hand (nothing starts by itself). The list shows and talks to the
+shown area's Eye only: its row above the area row, the composer's Eye chip, the start icon and
+End. A waiting Eye counts in its area's red number. It runs on this computer in a space
+"Eye · <area>", labelled `tower.eye=1` and `tower.area=<area id>`, with `TOWER_AREA` in its
+environment beside `TOWER_NEW` and `TOWER_CONFIG`.
+
+An Eye keeps to its area by its rules and one check, not by a wall:
+- **Checked:** `tower-new` sends the Eye's area with the request, and Agent Tower refuses a recipe
+  of another area. An agent that unsets `TOWER_AREA` or writes the request file itself gets past
+  it.
+- **Rules only:** `hc ls --json` shows every terminal on every machine, and `hc send` reaches any
+  of them. The skill tells an Eye to look at and message its own area's tasks only, and to send
+  work for another area back to you.
+
+An Eye started before Eyes were per area (no `tower.area`) still works: it shows in every area
+that has no Eye of its own and doesn't say `eye: false`, until you end it. Each area keeps the
+words you typed for its Eye, and an Eye's space never shows as a space row.
+
+## Old spaces as tasks: tower-adopt
+
+`tower-adopt` sits beside `tower-new` in the mod folder; Agent Tower must be showing.
+
+- `tower-adopt` is a dry run: one line per space, and nothing changes.
+  `name [space id] (machine, quiet 3d) → "title" in area: lead t4, workers t5 t6`, or why the
+  space is left alone (it already hosts a task, nothing in it is live, it is the Eye's).
+- `tower-adopt --apply` makes every space it can into a task, by labels only: no agent is started,
+  stopped or messaged. Run again, it changes nothing.
+- One space is one task, titled with the space's name. A home-folder name (`~`, your user name,
+  `Downloads`) takes the lead's own title instead. No two tasks share a title: a clash adds the
+  other machine's name, else a number. The area comes from the machine. The lead is the space's
+  first agent (first tab, first pane); its other agents are workers. A plain shell belongs to the
+  task quietly. Finished terminals are left alone.
+- One space at a time, by hand:
+  `tower-adopt [--apply] --space <id or name> [--title <words>] [--lead <address>] [--area <id>]`.
+  The id is on each line of the dry run; a name several spaces share needs the id. The lead must
+  be a live terminal of that space. A dry run with the same flags shows exactly what `--apply`
+  will do.
 
 ## Views
 
@@ -166,6 +219,6 @@ their transcripts. Timeline draws what was not recorded as a grey band, never as
 - **Where you looked** is focus inside Herdr with its window in front. Reading an agent elsewhere
   doesn't count, and what you typed is never recorded.
 
-Words: **Eye** is the one agent above all work; an **area** is Work or Personal; a **task**
+Words: an **Eye** is an area's agent you tell what you want; an **area** is Work or Personal; a **task**
 is one piece of work; its **lead** plans and delegates; **workers** do the parts; a
 **recipe** says where and with which agent a lead starts.

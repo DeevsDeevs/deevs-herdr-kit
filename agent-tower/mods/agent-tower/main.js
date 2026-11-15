@@ -3,10 +3,92 @@
 // Rows, groups, the tree, the status marks and the menu follow Herdr's own agents, spaces and
 // menu mods (see NOTICE).
 
-import { View, div, svg, image } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input, ScrollHandle } from "gpui-base";
-import { hc, exec, run, notify, knownAgents, terminals, agents, focused, spaces, machines, panes, theme, props, openOverlay, closeOverlay, home, appHome, readTextFile, writeTextFile, watchFolder, shared, setShared, window, layout, layouts, nextCommand } from "herdr";
+import { View } from "gpui-kit";
+import { InputState, Input, ScrollHandle } from "gpui-base";
+import { hc as hostHc, exec as hostExec, run as hostRun, notify, knownAgents, terminals as hostTerminals, agents as hostAgents, focused as hostFocused,
+  spaces as hostSpaces, machines as hostMachines, panes as hostPanes, theme, props, openOverlay, closeOverlay, home, appHome, readTextFile as hostRead,
+  writeTextFile as hostWrite, watchFolder, shared as hostShared, setShared as hostSetShared, window, layout as hostLayout, layouts, nextCommand } from "herdr";
 import * as model from "./model.js";
+import * as perf from "./perf.js";
+import * as adopt from "./adopt.js";
+// Built through perf.js, so a render's elements are counted for the perf log.
+import { div, svg, image, v_flex, h_flex } from "./perf.js";
+
+// Herdr's reads, once per render: each is a crossing that converts the whole value (the list read
+// shared state 84 times and the layout 10 times a render). Outside a render (a click, a timer) they
+// read straight through; a write in the render updates what it remembers, and a layout command
+// forgets the layout.
+let frame = null;
+const once = (key, read) => {
+  if (!frame) return read();
+  if (!frame.has(key)) frame.set(key, read());
+  return frame.get(key);
+};
+const shared = (k) => once(`shared:${k}`, () => hostShared(k));
+const setShared = (k, v) => {
+  frame?.set(`shared:${k}`, v);
+  return hostSetShared(k, v);
+};
+const terminals = () => once("terminals", hostTerminals);
+const agents = () => once("agents", hostAgents);
+const spaces = () => once("spaces", hostSpaces);
+const panes = () => once("panes", hostPanes);
+const machines = () => once("machines", hostMachines);
+const focused = () => once("focused", hostFocused);
+const layout = () => once("layout", hostLayout);
+const run = (command, args) => {
+  if (frame) {
+    if (String(command).startsWith("layout.")) frame.delete("layout");
+    if (String(command).startsWith("pane.") || String(command).startsWith("agent.")) frame.delete("focused");
+  }
+  return hostRun(command, args);
+};
+function inFrame(draw) {
+  const outer = frame;
+  frame ??= new Map();
+  try {
+    return draw();
+  } finally {
+    if (!outer) frame = null;
+  }
+}
+
+// The perf log (off unless the settings say "perf": true), made again whenever the settings are read.
+let perfLog = perf.perfLog({ on: false, dir: "", exec: hostExec });
+// Every command and file read or write goes through here, timed for the perf log (named by its
+// kind and one plain word only: perf.commandName drops addresses, paths and text).
+const baseName = (path) => String(path ?? "").split("/").pop();
+const timed = (fn, name) => (...a) => {
+  if (!perfLog.on) return fn(...a);
+  const t0 = perf.now();
+  return Promise.resolve(fn(...a)).finally(() => perfLog.command(name(a), perf.now() - t0));
+};
+const hc = timed(hostHc, (a) => `hc ${a[0]?.[0] ?? ""}`);
+const exec = timed(hostExec, (a) => `exec ${a[0]}`);
+const readTextFile = timed(hostRead, (a) => `read ${baseName(a[0])}`);
+const writeTextFile = timed(hostWrite, (a) => `write ${baseName(a[0])}`);
+// A render, timed with the elements it built: for the list, the stage and each view. A render
+// inside another (a view in the stage) is counted in both: the outer one carries its count over.
+let renderDepth = 0;
+let carried = 0;
+function timedRender(view, draw) {
+  if (!perfLog.on) return draw();
+  const before = perf.elements();
+  const outer = renderDepth ? carried + before : 0;
+  carried = 0;
+  renderDepth++;
+  const t0 = perf.now();
+  let out;
+  try {
+    out = draw();
+  } finally {
+    renderDepth--;
+  }
+  const mine = carried + perf.elements();
+  perfLog.render(view, perf.now() - t0, mine);
+  carried = renderDepth ? outer + mine : 0;
+  return out;
+}
 import { chrome, statusMark, markSlot, rowMark, programIcon, machineChip, BADGE, RANK, WORD } from "./marks.js";
 
 const START_GIVE_UP_MS = 60 * 1000;
@@ -14,6 +96,8 @@ const REQUEST = "agent-tower.request";
 // When each terminal last changed, shared by the docked list and the window (each copy of a mod
 // gets its own localStorage).
 const CHANGES = "agent-tower.changes";
+// Which writing of CHANGES is the latest ("<copy id>:<n>"): a reader converts the map only when it moves.
+const CHANGES_V = "agent-tower.changesV";
 // Done leads without a pane that were clicked here: address -> the change they were seen at.
 const SEEN = "agent-tower.seen";
 const DONE_SHOWN = 5;
@@ -66,8 +150,6 @@ const SWITCH_ROW = 26;
 const SWITCH_HEAD = 22;
 // The lead agent last picked in the composer, per recipe: {recipeId: agentId}.
 const LEAD_PICK = "agent-tower.leadPick";
-// Which copy of the mod acts on the inbox: {id, at}.
-const INBOX_LEASE = "agent-tower.inboxLease";
 // Where tower-new and the mod exchange requests: ~/.config/agent-tower for the Herdr app itself;
 // a Herdr with its own app home (a sandbox) keeps its own, so two apps never take one request.
 const towerDir = () => (appHome() === `${home()}/.config/herdr-app` ? `${home()}/.config/agent-tower` : `${appHome()}/agent-tower`);
@@ -77,8 +159,15 @@ const useFile = () => `${towerDir()}/use.jsonl`;
 function logUse(what, from, to, how = "click") {
   const line = JSON.stringify({ at: new Date().toISOString(), what, from: from ?? null, to, how });
   return exec("sh", ["-c", 'mkdir -p "$(dirname "$1")" && printf "%s\\n" "$2" >> "$1"', "use", useFile(), line])
-    .then(() => writeUseSummary()).catch(() => null);
+    .then(() => {
+      // use.md reads the whole log: made again at most every 10 minutes (and when the list closes).
+      if (Date.now() - useSummaryAt < USE_SUMMARY_MS) return;
+      useSummaryAt = Date.now();
+      return writeUseSummary();
+    }).catch(() => null);
 }
+const USE_SUMMARY_MS = 10 * 60 * 1000;
+let useSummaryAt = 0;
 
 // use.md beside the log: what you switched to, how often, and about how long each view was on screen.
 async function writeUseSummary() {
@@ -118,6 +207,19 @@ const AREA_MEMORY = "agent-tower.areaMemory";
 const ARRIVE = "agent-tower.arrive";
 // The last layout used that is not an area's own (where an area without one returns to).
 const BASE_LAYOUT = "agent-tower.baseLayout";
+// One Eye per area (eye-per-area.md): labelled tower.area, TOWER_AREA in its environment. Off, one
+// Eye for all areas as before (no tower.area, no TOWER_AREA); an older Eye for all still serves
+// every area without its own.
+const EYE_PER_AREA = true;
+const eyeKey = (area) => (EYE_PER_AREA ? area : "all");
+// Eyes starting, by area ({area: ms}), so every copy (the list, the bar alone) dims its start.
+const EYE_STARTING = "agent-tower.eyeStarting";
+const markEyeStarting = (area, on) => {
+  const now = { ...(shared(EYE_STARTING) ?? {}) };
+  if (on) now[area] = Date.now();
+  else delete now[area];
+  setShared(EYE_STARTING, now);
+};
 // A recipe button pressed: the list opens its composer on it ({recipe, at}).
 const COMPOSE = "agent-tower.compose";
 // The whole-window shape hides the sidebar column (no restart).
@@ -128,13 +230,12 @@ const viewNow = () => ({ view: "list", shape: "sidebar", back: null, ...(shared(
 const viewIcon = (name) => svg(`mods/agent-tower/${name}.svg`);
 // Timeline's past (model.recordStep): written by one copy at a time (the lease), every 5 s at
 // most, merged when another writer changed the file; RECORDED tells Timeline to read it again.
-const RECORDER_LEASE = "agent-tower.recorderLease";
 const RECORDED = "agent-tower.recorded";
 const recDir = () => `${towerDir()}/timeline`;
 
 // writeTextFile only if the file is as last read; on a conflict, read theirs, merge, write again.
-async function writeMerged(path, value, expected, merge) {
-  let text = JSON.stringify(value);
+async function writeMerged(path, value, expected, merge, given = null) {
+  let text = given ?? JSON.stringify(value);
   try {
     await writeTextFile(path, text, expected);
     return { text, value };
@@ -149,6 +250,28 @@ async function writeMerged(path, value, expected, merge) {
     await writeTextFile(path, text, theirs);
     return { text, value: merged };
   }
+}
+
+// A recorder file. Herdr refuses one over 1 MiB, to read and also to write (a write reads it first),
+// so one found over it is read through cat (exec takes 8 MiB), moved aside to <file>.big, and
+// returned as big: the caller trims it and writes it anew. {text, big}.
+async function readRecorderFile(path) {
+  try {
+    return { text: await readTextFile(path), big: null };
+  } catch (e) {
+    if (!/1 MiB/.test(String(e?.message ?? e))) return { text: null, big: null };
+    const r = await exec("cat", [path]).catch(() => null);
+    await exec("mv", ["-f", path, `${path}.big`]).catch(() => null);
+    return { text: null, big: r?.code === 0 ? r.stdout : "" };
+  }
+}
+
+// Said once per file and session in Herdr's log when a recorder file had to be trimmed.
+const trimmedLogged = new Set();
+function logTrim(file, gone, why) {
+  if (!gone || trimmedLogged.has(file)) return;
+  trimmedLogged.add(file);
+  console.log(`agent-tower: timeline/${file} ${why}: ${gone} oldest entries trimmed to stay under Herdr's 1 MiB file limit`);
 }
 
 // The last layout the docked list started in (for logging tower against tower-stack).
@@ -288,11 +411,16 @@ const narrow = () => !props()?.overlay && (find(layout(), "sidebar")?.size?.px ?
 // A setting in the wrong shape falls back to its default, with a toast saying which.
 // The settings file the mod read (else the one it would read first), for the Eye's message.
 let settingsFile = null;
+// The settings file's text as last read (null: none), to tell when it changed.
+let settingsText = null;
+// The settings changed and were read again: every copy reads them too ({at}).
+const CONFIG_AT = "agent-tower.configAt";
 // The settings as last read by this copy (area views and buttons are read outside a View).
 let liveConfig = model.DEFAULTS;
 
-async function loadConfig() {
+async function loadConfig(quiet = false) {
   let own;
+  settingsText = null;
   // A sandboxed Herdr (its own app home) reads its own settings first. The mod was called
   // agent-tasks: that settings folder still counts until there is a new one.
   const folders = [...new Set([towerDir(), `${home()}/.config/agent-tower`, `${home()}/.config/agent-tasks`])];
@@ -302,6 +430,7 @@ async function loadConfig() {
     const text = await readTextFile(file).catch(() => null);
     if (text == null) continue;
     settingsFile = file;
+    settingsText = text;
     try {
       own = JSON.parse(text);
     } catch (e) {
@@ -311,7 +440,11 @@ async function loadConfig() {
   }
   const { config, bad } = model.parseConfig(own);
   liveConfig = config;
-  if (bad.length) notify({ title: "Some agent-tower settings were ignored", body: `Not in the expected shape: ${bad.join(", ")}`, level: "warning" });
+  if (perfLog.on !== (config.perf === true) || (perfLog.on && perfLog.file !== `${towerDir()}/${perf.FILE}`)) {
+    perfLog.flush();
+    perfLog = perf.perfLog({ on: config.perf === true, dir: towerDir(), exec: hostExec });
+  }
+  if (bad.length && !quiet) notify({ title: "Some agent-tower settings were ignored", body: `Not in the expected shape: ${bad.join(", ")}`, level: "warning" });
   return config;
 }
 
@@ -445,6 +578,7 @@ export default class AgentTasks extends View {
     if (props()?.stage) return this.initStage(cx);
     if (props()?.textHidden) return;
     if (props()?.stageBar || props()?.viewBar) {
+      this.initEyeStart();
       cx.spawn(async (cx) => {
         this.config = await loadConfig();
         cx.notify();
@@ -456,6 +590,7 @@ export default class AgentTasks extends View {
     // The area survives a restart (a layout switch, a reload): the docked list publishes it.
     this.area = shared(AREA) ?? null;
     this.recipeChoice = {};
+    this.eyeDrafts = {}; // the Eye composer's words per area
     this.listedMachines = [];
     this.reach = [];
     this.pending = [];
@@ -468,7 +603,10 @@ export default class AgentTasks extends View {
     // something in it works or waits.
     // Kept in shared state, so an area switch (a restart) keeps them.
     const folds = shared(FOLDS);
-    this.folded = new Set(folds?.folded ?? ["spaces", "earlier", "done-more", "leftover"]);
+    // Earlier is open unless closed: long-lived tasks are a glance away, no fold to discover.
+    // Folds kept from before (no earlierShown) open it once; a close after that is kept.
+    const folded = folds?.folded ?? ["spaces", "done-more", "leftover"];
+    this.folded = new Set(folds?.earlierShown ? folded : folded.filter((f) => f !== "earlier"));
     this.opened = new Set(folds?.opened ?? []);
     this.reconnecting = {};
     this.copiedLogin = null;
@@ -497,9 +635,14 @@ export default class AgentTasks extends View {
     this.composing = Boolean(props()?.overlay);
     // Words left in the composer by an area switch (the last copy's close) come back.
     const draft = shared(DRAFT);
-    if (!props()?.overlay && draft?.text && Date.now() - draft.at < 10 * 60000) {
-      this.composing = true;
-      this.input.set_value(draft.text);
+    if (!props()?.overlay && (draft?.text || draft?.eyeText) && Date.now() - draft.at < 10 * 60000) {
+      this.composing = Boolean(draft.text) || draft.area === this.area;
+      if (draft.text) this.input.set_value(draft.text);
+      // The Eye's words wait for their own area: here now, or when it is shown again.
+      if (draft.eyeText) {
+        this.eyeDrafts[draft.area] = draft.eyeText;
+        if (draft.area === this.area) this.eyeInput.set_value(draft.eyeText);
+      }
     }
     if (this.composing) {
       this.input.focus();
@@ -519,6 +662,9 @@ export default class AgentTasks extends View {
       // A recipe's argv quietly wins over its lead and roles.lead (README, Settings).
       for (const label of model.argvRecipes(this.config)) if (once(`argv:${label}`)) notify({ title: `Recipe ${label}: argv overrides lead`, level: "warning" });
       // A recipe naming an agent the settings don't have.
+      for (const label of model.unknownEyeAgents(this.config).filter((l) => once(`eye-agent:${l}`))) {
+        notify({ title: `${label}'s Eye: unknown agent`, level: "warning" });
+      }
       for (const label of model.unknownAgents(this.config).filter((l) => once(`agent:${l}`))) {
         notify({ title: `Recipe ${label}: unknown agent`, level: "warning" });
       }
@@ -533,9 +679,20 @@ export default class AgentTasks extends View {
     cx.timer.every(60000, (cx) => cx.notify());
     this.refreshMachines(cx);
     cx.timer.every(30000, (cx) => {
-      this.refreshMachines(cx);
-      // The inbox lease is renewed while this copy acts on it.
-      if (this.inbox && shared(INBOX_LEASE)?.id === this.id) setShared(INBOX_LEASE, { id: this.id, at: Date.now() });
+      perfLog.flush();
+      if (!props()?.overlay) this.checkSettings(cx);
+      // An agent opened in a tab of a space whose one task came from New space or adopt joins it
+      // (adopt.js); the docked list asks once per agent.
+      if (!props()?.overlay) {
+        for (const [a, ...pairs] of adopt.joinLabels({ terms: terminals(), spaces: spaces() })) {
+          if ((this.joined ??= new Set()).has(a)) continue;
+          this.joined.add(a);
+          this.label(cx, a, pairs, "An agent could not join its space's task");
+        }
+      }
+      // Herdr in the background: the machines every 2 minutes, not every 30 s.
+      this.machineTick = (this.machineTick ?? 0) + 1;
+      if (window()?.active || this.machineTick % 4 === 0) this.refreshMachines(cx);
     });
     // Only the docked list reads the inbox (a window comes and goes).
     if (!props()?.overlay) {
@@ -553,6 +710,25 @@ export default class AgentTasks extends View {
     });
   }
 
+  // The settings file, every 30 s from the docked list: changed (or new, or gone), it is read again
+  // here, and the other copies follow (one shared value, only on a change).
+  checkSettings(cx) {
+    if (this.checkingSettings) return;
+    this.checkingSettings = true;
+    cx.spawn(async (cx) => {
+      try {
+        const text = await readTextFile(settingsFile ?? `${towerDir()}/config.json`).catch(() => null);
+        if (text === settingsText) return;
+        this.config = await loadConfig();
+        this.configAt = Date.now();
+        setShared(CONFIG_AT, this.configAt);
+        cx.notify();
+      } finally {
+        this.checkingSettings = false;
+      }
+    });
+  }
+
   // A hung machine link can hang `hc machine ls`; never stack a second one behind it.
   refreshMachines(cx) {
     if (this.refreshingMachines) return;
@@ -560,26 +736,40 @@ export default class AgentTasks extends View {
     cx.spawn(async (cx) => {
       try {
         const r = await hc(["machine", "ls", "--json"]);
-        if (r.code === 0) this.listedMachines = (JSON.parse(r.stdout).machines ?? []).filter((m) => !m.temporary);
+        if (r.code === 0) {
+          const next = (JSON.parse(r.stdout).machines ?? []).filter((m) => !m.temporary);
+          // Drawn again only when something about the machines changed.
+          if (JSON.stringify(next) !== JSON.stringify(this.listedMachines)) {
+            this.listedMachines = next;
+            cx.notify();
+          }
+        }
       } catch {}
       this.refreshingMachines = false;
-      cx.notify();
     });
   }
 
   // The lookup and labelling stop with the view; label what can be found now, warn about the rest.
   async close() {
+    perfLog.flush();
     // A peek that closes is no longer what is shown.
     if (props()?.peekBar && shared(PEEKED) === props().peekBar) setShared(PEEKED, null);
     // A composer open with words in it: they come back in the next copy (an area switch).
-    if (this.composing && !props()?.overlay && this.input?.value().trim()) setShared(DRAFT, { area: this.area, text: this.input.value(), at: Date.now() });
-    // The recorder: write what is pending and let the next copy take over at once.
-    if (this.rec && shared(RECORDER_LEASE)?.id === this.id) {
-      // The last line before a restart or a quit: use.md's time stops here, not at the line before.
-      logUse("beat", null, null, null);
-      await this.flushRecord(true).catch(() => null);
-      setShared(RECORDER_LEASE, null);
+    // The Eye's words too, for the area they were typed in (another area's Eye never gets them).
+    if (this.composing && !props()?.overlay && (this.input?.value().trim() || this.eyeInput?.value().trim())) {
+      setShared(DRAFT, { area: this.composeArea ?? this.area, text: this.input.value(), eyeText: this.eyeInput.value(), at: Date.now() });
     }
+    // The inbox lease goes at once, so the next copy takes the requests.
+    if (this.inboxKeeper?.held()) await this.inboxKeeper.release();
+    // The recorder: write what is pending and let the next copy take over at once.
+    if (this.holdsRecorder()) {
+      // The last line before a restart or a quit: use.md's time stops here, not at the line before.
+      await logUse("beat", null, null, null);
+      await this.flushRecord(true).catch(() => null);
+      await this.recKeeper.release();
+    }
+    // use.md with the last beat line in it.
+    if (!props()?.overlay && !props()?.stage && useSummaryAt) await writeUseSummary().catch(() => null);
     if (!this.pending?.length) return;
     const terms = terminals();
     const spaceList = spaces();
@@ -659,6 +849,12 @@ export default class AgentTasks extends View {
         if (!a.ok) this.busy = false;
       },
     });
+  }
+
+  // What adopt.js reads and how it labels (tower-adopt through the inbox, and the row menu's "Make a task").
+  adoptEnv() {
+    return { terms: terminals(), spaces: spaces(), agents: agents(), config: this.config, now: Date.now(), changes: this.changes, home: home(),
+      label: (a, pairs) => hc(["label", a, ...pairs]) };
   }
 
   // The one start path, for the composer and for the inbox. reply gets {ok, task, lead} once the
@@ -746,6 +942,7 @@ export default class AgentTasks extends View {
     const now = Date.now();
     const fail = (p, why) => {
       p.failed = true;
+      if (p.eye) markEyeStarting(p.eye, false);
       notify({ title: p.eye ? "The Eye didn't start" : "The task didn't start", body: why, level: "error" });
       p.reply?.({ ok: false, why });
     };
@@ -770,10 +967,10 @@ export default class AgentTasks extends View {
     cx.notify();
   }
 
-  // One label call: a lead's task labels, or the Eye's tower.eye=1 (the Eye is not named).
+  // One label call: a lead's task labels, or an Eye's tower.eye=1 and tower.area (an Eye is not named).
   labelLead(cx, p, { space, terminal }) {
     cx.spawn(async (cx) => {
-      const r = await hc(["label", terminal.address, ...(p.eye ? ["tower.eye=1"] : model.leadPairs(p))])
+      const r = await hc(["label", terminal.address, ...(p.eye ? ["tower.eye=1", ...(p.eyeArea ? [`tower.area=${p.eyeArea}`] : [])] : model.leadPairs(p))])
         .catch((e) => ({ code: 1, stderr: String(e) }));
       if (r.code !== 0) {
         this.pending = this.pending.filter((x) => x !== p);
@@ -783,6 +980,7 @@ export default class AgentTasks extends View {
         return;
       }
       p.reply?.({ ok: true, task: p.id, lead: terminal.address });
+      if (p.eye) markEyeStarting(p.eye, false);
       if (!p.eye && !p.reply) this.selectNew = p.id;
       if (p.eye) {
         p.done = true;
@@ -795,31 +993,37 @@ export default class AgentTasks extends View {
 
   // ── The Eye ──
 
-  // "Start": a space named "Eye" on this computer in eye.folder, the roles.eye agent and its first
-  // message; its terminal is then labelled tower.eye=1. Only ever from Start or Restart.
+  // "Start": the shown area's Eye, a space named "Eye · <area>" on this computer in its folder, its
+  // agent (the area's own, else roles.eye) and its first message, with TOWER_AREA in its
+  // environment; its terminal is then labelled tower.eye=1 tower.area=<area>. Only from Start.
   // The skill form only when the skill on this computer has an Eye part; else the full text.
-  startEye(cx) {
-    if (this.pending.some((p) => p.eye) || this.starting.has("Eye")) return;
-    this.starting.add("Eye");
+  startEye(cx, area = this.shownArea()?.id) {
+    if (!area || this.eyeStarting(area) || model.eyeOff(this.config ?? liveConfig, area)) return;
+    const key = eyeKey(area);
+    const own = EYE_PER_AREA ? area : null;
+    this.starting.add(`Eye:${key}`);
+    markEyeStarting(key, true);
     cx.spawn(async (cx) => {
       // The settings as they are now (you may have switched its agent since Herdr started).
       this.config = await loadConfig();
       const skill = await this.skillOn(null, true);
-      const agent = this.config.agents.find((a) => a.id === this.config.roles.eye) ?? this.config.agents[0];
-      // A folder of its own (the tower folder's eye/), unless the settings name one.
+      const agent = model.eyeAgentOf(this.config, own);
+      // A folder of its own (per area: the tower folder's eye/<area>), unless the settings name one.
       const dir = towerDir();
-      const folder = this.config.eye.folder ? this.config.eye.folder.replace(/^~(?=\/|$)/, home()) : `${dir}/eye`;
+      const folder = (own ? model.eyeFolder(this.config, own, dir) : this.config.eye.folder ?? `${dir}/eye`).replace(/^~(?=\/|$)/, home());
+      const name = own ? `Eye · ${model.areaLabel(this.config, own)}` : "Eye";
       await exec("mkdir", ["-p", folder]).catch(() => null);
       // The start command and the settings go in its environment, not in the message you read.
       const argv = model.withEnv({
         TOWER_NEW: `${appHome()}/mods/agent-tower/tower-new`,
         TOWER_CONFIG: settingsFile ?? `${dir}/config.json`,
         AGENT_TOWER_DIR: dir === `${home()}/.config/agent-tower` ? null : dir,
+        TOWER_AREA: own,
       }, agent.argv);
-      this.pending.push({ id: model.newId(), eye: true, name: "Eye", words: "Eye", machine: null, before: new Set(spaces().map((s) => s.id)), at: Date.now(), found: false });
-      run("space.new", { name: "Eye", folder, machine: "", argv, task: model.eyeMessage(skill ? this.config : { ...this.config, skill: null }) });
+      this.pending.push({ id: model.newId(), eye: key, eyeArea: own, name, words: name, machine: null, before: new Set(spaces().map((s) => s.id)), at: Date.now(), found: false });
+      run("space.new", { name, folder, machine: "", argv, task: model.eyeMessage(skill ? this.config : { ...this.config, skill: null }, own) });
       this.looker ??= cx.timer.every(1500, (cx) => this.lookForLeads(cx));
-      this.starting.delete("Eye");
+      this.starting.delete(`Eye:${key}`);
       cx.notify();
     });
   }
@@ -861,6 +1065,8 @@ export default class AgentTasks extends View {
 
   watchInbox(cx) {
     const dir = towerDir();
+    this.inboxKeeper = model.leaseKeeper({ path: `${dir}/inbox.lease`, id: this.id, read: (p) => readTextFile(p), write: writeTextFile });
+    cx.timer.every(5000, (cx) => this.inboxTick(cx));
     this.inbox = `${dir}/inbox`;
     this.outbox = `${dir}/outbox`;
     this.handled = new Set();
@@ -870,14 +1076,20 @@ export default class AgentTasks extends View {
       await exec("chmod", ["700", this.inbox, this.outbox]).catch(() => null);
       await this.readInbox(cx);
       for (;;) {
-        await watchFolder(this.inbox).catch(() => new Promise((ok) => cx.timer.after(10000, ok)));
-        await this.readInbox(cx);
+        const paths = await watchFolder(this.inbox).catch(() => new Promise((ok) => cx.timer.after(10000, () => ok(null))));
+        // Only the requests in the batch are read; a batch with none (a removal, a stray file) does nothing.
+        const batch = model.inboxBatch(paths, this.inbox);
+        if (batch && !batch.length) continue;
+        await this.readInbox(cx, batch);
       }
     });
   }
 
-  // One read at a time (the watch and the tick both call this); a call meanwhile reads again after.
-  async readInbox(cx) {
+  // One read at a time (the watch and the tick both call this); a call meanwhile reads again after,
+  // the paths asked for meanwhile together (paths null: the whole folder).
+  async readInbox(cx, paths = null) {
+    this.inboxAll ||= paths == null;
+    this.inboxPaths = new Set([...(this.inboxPaths ?? []), ...(paths ?? [])]);
     if (this.readingInbox) {
       this.readAgain = true;
       return;
@@ -886,22 +1098,55 @@ export default class AgentTasks extends View {
     try {
       do {
         this.readAgain = false;
-        await this.readInboxOnce(cx);
+        const want = this.inboxAll ? null : [...this.inboxPaths];
+        this.inboxAll = false;
+        this.inboxPaths = new Set();
+        await this.readInboxOnce(cx, want);
       } while (this.readAgain);
     } finally {
       this.readingInbox = false;
     }
   }
 
-  async readInboxOnce(cx) {
+  // The inbox lease lives in <tower folder>/inbox.lease, outside the watched inbox (a write in it
+  // would wake the watch): model.leaseKeeper, a compare-and-swap file, so no mod redraws. Every 5 s:
+  // the holder renews it when due and reads the whole folder when a read was missed (a lost lease
+  // write, a failed find, a request that landed while it was busy); a copy without it tries to take
+  // it every 10 s (one left by a copy gone without closing is free after 20 s), then reads it all.
+  inboxTick(cx) {
+    const keeper = this.inboxKeeper;
+    if (keeper.held()) {
+      if (keeper.due()) keeper.take();
+      if (this.inboxMissed) {
+        this.inboxMissed = false;
+        this.readInbox(cx);
+      }
+    } else if ((this.inboxTicks = (this.inboxTicks ?? 0) + 1) % 2 === 0) {
+      keeper.take().then((ok) => ok && this.readInbox(cx));
+    }
+  }
+
+  async readInboxOnce(cx, want = null) {
+    if (want && !want.length) return;
+    // Without the lease the batch is not read here: the holder reads the whole folder on its tick.
+    if (!(await this.inboxKeeper.take())) {
+      this.inboxMissed = true;
+      return;
+    }
     const now = Date.now();
-    if (!model.mayAct(shared(INBOX_LEASE), this.id, now)) return;
-    setShared(INBOX_LEASE, { id: this.id, at: now });
-    // Answers nobody fetched go after ten minutes.
-    await exec("find", [this.outbox, "-maxdepth", "1", "-type", "f", "-name", "*.json", "-mmin", `+${model.ANSWER_KEEP_MINUTES}`, "-delete"]).catch(() => null);
-    // Regular files only: a link or a folder is never followed or read.
-    const r = await exec("find", [this.inbox, "-maxdepth", "1", "-type", "f", "-name", "*.json"]).catch(() => null);
+    // Answers nobody fetched go after ten minutes (swept at most every ten).
+    if (now - (this.outboxSwept ?? 0) > model.ANSWER_KEEP_MINUTES * 60000) {
+      this.outboxSwept = now;
+      await exec("find", [this.outbox, "-maxdepth", "1", "-type", "f", "-name", "*.json", "-mmin", `+${model.ANSWER_KEEP_MINUTES}`, "-delete"]).catch(() => null);
+    }
+    // Regular files only: a link or a folder is never followed or read. The whole folder, or just
+    // the requests a watch batch named.
+    const r = await exec("find", want ? [...want, "-maxdepth", "0", "-type", "f"] : [this.inbox, "-maxdepth", "1", "-type", "f", "-name", "*.json"]).catch(() => null);
+    // A find that failed reads again on the tick (a batch naming removed paths is not a failure).
+    if (!r) this.inboxMissed = true;
     const paths = (r?.stdout ?? "").split("\n").filter((p) => p && !p.split("/").pop().startsWith("."));
+    // A request may have landed while these were handled (the watch tells only copies waiting then).
+    if (paths.length) this.inboxMissed = true;
     for (const path of paths) {
       const name = path.split("/").pop();
       const id = name.slice(0, -5);
@@ -930,6 +1175,11 @@ export default class AgentTasks extends View {
         at = d?.code === 0 ? Number(d.stdout.trim()) * 1000 : now;
       }
       await drop();
+      // tower-adopt: existing spaces and agents made tasks (adopt.js), answered in the outbox.
+      if (req?.adopt) {
+        answer(await adopt.runAdopt(req.adopt, this.adoptEnv()));
+        continue;
+      }
       const checked = model.checkRequest(req, this.config, now - at);
       if (!checked.ok) answer({ ok: false, why: checked.why });
       // Answered as soon as the lead's space is asked for (an agent's tool may wait only seconds);
@@ -1059,6 +1309,14 @@ export default class AgentTasks extends View {
     setShared(REQUEST, null);
     if (request.action === "rename") this.beginRename(request.keys[0], cx);
     else if (request.action === "close") this.closeItem(request, cx);
+    else if (request.action === "adopt") {
+      cx.spawn(async (cx) => {
+        const a = await adopt.runAdopt({ space: request.space, apply: true }, this.adoptEnv());
+        const name = spaces().find((x) => x.id === request.space)?.name ?? "The space";
+        notify(a.ok ? { title: `${name} is a task now`, level: "success" } : { title: `${name} is not a task yet`, body: a.why ?? a.text, level: "error" });
+        cx.notify();
+      });
+    }
     // The agent popup gave the keyboard back to the pane under it: the composer takes it again.
     else if (request.action === "picked") cx.timer.after(150, () => this.input.focus());
     // An agent's End (its menu): only that terminal ends.
@@ -1139,7 +1397,7 @@ export default class AgentTasks extends View {
     // Each word keeps a slot for its badge and dot so it never moves, while the words fit beside
     // the icons (an estimate: 6.5px a character at 11.5px); crowded (three areas at 268px), a slot
     // is only as wide as what it shows, so the words stay readable.
-    const icons = (this.eye ? 0 : 1) + (viewSwitch() === "menu" ? 1 : 0) + 2 + (props()?.overlay ? 1 : 0);
+    const icons = (this.eye || !this.eyeAllowed() ? 0 : 1) + (viewSwitch() === "menu" ? 1 : 0) + 2 + (props()?.overlay ? 1 : 0);
     const room = (Number.isFinite(this.listWidthNow) ? this.listWidthNow : 320) - 26 - icons * 28 - 8;
     const crowded = areas.reduce((w, a) => w + 6.5 * [...a.label].length + 26 + 6, 0) > room;
     // What the words need with only the badges they show; more than the room: a line of their own
@@ -1196,7 +1454,7 @@ export default class AgentTasks extends View {
   topIcons(row, t) {
     return row
       // No Eye running: an eye icon starts it (dimmed while it starts).
-      .when(!this.eye, (el) => el.child(this.eyeStarting()
+      .when(!this.eye && this.eyeAllowed(), (el) => el.child(this.eyeStarting()
         ? h_flex().id("at-eye-start").size(26).flex_none().items_center().justify_center().rounded(6).opacity(0.5)
           .tooltip("Starting the Eye…").child(eyeIcon(14, t.dim))
         : control(h_flex().id("at-eye-start").size(26).flex_none().items_center().justify_center().rounded(6).text_color(t.dim)
@@ -1238,8 +1496,24 @@ export default class AgentTasks extends View {
       .child(markSlot(t, "done"));
   }
 
-  eyeStarting() {
-    return this.pending.some((p) => p.eye) || this.starting.has("Eye");
+  // Whether the shown area's Eye is starting (another area's start doesn't count).
+  eyeStarting(area = this.shownArea()?.id) {
+    const key = eyeKey(area);
+    return this.pending.some((p) => p.eye === key) || this.starting.has(`Eye:${key}`)
+      || Date.now() - (shared(EYE_STARTING)?.[key] ?? 0) < START_GIVE_UP_MS;
+  }
+
+  // What starting an Eye needs in a copy other than the list (the stage, the bar alone).
+  initEyeStart() {
+    this.pending ??= [];
+    this.starting ??= new Set();
+    this.skillAt ??= new Map();
+    this.reach ??= [];
+  }
+
+  // Whether the shown area may have an Eye (its settings may say eye: false).
+  eyeAllowed() {
+    return !model.eyeOff(this.config, this.shownArea()?.id);
   }
 
   // The composer's chips: the Eye first (while one runs), then the area's recipes.
@@ -1339,6 +1613,8 @@ export default class AgentTasks extends View {
   newSpaceChip(t) {
     const others = this.listedMachines.filter((m) => m.state === "connected").map((m) => m.name);
     const fresh = (machine) => {
+      // A task from birth (adopt.js): the new space's first terminal is labelled once it shows.
+      this.born = adopt.beforeNew(spaces(), machine === undefined ? spaces().find((x) => x.active)?.machine ?? null : machine);
       run("space.new", machine === undefined ? {} : { machine });
       this.composing = false;
       this.input.set_value("");
@@ -1551,7 +1827,8 @@ export default class AgentTasks extends View {
 
   ageOf(t, item, view, stale) {
     const down = view.downOn(item.machine);
-    const at = model.changedAt(item, this.changes);
+    // The model's time for it (same changes; its clock at most a minute older).
+    const at = item.changed ?? model.changedAt(item, this.changes);
     if (item.leadGone) return { text: "lead gone", color: t.blocked };
     if (down) return { text: `as of ${clock(down)}` };
     // Its still clock already says quiet: the age alone, in the working colour.
@@ -1561,6 +1838,8 @@ export default class AgentTasks extends View {
 
   // What the row's mark says (model.rowWord): a done lead reads as idle once seen, as Herdr shows it.
   markOf(item, _groupId, view) {
+    // The model's word (same inputs; its clock at most a minute older), else worked out here.
+    if (item.word !== undefined) return item.word;
     return model.rowWord(item, { listed: view.listed, seen: view.seen, now: view.now, changes: this.changes });
   }
 
@@ -1588,7 +1867,7 @@ export default class AgentTasks extends View {
 
   followSelection(items, focusNow) {
     // Focus moving to the Eye is no task: the selection stays.
-    const focus = this.eye && focusNow === this.eye.address ? this.lastFocus : focusNow;
+    const focus = this.eyeAddresses?.has(focusNow) ? this.lastFocus : focusNow;
     const shown = shownSpace();
     const pin = shared(PIN) ?? null;
     const next = model.nextSelection({ items, selectedKey: shared(SELECTED)?.key ?? null, pin, focus, lastFocus: this.lastFocus, shown, lastShown: this.lastShown });
@@ -1607,8 +1886,10 @@ export default class AgentTasks extends View {
     const renaming = this.renaming === item.key;
     const title = model.titleOf(item);
     const selected = item.key === view.selectedKey;
-    const open = this.treeOpen(item);
-    const members = item.tree.length + item.leftOvers.length;
+    // Earlier is a directory: one 24 px line per task, nothing under it (unless a search matched inside it).
+    const compact = groupId === "earlier" && !this.matchedIn?.has(item.key);
+    const open = !compact && this.treeOpen(item);
+    const members = compact ? 0 : item.tree.length + item.leftOvers.length;
     // Where it runs stays; the space note gives way to the title (model.fitRow). The fold chip
     // shows no count: "mac +1" beside "› 1" read as the same thing.
     const fit = model.fitRow(view.listWidth, view.lineWidth - (!view.wide && members ? 27 : 0), title, {
@@ -1632,13 +1913,12 @@ export default class AgentTasks extends View {
             .when(7 * [...title].length > view.lineWidth - (fit.machine ? (fit.compact ? 20 : 60) : 0), (el) => el.tooltip(title))
             .child(title))
           // The note gives way first: it shrinks twenty times faster than the title.
-          .when(Boolean(note), (el) => el.child(div().min_w(0).max_w(90).flex_shrink(20).truncate().text_color(t.dim).child(`· ${note}`)))
-          .child(div().flex_1()))
+          .when(Boolean(note), (el) => el.child(div().min_w(0).max_w(90).flex_shrink(20).truncate().text_color(t.dim).child(`· ${note}`))))
       .when(!renaming, (el) => el.children(this.slots(t, view, fit.compact ? { glyph: fit.machine, tip: item.machines.map((x) => x ?? here()).join(", "), id: `at-mg-${item.key}` } : fit.machine,
         members ? this.fold(t, item.key, open, members, urgent, false) : null,
         this.ageOf(t, item, view, mark === "stale"), this.rightMark(mark))));
     // No tooltip: it covered the next row's wait line; the row names the machines, Details the rest.
-    const row = v_flex().id(`at-item-${item.key}`).px(8).py(5).flex_none().rounded(8).cursor_pointer()
+    const row = v_flex().id(`at-item-${item.key}`).px(8).py(compact ? 2 : 5).flex_none().rounded(8).cursor_pointer()
       .when(selected, (el) => el.bg(t.selected))
       .hover((s) => s.bg(t.hover))
       .when(Boolean(down), (el) => el.opacity(0.6))
@@ -1832,7 +2112,7 @@ export default class AgentTasks extends View {
         .children(r.lines.map((l) => div().self_start().mt(-4).w(9).h(17).mr(4).flex_none()
           .when(Boolean(l), (el) => el.border_l(1.5).border_color(t.input))
           .when(l === "└" || l === "├", (el) => el.border_b(1.5).rounded_bl(6))))
-        .when(Boolean(pic), (el) => el.child(div().mr(8).child(pic)))
+        .when(Boolean(pic), (el) => el.child(pic.mr(8)))
         .child(div().flex_1().min_w(0).truncate().text_color(on || marked ? t.foreground : t.muted).child(label ?? (k.name || k.template || k.program?.name || k.address)))
         // A worker says where it runs when that is not where the area lives (the lead row says it in words).
         .when(Boolean(where), (el) => el.child(div().max_w(72).flex_none().ml(6).mr(5).truncate().text_size(10.5).text_color(t.dim).child(where)))
@@ -1865,7 +2145,9 @@ export default class AgentTasks extends View {
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .on_mouse_down("right", (_e, cx) => {
         cx.stop_propagation();
-        openSpaceMenu(space.id);
+        this.menuFor = `at-shell-${space.id}`;
+        cx.notify();
+        openOverlay({ mod: "agent-tower", kind: "popup", width: 250, height: 10 + 2 * 31 + 9, props: { menu: true, from: this.id, keys: [], space: space.id, shellSpace: true } });
       })
       .on_click((_e, cx) => {
         cx.stop_propagation();
@@ -1981,7 +2263,7 @@ export default class AgentTasks extends View {
     // The Eye first: a click goes to it, or (not running) starts it; its badge sits where the
     // tiles' badges sit.
     const starting = this.eyeStarting();
-    const cells = [this.railCell(t, "at-rail-eye",
+    const cells = !eye && !this.eyeAllowed() ? [] : [this.railCell(t, "at-rail-eye",
       h_flex().size(18).items_center().justify_center().when(starting, (el) => el.opacity(0.5)).child(eyeIcon(16, eye ? t.foreground : t.dim)),
       eye ? (model.eyeWaiting(eye, view.listed) ? "blocked" : model.leadStatus(eye, view.listed)) : null,
       eye ? "Eye" : starting ? "Starting the Eye…" : "Start the Eye",
@@ -2016,8 +2298,25 @@ export default class AgentTasks extends View {
     return cells;
   }
 
+  // The list and the stage are timed for the perf log (the stage's count leaves out its view's,
+  // which is logged under the view's own name); the small copies are not.
   render(cx) {
+    const p = props();
+    const kind = p?.stage ? "stage" : p?.menu || p?.peekBar || p?.paneHead || p?.stageBar || p?.viewBar || p?.textHidden || isToast() ? null : "list";
+    return inFrame(() => (kind ? timedRender(kind, () => this.draw(cx)) : this.draw(cx)));
+  }
+
+  draw(cx) {
     const t = theme();
+    // The settings were read again by the list: this copy reads them too, quietly.
+    const configAt = shared(CONFIG_AT) ?? 0;
+    if (configAt !== (this.configAt ??= configAt)) {
+      this.configAt = configAt;
+      cx.spawn(async (cx) => {
+        this.config = await loadConfig(true);
+        cx.notify();
+      });
+    }
     if (isToast()) {
       // A broken toast would hide every notification: draw a plain one if anything throws.
       try {
@@ -2041,7 +2340,7 @@ export default class AgentTasks extends View {
         applyShape(viewNow().view, viewNow().shape);
       }
       // Folds and opened rows, as they are now, for the next copy.
-      const folds = JSON.stringify({ folded: [...this.folded], opened: [...this.opened] });
+      const folds = JSON.stringify({ folded: [...this.folded], opened: [...this.opened], earlierShown: true });
       if (folds !== this.savedFolds) {
         this.savedFolds = folds;
         setShared(FOLDS, JSON.parse(folds));
@@ -2060,10 +2359,25 @@ export default class AgentTasks extends View {
     const agentList = agents();
     const listed = new Map(agentList.map((a) => [a.address, a.status]));
     const spaceList = spaces();
+    // "New space" made a space: its first terminal leads a task from birth (adopt.js), once it shows.
+    if (this.born) {
+      const b = now - this.born.at < 60000 ? adopt.bornSpace(this.born, spaceList, terms) : null;
+      if (b || now - this.born.at >= 60000) this.born = null;
+      if (b) this.label(cx, b.address, adopt.birthLabels(b.space, this.shownArea().id), "The new space could not become a task");
+    }
     // Which machines answer, first: per-terminal memory is only dropped for those.
     this.reach = model.reachability(this.reach, this.listedMachines, machines(), now);
-    this.changes = new Map(Object.entries(sharedOr(CHANGES) ?? {}));
-    if (model.trackChanges(this.changes, terms, now, this.reach)) setShared(CHANGES, Object.fromEntries(this.changes));
+    // This copy keeps its own map (read from the shared one once), so a render doesn't convert and
+    // rebuild it; what it learns it shares, and its version tells the model's cache.
+    if (!this.changes) {
+      this.changes = new Map(Object.entries(sharedOr(CHANGES) ?? {}));
+      this.changesVersion = 0;
+    }
+    if (model.trackChanges(this.changes, terms, now, this.reach)) {
+      this.changesVersion++;
+      setShared(CHANGES, Object.fromEntries(this.changes));
+      setShared(CHANGES_V, `${this.id}:${this.changesVersion}`);
+    }
     const seen = sharedOr(SEEN) ?? {};
     const unseen = new Set(model.forgettable(Object.keys(seen), terms, this.reach));
     if (unseen.size) setShared(SEEN, Object.fromEntries(Object.entries(seen).filter(([a]) => !unseen.has(a))));
@@ -2071,16 +2385,17 @@ export default class AgentTasks extends View {
     const f = focused();
 
     const config = this.config;
-    // The Eye is never a work item: it has its own row.
-    this.eye = model.findEye(terms);
+    // The shown area's Eye (no Eye is ever a work item): its own row, chip, rail cell and start.
+    this.eye = model.findEye(terms, EYE_PER_AREA ? this.shownArea()?.id : null, config);
+    this.eyeAddresses = new Set(terms.filter((x) => model.isEye(x)).map((x) => x.address));
     // A starting Eye with no agent yet: draw again when its 20 s are up (no event would).
     if (this.eye && model.eyeAgent(this.eye, now, this.changes) === "starting" && this.eyeRecheck !== this.eye.address) {
       this.eyeRecheck = this.eye.address;
       cx.timer.after(model.NO_AGENT_MS + 500, (cx) => cx.notify());
     }
     // The one model every view draws from (model.taskModel).
-    const m = model.taskModel({ terms, listed, spaces: spaceList, config, changes: this.changes, seen, now,
-      titles: sharedOr(TITLES) ?? {}, reach: this.reach, eye: this.eye });
+    const m = model.taskModelOnce({ terms, listed, spaces: spaceList, config, changes: this.changes, changesVersion: this.changesVersion, seen, now,
+      titles: sharedOr(TITLES) ?? {}, reach: this.reach, eye: this.eye }, (this.modelMemo ??= {}));
     const allItems = m.all;
     const composeTo = model.composeMode(this.chosen, Boolean(this.eye));
     if (composeTo !== this.composeTo) {
@@ -2094,9 +2409,20 @@ export default class AgentTasks extends View {
     const { items: workList, loose } = m;
     const areaOfItem = (item) => item.area;
     const needCounts = model.areaNeeds(workList, areaOfItem);
+    // A waiting Eye adds 1 to its area's red count.
+    if (EYE_PER_AREA) for (const [a, n] of model.eyeNeeds(terms, config, listed)) needCounts.set(a, (needCounts.get(a) ?? 0) + n);
 
     const shownArea = this.shownArea();
     const area = shownArea?.id;
+    // Words typed to one area's Eye never go to another's: each area keeps its own.
+    if (this.composeArea !== area) {
+      if (this.composeArea != null) {
+        this.eyeDrafts[this.composeArea] = this.eyeInput.value();
+        this.eyeInput.set_value(this.eyeDrafts[area] ?? "");
+        this.chosen = null;
+      }
+      this.composeArea = area;
+    }
     // Published on load and on every switch; the window keeps its own area and does not publish.
     // Not before the settings are read: the built-in areas would overwrite the shared one.
     if (!props()?.overlay && this.configLoaded && area && shared(AREA) !== area) setShared(AREA, area);
@@ -2106,7 +2432,8 @@ export default class AgentTasks extends View {
     const leftHere = loose.filter((i) => areaOfItem(i) === area);
     const pending = this.pending.filter((p) => p.area === area);
     // A started task's space shows as its "Starting…" row until its lead is labelled.
-    const shells = model.shellSpaces(spaceList, terms)
+    // The spaces with only shells depend on what the model does (terms, spaces): kept with it.
+    const shells = (m.shells ??= model.shellSpaces(spaceList, terms))
       .filter((s) => model.areaOf(config, s.machine, null) === area && !this.pending.some((p) => model.isPendingSpace(p, s)));
     if (this.renaming && !items.some((i) => i.key === this.renaming)) this.renaming = null;
 
@@ -2267,52 +2594,206 @@ export default class AgentTasks extends View {
 
   // ── The recorder (needs-timeline.md): the files under <tower folder>/timeline. ──
 
+  // The recorder's lease: model.leaseKeeper on <tower folder>/recorder.lease (no redraw), renewed
+  // every 20 s and free after 45 s, looked at every 20 s by each copy that can record (the docked
+  // list, the stage). A copy that takes it reads the record again first (another copy wrote it
+  // meanwhile), then starts with the old holder's last renewal as its sign of life: a takeover after
+  // a reload leaves at most about a minute unrecorded and draws no false "Herdr was closed" band.
   startRecorder(cx) {
     this.rec = null;
-    this.recText = null;
-    this.screens = {};
-    this.screensText = null;
+    this.recReady = false;
     this.recDirty = false;
     this.screensDirty = false;
     this.flushing = false;
-    cx.spawn(async (cx) => {
+    this.recKeeper = model.leaseKeeper({ path: `${towerDir()}/recorder.lease`, id: this.id, read: (p) => readTextFile(p), write: writeTextFile,
+      ms: model.REC_LEASE_MS });
+    // Every 20 s: the holder renews (a write, no read); a copy without it looks whether it is free.
+    const tick = () => {
+      if (this.recKeeper.held()) {
+        this.recKeeper.take();
+        return;
+      }
+      this.recKeeper.take().then(async (ok) => {
+        if (!ok) return;
+        await this.loadRecord();
+        this.recReady = true;
+        cx.notify();
+      });
+    };
+    cx.spawn(async () => {
       await exec("mkdir", ["-p", recDir()]).catch(() => null);
-      const [text, stext] = await Promise.all([
-        readTextFile(`${recDir()}/events.json`).catch(() => null),
-        readTextFile(`${recDir()}/screens.json`).catch(() => null),
-      ]);
-      this.recText = text;
-      this.screensText = stext;
+      tick();
+    });
+    cx.timer.every(model.REC_LEASE_RENEW_MS, tick);
+    cx.timer.every(5000, () => {
+      this.flushRecord(false).catch(() => null);
+    });
+    // The long past: once an hour, and soon after a start.
+    cx.timer.after(90000, () => this.movePast());
+    cx.timer.every(3600000, () => this.movePast());
+  }
+
+  // The record as the files hold it now (events, screens, the newer beat), before recording.
+  async loadRecord() {
+    this.recText = null;
+    this.screens = {};
+    this.screensText = null;
+    this.started = false;
+    this.recordedAll = null;
+    {
+      const [ev, sc, beat] = await Promise.all([readRecorderFile(`${recDir()}/events.json`), readRecorderFile(`${recDir()}/screens.json`),
+        readTextFile(`${recDir()}/beat.json`).catch(() => null)]);
+      this.beatText = beat;
+      this.recText = ev.text;
+      this.screensText = sc.text;
       try {
-        this.rec = text ? JSON.parse(text) : model.newRecord();
+        this.rec = ev.text ?? ev.big ? JSON.parse(ev.text ?? ev.big) : model.newRecord();
       } catch {
         this.rec = model.newRecord();
       }
       try {
-        this.screens = stext ? JSON.parse(stext) : {};
+        this.screens = sc.text ?? sc.big ? JSON.parse(sc.text ?? sc.big) : {};
       } catch {
         this.screens = {};
       }
-      cx.notify();
-    });
-    cx.timer.every(5000, () => {
-      this.flushRecord(false).catch(() => null);
-    });
+      // The last beat may be newer than events.json's (written on its own while nothing changed).
+      try {
+        this.rec.beat = Math.max(this.rec.beat ?? 0, Number(JSON.parse(beat ?? "null")?.beat) || 0);
+      } catch {}
+      // A file found over the limit is written anew, trimmed, at the next flush.
+      if (ev.big != null) {
+        this.recDirty = true;
+        this.recBig = true;
+      }
+      if (sc.big != null) {
+        this.screensDirty = true;
+        this.screensBig = true;
+      }
+    }
   }
 
-  // Whether this copy writes the record: it holds the lease or takes a free one (renewed every 30 s).
-  holdsRecorder(now) {
-    const lease = shared(RECORDER_LEASE);
-    if (!model.mayAct(lease, this.id, now)) return false;
-    if (lease?.id !== this.id || now - lease.at > 30000) setShared(RECORDER_LEASE, { id: this.id, at: now });
-    return true;
+  // A recorder JSON file: {value, text}, text being what a write must expect (null when absent or
+  // moved aside for being over 1 MiB); fresh() when there is none or it does not parse.
+  async readJson(path, fresh) {
+    const got = await readRecorderFile(path);
+    let value = null;
+    try {
+      value = got.text ?? got.big ? JSON.parse(got.text ?? got.big) : null;
+    } catch {}
+    return { value: value ?? fresh(), text: got.text };
+  }
+
+  // Writes what readJson read (throws when someone else changed it): the text written.
+  async writeJson(path, value, expected) {
+    const text = JSON.stringify(value);
+    await writeTextFile(path, text, expected);
+    return text;
+  }
+
+  // The long past (timeline-long.md): what events.json holds past 2 days moves into the task files,
+  // which are thinned by age; tasks end and, 90 days later, fold into ended.json; the folder keeps
+  // its budget. Only the lease holder; a failure leaves events.json as it was, to try next hour.
+  async movePast() {
+    if (!this.liveKeys || this.moving || !this.holdsRecorder()) return;
+    this.moving = true;
+    const dir = recDir();
+    try {
+      const now = Date.now();
+      await exec("mkdir", ["-p", `${dir}/tasks`]);
+      const part = model.takeOlder(this.rec, now);
+      const idx = await this.readJson(`${dir}/index.json`, model.newIndex);
+      const end = await this.readJson(`${dir}/ended.json`, model.newEnded);
+      const index = idx.value;
+      const ended = end.value;
+      // Written again only when something in them changed.
+      const indexWas = JSON.stringify({ ...index, at: 0 });
+      const endedWas = JSON.stringify(ended);
+      const gapKey = (g) => `${g.m}|${g.from}`;
+      index.gaps = [...new Map([...index.gaps, ...part.gaps].map((g) => [gapKey(g), g])).values()].sort((x, y) => x.from - y.from);
+      const parts = new Map(part.tasks.map((t) => [t.key, t]));
+      // Timeline's rebuilt pasts go into the task files too (backfill.json drops them after 7 days).
+      const fill = (await this.readJson(`${dir}/backfill.json`, () => ({}))).value;
+      // A file is written for new events or rebuilt pasts, or for its daily thinning (a few a pass).
+      // An end is the index's: the file gets it at its next write.
+      model.settleEnds(index, this.liveKeys, now);
+      const touch = new Set([...parts.keys(), ...model.rebuiltTasks(fill, this.rec, index), ...model.thinDue(index, now)]);
+      const save = async (key, change) => {
+        const path = `${dir}/${index.tasks[key]?.file ?? model.taskFileName(key)}`;
+        const got = await this.readJson(path, () => null);
+        const file = change(got.value);
+        if (!file) return delete index.tasks[key];
+        const text = await this.writeJson(path, file, got.text);
+        index.tasks[key] = model.indexEntry(file, model.utf8Bytes(text), now);
+      };
+      for (const key of touch) {
+        await save(key, (file) => {
+          const f = parts.has(key) ? model.addToTaskFile(file, parts.get(key)) : file;
+          if (!f) return null;
+          model.addRebuilt(f, fill);
+          f.ended = index.tasks[key] ? index.tasks[key].ended : this.liveKeys.has(key) ? null : now;
+          model.thinTaskFile(f, now);
+          model.fitTaskFile(f, now);
+          return f;
+        });
+      }
+      // 90 days after it ended, a task is one line in ended.json; its file goes.
+      const fold = async (key) => {
+        const e = index.tasks[key];
+        const path = `${dir}/${e.file}`;
+        const got = await this.readJson(path, () => null);
+        // Its end is the index's (a file gets its end only at its next write).
+        if (got.value) ended.tasks[key] = model.taskSummary({ ...got.value, ended: e.ended ?? got.value.ended });
+        await exec("rm", ["-f", path]);
+        delete index.tasks[key];
+      };
+      for (const [key, e] of Object.entries(index.tasks)) if (e.ended != null && now - e.ended >= model.ENDED_KEEP_MS) await fold(key);
+      model.pruneEnded(ended, now);
+      // The folder's budget, in the design's order, measured again after each step.
+      const du = await exec("du", ["-sk", dir]).catch(() => null);
+      let total = Number(du?.stdout?.split(/\s/)[0] ?? 0) * 1024;
+      if (total > model.FOLDER_BUDGET) {
+        for (const st of model.budgetSteps(index)) {
+          if (total <= model.FOLDER_BUDGET) break;
+          const before = index.tasks[st.key]?.bytes ?? 0;
+          if (!index.tasks[st.key]) continue;
+          if (st.step === "fold") await fold(st.key);
+          else await save(st.key, (f) => f && (st.step === "looks" ? model.dropOldLooks(f, now) : model.coarsenTask(f, now)));
+          total -= before - (index.tasks[st.key]?.bytes ?? 0);
+        }
+        logTrim("tasks", 1, "passed the 25 MB budget");
+      }
+      // index.json under the file limit: the tasks ended longest ago fold first.
+      for (const [key] of Object.entries(index.tasks).filter(([, e]) => e.ended != null).sort(([, x], [, y]) => x.ended - y.ended)) {
+        if (model.utf8Bytes(JSON.stringify(index)) <= model.REC_FILE_MAX) break;
+        await fold(key);
+      }
+      const changed = JSON.stringify({ ...index, at: 0 }) !== indexWas;
+      if (JSON.stringify(ended) !== endedWas) await this.writeJson(`${dir}/ended.json`, ended, end.text);
+      if (changed) {
+        index.at = now;
+        await this.writeJson(`${dir}/index.json`, index, idx.text);
+      }
+      this.rec.moved = part.cut;
+      this.recDirty = true;
+      setShared(RECORDED, now);
+    } catch (e) {
+      if (!this.moveFailed) console.log(`agent-tower: timeline: moving the past into ${dir}/tasks failed, events.json keeps it: ${e?.message ?? e}`);
+      this.moveFailed = true;
+    } finally {
+      this.moving = false;
+    }
+  }
+
+  // Whether this copy writes the record: it holds the lease and has read the record since taking it.
+  holdsRecorder() {
+    return Boolean(this.recKeeper?.held() && this.recReady && this.rec);
   }
 
   recordTick(terms, all, now, reach, focus, cx) {
-    if (!this.rec || !this.holdsRecorder(now)) return;
+    if (!this.holdsRecorder()) return;
     if (!this.started) {
       this.started = true;
-      model.recordStart(this.rec, now);
+      model.recordStart(this.rec, now, this.recKeeper.otherAt());
       this.recDirty = true;
     }
     // A look is focus inside an active window; Herdr in the background is no look.
@@ -2332,6 +2813,11 @@ export default class AgentTasks extends View {
       this.lastBeat = now;
       logUse("beat", null, null, null);
     }
+    // The model was reused (nothing it reads changed) and the look is the same: nothing to record.
+    if (all === this.recordedAll && look === this.recordedLook) return;
+    this.recordedAll = all;
+    this.recordedLook = look;
+    this.liveKeys = new Set(all.map((i) => i.key));
     const { dirty, toRead } = model.recordStep(this.rec, { terms, all, now, reach, look });
     if (dirty) this.recDirty = true;
     for (const r of toRead) this.readScreen(r, cx);
@@ -2347,31 +2833,46 @@ export default class AgentTasks extends View {
   }
 
   async flushRecord(force) {
-    if (!this.rec || this.flushing || shared(RECORDER_LEASE)?.id !== this.id) return;
+    if (this.flushing || !this.holdsRecorder()) return;
     const now = Date.now();
-    if (now - this.rec.beat > 60000) {
-      this.rec.beat = now;
-      this.recDirty = true;
-    }
-    if (!this.recDirty && !this.screensDirty && !force) return;
+    // The beat: written with the record, and at a close, so a quit's gap starts at the quit. In
+    // between, the recorder lease's renewals are the sign of life (recordStart), so an idle record
+    // is not rewritten.
+    if (force) this.recDirty = true;
+    if (!this.recDirty && !this.screensDirty) return;
     this.flushing = true;
     try {
+      const news = Boolean(this.screensDirty || this.recDirty);
       if (this.recDirty) {
         this.recDirty = false;
+        this.rec.beat = now;
         model.pruneRecord(this.rec, now);
-        const out = await writeMerged(`${recDir()}/events.json`, this.rec, this.recText, model.mergeRecords);
+        // One stringify per flush; the bytes are counted only when they could be over.
+        let text = JSON.stringify(this.rec);
+        if (!model.fitsBytes(text, model.REC_FILE_MAX)) {
+          logTrim("events.json", model.fitRecord(this.rec), this.recBig ? "was over 1 MiB" : "grew too big");
+          text = JSON.stringify(this.rec);
+        }
+        const out = await writeMerged(`${recDir()}/events.json`, this.rec, this.recText, (theirs, mine) => {
+          const merged = model.mergeRecords(theirs, mine);
+          logTrim("events.json", model.fitRecord(merged), "grew too big");
+          return merged;
+        }, text);
         this.rec = out.value;
         this.recText = out.text;
       }
       if (this.screensDirty) {
         this.screensDirty = false;
-        this.screens = model.keepScreens(this.screens, now);
+        const all = Object.keys(this.screens).length;
+        this.screens = model.keepScreens(this.screens, now, this.rec);
+        if (this.screensBig) logTrim("screens.json", all - Object.keys(this.screens).length, "was over 1 MiB");
         const out = await writeMerged(`${recDir()}/screens.json`, this.screens, this.screensText,
-          (theirs, mine) => model.keepScreens({ ...theirs, ...mine }, now));
+          (theirs, mine) => model.keepScreens({ ...theirs, ...mine }, now, this.rec));
         this.screens = out.value;
         this.screensText = out.text;
       }
-      setShared(RECORDED, now);
+      // Timeline reads the files again only when there is something new in them.
+      if (news) setShared(RECORDED, now);
     } catch {
       // Both writes failed (another writer between our read and write): next tick tries again.
       this.recDirty = true;
@@ -2581,8 +3082,9 @@ export default class AgentTasks extends View {
   areaChips(t) {
     const areas = liveConfig.areas;
     if (areas.length < 2) return [];
-    const items = model.workItems(terminals(), new Map(agents().map((a) => [a.address, a.status])), spaces()).filter((i) => !i.leftOver);
-    const needs = model.areaNeeds(items, (i) => model.itemArea(liveConfig, i));
+    const m = model.taskModelOnce({ terms: terminals(), listed: new Map(agents().map((a) => [a.address, a.status])), spaces: spaces(), config: liveConfig,
+      changes: new Map(), now: Date.now() }, (this.chipsMemo ??= {}));
+    const needs = model.areaNeeds(m.items, (i) => i.area);
     const shown = shared(AREA);
     return areas.map((a) => control(h_flex().id(`at-barea-${a.id}`).h(24).px(6).gap(4).items_center().rounded(6).text_size(11.5).font_medium()
       .text_color(a.id === shown ? t.foreground : t.dim).hover((s) => s.text_color(t.foreground))
@@ -2669,6 +3171,7 @@ export default class AgentTasks extends View {
   }
 
   initStage(cx) {
+    this.initEyeStart();
     this.views = {}; // view id -> {mod} or {error}
     this.viewState = {}; // view id -> the object a view keeps across renders (ui.state)
     this.selectCtx = null;
@@ -2678,6 +3181,8 @@ export default class AgentTasks extends View {
       cx.notify();
     });
     cx.timer.every(60000, (cx) => cx.notify());
+    // The perf log goes out from here too, when the docked list isn't there to send it.
+    cx.timer.every(30000, () => perfLog.flush());
     // ui.notify(): a redraw asked for outside render, on a short tick.
     cx.timer.every(250, (cx) => {
       if (!this.dirty) return;
@@ -2719,10 +3224,17 @@ export default class AgentTasks extends View {
     const now = Date.now();
     const terms = terminals();
     const listed = new Map(agents().map((a) => [a.address, a.status]));
-    const changes = new Map(Object.entries(sharedOr(CHANGES) ?? {}));
+    // The list's changes, converted only when its version moved (without one: every render).
+    const changesV = shared(CHANGES_V) ?? null;
+    if (!this.changesMap || changesV == null || changesV !== this.changesV) {
+      this.changesMap = new Map(Object.entries(sharedOr(CHANGES) ?? {}));
+      this.changesV = changesV;
+    }
+    const changes = this.changesMap;
     const seen = sharedOr(SEEN) ?? {};
     const config = this.config ?? model.DEFAULTS;
-    const m = model.taskModel({ terms, listed, spaces: spaces(), config, changes, seen, now, titles: sharedOr(TITLES) ?? {}, eye: model.findEye(terms) });
+    const m = model.taskModelOnce({ terms, listed, spaces: spaces(), config, changes, changesVersion: changesV ?? undefined, seen, now,
+      titles: sharedOr(TITLES) ?? {}, eye: model.findEye(terms) }, (this.modelMemo ??= {}));
     this.wordCtx = { listed, seen, now, changes };
     this.recordTick(terms, m.all, now, [], focused()?.agent ?? focused()?.terminal ?? null, cx);
     if (sidebarHidden()) this.arrive(m.all);
@@ -2773,7 +3285,7 @@ export default class AgentTasks extends View {
     let body;
     if (loaded.mod) {
       try {
-        body = loaded.mod.render(t, m, ui);
+        body = timedRender(id, () => loaded.mod.render(t, m, ui));
       } catch (e) {
         body = div().p(20).text_color(t.blocked).child(`${id} could not be drawn: ${e?.message ?? e}`);
       }
@@ -2803,10 +3315,33 @@ export default class AgentTasks extends View {
       .text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground)).child(chrome(name).size(13)), () => run(command));
     return h_flex().id("at-stage-bar").size_full().h(36).flex_none().pr(10).gap(4).items_center().border_b(1).border_color(t.border).bg(t.chrome)
       .pl(alone && w?.platform === "macos" ? 84 : 12)
-      .when(alone, (el) => el.children(this.areaChips(t)).child(div().w(1).h(16).mx(8).bg(t.border)))
+      .when(alone, (el) => el.children(this.areaChips(t)).child(div().w(1).h(16).mx(8).bg(t.border)).children([this.barEye(t)].filter(Boolean)))
       .child(div().flex_1().text_size(12.5).font_medium().text_color(t.foreground).child(VIEWS.find((x) => x.id === id)?.label ?? id))
       .children(alone ? this.viewButtons(t, true) : [this.shapeButton(t, true)].filter(Boolean))
       .when(alone && Boolean(w?.buttons), (el) => el.child(winButton("minus", "window.minimize")).child(winButton("square", "window.maximize")).child(winButton("x", "window.close")));
+  }
+
+  // The bar alone in the window: the shown area's Eye after the areas. Running: opens it (the view
+  // one step back), right-click its menu, a red dot while it waits; else it starts it.
+  barEye(t) {
+    const area = shared(AREA);
+    if (!area || model.eyeOff(liveConfig, area)) return null;
+    const listed = new Map(agents().map((a) => [a.address, a.status]));
+    const eye = model.findEye(terminals(), EYE_PER_AREA ? area : null, liveConfig);
+    const box = (id) => h_flex().id(id).size(26).flex_none().items_center().justify_center().rounded(6);
+    if (eye) {
+      return control(box("at-bar-eye").relative().text_color(t.foreground).hover((s) => s.bg(t.hover)).tooltip("Eye")
+        .on_mouse_down("right", (_e, cx) => {
+          cx.stop_propagation();
+          act({ action: "menu", address: eye.address });
+        })
+        .child(eyeIcon(14, t.foreground))
+        .when(model.eyeWaiting(eye, listed), (el) => el.child(div().absolute().right(3).bottom(3).size(6).rounded(3).bg(t.blocked))),
+      () => act({ action: "open", address: eye.address, how: "bar" }));
+    }
+    if (this.eyeStarting(area)) return box("at-bar-eye").opacity(0.5).tooltip("Starting the Eye…").child(eyeIcon(14, t.dim));
+    return control(box("at-bar-eye").text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip("Start the Eye")
+      .child(eyeIcon(14, t.dim)), (cx) => this.startEye(cx, area));
   }
 
   openSearch(cx) {
@@ -3055,6 +3590,8 @@ export default class AgentTasks extends View {
         closeOverlay(p.overlay);
       } }] : []),
       ...(one?.lead && !p.rail ? [{ label: "Rename", icon: "square-pen", act: () => this.request({ action: "rename" }) }] : []),
+      // Not a task yet (an agent's own row, a space with only shells): its space becomes one (adopt.js).
+      ...(p.space && (p.shellSpace || (one && !one.taskId)) ? [{ label: "Make a task", icon: "plus", act: () => this.request({ action: "adopt", space: p.space }) }] : []),
       // Herdr's words: "End" for terminals and what they started ("Close" is for spaces and panes).
       ...(items.length ? [{ label: one?.taskId ? "End task…" : items.length > 1 ? `End all ${items.length}…` : "End agent…", icon: "x", act: (cx) => this.ask(cx) }] : []),
       ...(one?.leftOvers.length ? [endLeft(one.leftOvers, one.key)] : []),

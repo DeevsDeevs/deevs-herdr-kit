@@ -3,8 +3,7 @@
 // idle ones sit at the rim and drift out as they go quiet. Each area is a sector. A blip is a
 // task (taskModel's item), its mark the list's; a click goes into it, a right-click opens its menu.
 
-import { div } from "gpui-kit";
-import { v_flex, h_flex } from "gpui-base";
+import { div, v_flex, h_flex } from "./perf.js";
 import { statusMark, wordColor, duration, WORD } from "./marks.js";
 
 // The three rings, inside out, as fractions of the scope's radius. HOLE: the centre's count.

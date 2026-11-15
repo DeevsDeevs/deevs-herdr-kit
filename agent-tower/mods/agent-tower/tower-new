@@ -3,6 +3,8 @@
 # Asks Agent Tower (the Herdr mod) to start a task, exactly as its composer does: writes a request
 # to ~/.config/agent-tower/inbox, waits up to 25 seconds for the answer in .../outbox and prints it
 # as one line of JSON. Exits 0 when the task started, 1 when not, 2 on wrong usage.
+# An area's Eye has TOWER_AREA in its environment: the request then names that area, and Agent
+# Tower refuses a recipe of another area.
 set -u
 if [ $# -lt 2 ] || [ $# -gt 3 ]; then
   echo 'usage: tower-new <recipe id> "<words>" [agent id]' >&2
@@ -19,8 +21,10 @@ esc() {
 id="req-$(date +%s)-$$"
 agent=""
 [ $# -eq 3 ] && agent=", \"agent\": \"$(esc "$3")\""
+area=""
+[ -n "${TOWER_AREA:-}" ] && area=", \"area\": \"$(esc "$TOWER_AREA")\""
 # Written aside, then moved in, so the mod never reads half a request.
-printf '{ "recipe": "%s", "words": "%s"%s, "at": %s000 }\n' "$(esc "$1")" "$(esc "$2")" "$agent" "$(date +%s)" > "$dir/inbox/.$id.tmp" || exit 1
+printf '{ "recipe": "%s", "words": "%s"%s, "at": %s000 }\n' "$(esc "$1")" "$(esc "$2")" "$agent$area" "$(date +%s)" > "$dir/inbox/.$id.tmp" || exit 1
 mv "$dir/inbox/.$id.tmp" "$dir/inbox/$id.json" || exit 1
 
 i=0

@@ -23,13 +23,20 @@ PROMPT_MAX = 300
 HC_FROM = re.compile(r'<hc from="([^"]+)"[^>]*>(.*?)(?:</hc>|$)', re.S)
 
 
+# The process table, read once per run: one ps for every agent asked about, not one each.
+KIDS = None
+
+
 def tree(root):
-    out = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True).stdout
-    kids = {}
-    for row in out.splitlines():
-        parts = row.split()
-        if len(parts) == 2:
-            kids.setdefault(int(parts[1]), []).append(int(parts[0]))
+    global KIDS
+    if KIDS is None:
+        out = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True).stdout
+        KIDS = {}
+        for row in out.splitlines():
+            parts = row.split()
+            if len(parts) == 2:
+                KIDS.setdefault(int(parts[1]), []).append(int(parts[0]))
+    kids = KIDS
     pids, todo = [], [root]
     while todo:
         p = todo.pop()
@@ -38,9 +45,36 @@ def tree(root):
     return pids
 
 
+# Without /proc (macOS): the .jsonl files each process holds open, from one lsof for every agent's
+# processes (open_prefetch), not one lsof per agent. {pid: [path]}.
+OPEN = {}
+
+
+def open_prefetch(pids):
+    want = sorted({p for p in pids if p and p not in OPEN})
+    if not want or os.path.isdir("/proc"):
+        return
+    try:
+        out = subprocess.run(["lsof", "-Fpn", "-p", ",".join(map(str, want))], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return
+    for p in want:
+        OPEN[p] = []
+    pid = None
+    for row in out.splitlines():
+        if row.startswith("p") and row[1:].isdigit():
+            pid = int(row[1:])
+        elif row.startswith("n") and row.endswith(".jsonl") and pid in OPEN:
+            OPEN[pid].append(row[1:])
+
+
 def open_jsonl(pids):
     # No pid, nothing to ask: on macOS `lsof -p ""` would list every open file on the machine.
     if not pids:
+        return
+    if not os.path.isdir("/proc") and all(p in OPEN for p in pids):
+        for p in pids:
+            yield from OPEN[p]
         return
     if os.path.isdir("/proc"):
         for p in pids:
@@ -344,17 +378,26 @@ def turns_of(path, tail):
     return out[-TURNS_MAX:], epoch(earliest)
 
 
+def program_named(argv):
+    name = os.path.basename(argv[0]) if argv else ""
+    return name if name in ("claude", "codex", "pi") else None
+
+
 def program_of(path):
     return "codex" if "/.codex/" in path else "pi" if "/.pi/" in path else "claude"
 
 
-# Every transcript written in a folder since `since` (epoch seconds): Claude's and pi's by their
-# folder-named directories, Codex's by the cwd in each recent session's first line.
-def folder_transcripts(cwd, since):
-    cwd = cwd.rstrip("/") or "/"
-    found = glob.glob(f"{HOME}/.claude/projects/{re.sub(r'[^A-Za-z0-9]', '-', cwd)}/*.jsonl")
-    found += glob.glob(f"{HOME}/.pi/agent/sessions/--{cwd.strip('/').replace('/', '-')}--/*.jsonl")
-    days = {time.strftime("%Y/%m/%d", time.localtime(t)) for t in (since, (since + NOW) / 2, NOW)}
+def claude_dir(cwd):
+    return f"{HOME}/.claude/projects/{re.sub(r'[^A-Za-z0-9]', '-', cwd)}"
+
+
+def pi_dir(cwd):
+    return f"{HOME}/.pi/agent/sessions/--{cwd.strip('/').replace('/', '-')}--"
+
+
+# Codex sessions of these local days (YYYY/MM/DD) whose first line names this cwd.
+def codex_in(cwd, days):
+    found = []
     for day in days:
         for path in glob.glob(f"{HOME}/.codex/sessions/{day}/*.jsonl"):
             try:
@@ -364,7 +407,60 @@ def folder_transcripts(cwd, since):
                 continue
             if (first.get("payload") or {}).get("cwd", "").rstrip("/") == cwd:
                 found.append(path)
+    return found
+
+
+# Every transcript written in a folder since `since` (epoch seconds): Claude's and pi's by their
+# folder-named directories, Codex's by the cwd in each recent session's first line.
+def folder_transcripts(cwd, since):
+    cwd = cwd.rstrip("/") or "/"
+    found = glob.glob(f"{claude_dir(cwd)}/*.jsonl") + glob.glob(f"{pi_dir(cwd)}/*.jsonl")
+    found += codex_in(cwd, {time.strftime("%Y/%m/%d", time.localtime(t)) for t in (since, (since + NOW) / 2, NOW)})
     return sorted({p for p in found if os.path.getmtime(p) >= since}, key=os.path.getmtime)
+
+
+# The newest timestamp in a transcript's last 64 KB, as seconds ago.
+def last_ago(path):
+    stamps = [ago(d.get("timestamp")) for d in records(path, 65536) if isinstance(d, dict)]
+    stamps = [a for a in stamps if a is not None]
+    return min(stamps) if stamps else None
+
+
+# An agent hc lists as ended has no pid: its transcript is the one of its program in its folder whose
+# first and last records sit inside [created, finished] (epoch seconds), give or take ENDED_SLACK.
+# Several fit (agents started side by side in one folder): those whose first message is on the
+# terminal's argv (a brief given on the run line), then those that started within ENDED_SLACK of
+# created. Unless one is left, None: never a guess.
+ENDED_SLACK = 120
+
+
+def ended_transcript(program, cwd, created, finished, argv):
+    cwd = cwd.rstrip("/") or "/"
+    if program == "claude":
+        found = glob.glob(f"{claude_dir(cwd)}/*.jsonl")
+    elif program == "pi":
+        found = glob.glob(f"{pi_dir(cwd)}/*.jsonl")
+    elif program == "codex":
+        found = codex_in(cwd, {time.strftime("%Y/%m/%d", time.localtime(created + d)) for d in (-86400, 0, 86400)})
+    else:
+        return None
+    fits = []
+    for path in found:
+        if os.path.getmtime(path) < created - ENDED_SLACK:
+            continue
+        first, last = first_ago(path, 0), last_ago(path)
+        if first is None or last is None:
+            continue
+        first, last = NOW - first, NOW - last
+        if created - ENDED_SLACK <= first and last <= finished + ENDED_SLACK:
+            fits.append((path, first))
+    if len(fits) > 1:
+        line = loose(" ".join(argv[1:]))
+        said = [f for f in fits if (lambda t: bool(t) and t in line)(loose(opening(f[0], TASK_HEAD[program])[0] or "")[:100])]
+        fits = said or fits
+    if len(fits) > 1:
+        fits = [f for f in fits if f[1] <= created + ENDED_SLACK]
+    return fits[0][0] if len(fits) == 1 else None
 
 
 def turns_entry(path, since, have, tail):
@@ -386,12 +482,137 @@ def turns_request(req):
     have = {k: list(v) for k, v in (req.get("have") or {}).items()}
     tail = int(req.get("tail") or 0)
     terminals, folders = {}, {}
+    open_prefetch([p for spec in req.get("terminals") or [] if spec.get("pid") for p in tree(spec["pid"])])
     for spec in req.get("terminals") or []:
-        path = find_transcript(spec.get("pid"), spec.get("argv") or [], spec.get("cwd"))
+        argv = spec.get("argv") or []
+        # Ended (finished_s and created_s: seconds ago on the caller's clock): found by folder and time.
+        if spec.get("finished_s") is not None and spec.get("created_s") is not None and spec.get("cwd") and "--session" not in argv:
+            program = spec.get("program") or program_named(argv)
+            path = ended_transcript(program, spec["cwd"], NOW - float(spec["created_s"]), NOW - float(spec["finished_s"]), argv)
+        else:
+            path = find_transcript(spec.get("pid"), argv, spec.get("cwd"))
         terminals[spec.get("key")] = turns_entry(path, since, have, tail) if path else None
     for cwd in req.get("folders") or []:
         folders[cwd] = [turns_entry(p, since, have, tail) for p in folder_transcripts(cwd, since)]
     return {"terminals": terminals, "folders": folders}
+
+
+# ---- Tasks, for Timeline's long past: transcripts whose first message names "on task <id>" (a
+# worker's brief ends so), with their turns, found without hc (it forgets ended agents after a day).
+
+TASK_NAMED = re.compile(r"\bon task `?([A-Za-z0-9_-]+)")
+# Only the start of a file is read for its first message; Codex writes its instructions first.
+TASK_HEAD = {"claude": 65536, "pi": 65536, "codex": 262144}
+TASKS_SINCE = 30 * 86400
+RUN_NAME = re.compile(r"--name[= ]+([A-Za-z0-9_.-]+)(?= |$)")
+
+
+# The first message, the cwd and the session id, from the first `size` bytes.
+def opening(path, size):
+    with open(path, "rb") as f:
+        data = f.read(size)
+    lines = data.split(b"\n")
+    if len(data) == size:
+        lines.pop()
+    meta = {"cwd": None, "session": None}
+    for line in lines:
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(d, dict):
+            continue
+        p = d.get("payload") if isinstance(d.get("payload"), dict) else {}
+        meta["cwd"] = meta["cwd"] or d.get("cwd") or p.get("cwd")
+        meta["session"] = meta["session"] or d.get("sessionId") or (p.get("id") if d.get("type") == "session_meta" else None) \
+            or (d.get("id") if d.get("type") == "session" else None)
+        for e in events(d):
+            if e[0] == "prompt" and e[1].strip():
+                return e[1], meta
+    return None, meta
+
+
+def loose(text):
+    return re.sub(r"[\s\\'\"`]+", " ", text).strip()
+
+
+def strings(x):
+    if isinstance(x, str):
+        yield x
+        if x.startswith("{"):
+            try:
+                yield from strings(json.loads(x))
+            except ValueError:
+                pass
+    elif isinstance(x, dict):
+        for v in x.values():
+            yield from strings(v)
+    elif isinstance(x, list):
+        for v in x:
+            yield from strings(v)
+
+
+# {command: name} from the `hc run ... --label task.id=<id> --name <name> ... "<brief>"` lines
+# of every transcript here that names one of these ids that way.
+def run_names(paths, ids):
+    if not paths or not ids:
+        return {}
+    try:
+        hits = subprocess.run(["grep", "-lF"] + [a for i in ids for a in ("-e", f"task.id={i}")] + ["--"] + paths,
+                              capture_output=True, text=True, timeout=20).stdout.splitlines()
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    names = {}
+    for path in hits:
+        with open(path, "rb") as f:
+            for line in f:
+                if b"--name" not in line or b"task.id=" not in line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue
+                for text in strings(d):
+                    text = loose(text)
+                    runs = text.split("hc run ")[1:]
+                    for run in runs:
+                        name = RUN_NAME.search(run)
+                        if name and any(f"task.id={i}" in run for i in ids):
+                            # One run in the command: its brief may sit before it, in a variable.
+                            names[text if len(runs) == 1 else run] = name.group(1)
+    return names
+
+
+def tasks_request(req):
+    since = NOW - float(req.get("since_s") or TASKS_SINCE)
+    ids = set(req.get("ids") or [])
+    have = {k: list(v) for k, v in (req.get("have") or {}).items()}
+    paths = glob.glob(f"{HOME}/.claude/projects/*/*.jsonl") + glob.glob(f"{HOME}/.codex/sessions/*/*/*/*.jsonl") \
+        + glob.glob(f"{HOME}/.pi/agent/sessions/*/*.jsonl")
+    paths = [p for p in paths if os.path.getmtime(p) >= since]
+    found = []
+    for path in paths:
+        program = program_of(path)
+        text, meta = opening(path, TASK_HEAD[program])
+        named = TASK_NAMED.search(text or "")
+        if not named or (ids and named.group(1) not in ids):
+            continue
+        brief = HC_FROM.search(text)
+        found.append((path, named.group(1), loose(brief.group(2) if brief else text)[:100], meta))
+    names = run_names(paths, {f[1] for f in found})
+    out = []
+    for path, task, brief, meta in found:
+        entry = turns_entry(path, since, have, 0)
+        first, last = first_ago(path, 0), last_ago(path)
+        entry.update({
+            "task": task, "cwd": meta["cwd"], "session": meta["session"] or os.path.basename(path)[:-6],
+            "first": None if first is None else round(NOW - first, 3), "last": None if last is None else round(NOW - last, 3),
+        })
+        name = next((n for run, n in names.items() if brief and brief in run), None)
+        if name:
+            entry["name"] = name
+        out.append(entry)
+    return sorted(out, key=lambda e: e["first"] or 0)
 
 
 def agent(spec, with_text):
@@ -564,9 +785,14 @@ def main():
     if "turns" in req:
         sys.stdout.write(json.dumps({"now": NOW, "turns": turns_request(req["turns"])}))
         return
+    if "tasks" in req:
+        sys.stdout.write(json.dumps({"now": NOW, "tasks": tasks_request(req["tasks"])}))
+        return
     out = {}
     with concurrent.futures.ThreadPoolExecutor(4) as pool:
         linked = pool.submit(chain, req.get("lead_cwd"), req.get("chains") or []) if req.get("chain") else None
+        specs = ([req["lead"]] if req.get("lead") else []) + list(req.get("workers") or [])
+        open_prefetch([p for spec in specs if spec.get("pid") for p in tree(spec["pid"])])
         if req.get("lead"):
             out["lead"] = agent(req["lead"], True)
         out["workers"] = {w["key"]: agent(w, False) for w in req.get("workers") or []}

@@ -16,6 +16,8 @@ const CHANGES = "agent-tower.changes";
 // A past stretch Timeline asked the card to show: { key, address, at, to, word, msg, screen, looked }.
 // Its screen, when kept, is screens.json[screen] under the tower folder's timeline/.
 const MOMENT = "agent-tower.moment";
+// Set by the recorder after each write of its files.
+const RECORDED = "agent-tower.recorded";
 // What the card had open per task (rows, unfolded texts, "+N more"), so a restart (an area's layout
 // switch) or coming back to a task finds it as left: { [key]: { open, expanded, more, moreRepos, at } }.
 const KEPT_VIEW = "agent-tower-panel.view";
@@ -209,15 +211,32 @@ export default class AgentTowerPanel extends View {
       const state = item.machines[mk(m)];
       const forced = this.forced === d.key;
       const freshen = this.freshen && state?.at != null && now - state.at > 60000;
-      if (!forced && !freshen && panel.readDue(state, { anyWorking, signature, now }) > 0) continue;
+      const wait = forced || freshen ? 0 : panel.readDue(state, { anyWorking, signature, now });
+      if (wait > 0) {
+        // A change inside the floor: read when the floor ends, not at whatever render comes next.
+        if (state.signature !== signature && !state.missing && state.fails < 3 && !state.wake) {
+          state.wake = true;
+          cx.timer.after(wait + 50, (cx) => {
+            state.wake = false;
+            cx.notify();
+          });
+        }
+        continue;
+      }
+      // The chain link at most every CHAIN_EVERY_MS, and whenever the lead stops (it saves a link at a
+      // milestone, which usually ends its turn): that is a change the read follows anyway.
+      const leadStop = d.lead?.state === "live" && ["idle", "done"].includes(d.lead.status) ? `${d.lead.status}:${d.lead.turn}` : null;
+      if (args.chain && !forced && state?.chainAt != null && now - state.chainAt < panel.CHAIN_EVERY_MS
+        && !(leadStop && leadStop !== state.chainLead)) args.chain = false;
+      if (args.chain) args.leadStop = leadStop;
       args.gh_skip = forced ? [] : args.cwds.length ? [...this.prs].filter(([k, v]) => k.startsWith(`${mk(m)}|`) && now - v.at < GH_EVERY_MS).map(([k]) => k.slice(mk(m).length + 1)) : [];
-      this.read(d, m, args, signature, cx);
+      this.read(d, m, args, signature, cx, forced);
     }
     this.forced = null;
     this.freshen = false;
   }
 
-  read(d, m, args, signature, cx) {
+  read(d, m, args, signature, cx, forced = false) {
     const key = d.key;
     const item = this.item(key);
     const state = (item.machines[mk(m)] ??= { fails: 0 });
@@ -225,13 +244,19 @@ export default class AgentTowerPanel extends View {
     state.reading = true;
     this.inflight.add(mk(m));
     // hc ls --all lists every machine: once per round, with the lead's read or, after it ended, the first member's.
-    const listHere = (d.lead?.state === "live" ? panel.machineOf(d.lead.address) : d.machine) === m;
+    // Ended members (hc ls --all) every LIST_EVERY_MS, and at once when a member that was live at the
+    // last list has gone: Herdr drops an ended terminal, and only this list still has it.
+    const live = [d.lead, ...d.workers.map((w) => w.t)].filter((t) => t?.state === "live").map((t) => t.address);
+    const lost = (item.listedLive ?? []).some((a) => !live.includes(a));
+    const listHere = (d.lead?.state === "live" ? panel.machineOf(d.lead.address) : d.machine) === m
+      && (forced || lost || item.listedAt == null || Date.now() - item.listedAt >= panel.LIST_EVERY_MS);
+    if (listHere) Object.assign(item, { listedAt: Date.now(), listedLive: live });
     const ids = d.ids;
     cx.spawn(async (cx) => {
       try {
         this.script ??= await readTextFile(`${appHome()}/mods/${MOD}/read.py`);
         if (!this.script) throw new Error("read.py is missing from the mod");
-        const { ambiguous, ...sent } = args;
+        const { ambiguous, leadStop = null, ...sent } = args;
         const [r, listed] = await Promise.all([
           exec("sh", ["-c", 'python3 -c "$1" "$2"', "tower", this.script, JSON.stringify(sent)], { on: m, timeout: 20000 }),
           listHere && ids.length ? Promise.all(ids.map((id) => hc(["ls", "--all", "--json", "--label", `task.id=${id}`]))).catch(() => null) : null,
@@ -255,6 +280,9 @@ export default class AgentTowerPanel extends View {
             else if (repo.upstream && !repo.default && data.gh !== false) this.prs.set(k, { at, pr: repo.pr });
           }
           if (ambiguous) data.lead = { found: false, ambiguous: true };
+          // Not asked this time: the link last read stays.
+          if (sent.chain) Object.assign(state, { chainAt: at, chainLead: leadStop });
+          else if (state.data && "chain" in state.data) data.chain = state.data.chain;
           Object.assign(state, { at, data, fails: 0, failedAt: null, error: null, missing: false });
         }
       } catch (e) {
@@ -341,19 +369,24 @@ export default class AgentTowerPanel extends View {
         .child(chrome("x").size(14)));
   }
 
-  // The kept screen of a moment, read once per moment (screens.json can be large).
+  // The kept screen of a moment. screens.json can be large and a kept screen never changes: the
+  // parsed file is kept, and read again only for a screen it lacks once the recorder has written
+  // since (agent-tower.recorded).
   screenOf(moment, cx) {
     if (!moment?.screen || moment.to == null) return undefined;
-    if (this.screen?.key === moment.screen) return this.screen.text;
-    if (this.screenReading === moment.screen) return undefined;
-    this.screenReading = moment.screen;
+    const kept = this.screens?.map?.[moment.screen];
+    if (kept != null) return kept;
+    const stamp = shared(RECORDED) ?? null;
+    if (this.screens && this.screens.stamp === stamp) return null;
+    if (this.screensReading === stamp) return undefined;
+    this.screensReading = stamp;
     cx.spawn(async (cx) => {
-      let text = null;
+      let map = {};
       try {
-        text = JSON.parse((await readTextFile(`${towerDir()}/timeline/screens.json`)) ?? "{}")[moment.screen] ?? null;
+        map = JSON.parse((await readTextFile(`${towerDir()}/timeline/screens.json`)) ?? "{}") ?? {};
       } catch {}
-      this.screen = { key: moment.screen, text };
-      this.screenReading = null;
+      this.screens = { stamp, map };
+      this.screensReading = null;
       cx.notify();
     });
     return undefined;
@@ -634,7 +667,8 @@ export default class AgentTowerPanel extends View {
           .child(d?.gone ? "Ended" : ""));
     }
     d = { ...live, title: panel.mask(live.title) };
-    if (shown) this.schedule(d, terms, down, cx);
+    // Nothing is read while Herdr is in the background: the next render after it comes back does.
+    if (shown && window()?.active !== false) this.schedule(d, terms, down, cx);
 
     const item = this.item(d.key);
     panel.dropGone(item.machines, new Set(this.groupsOf(d, terms).keys()));

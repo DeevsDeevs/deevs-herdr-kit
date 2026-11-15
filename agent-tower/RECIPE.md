@@ -32,8 +32,8 @@ One column on `chrome`, 13px text, in the vocabulary of Herdr's shipped `agents`
   medium, shown when there are two or more: the shown one in `foreground`, the others in
   `dim` (hover `foreground`). An area you are not looking at shows Herdr's tinted badge
   (14px, 4px corners, `blocked` at 15% under `blocked` 10.5px bold) with the number of its
-  items under Needs you, tooltip "2 need you in Work". On the right, while no Eye runs, a
-  26px eye icon button "Start the Eye" (dimmed, "Starting the Eye…", while it starts),
+  items under Needs you, tooltip "2 need you in Work". On the right, while the shown area has no running Eye (and
+  its `eye` is not `false`), a 26px eye icon button "Start the Eye" (it starts that area's) (dimmed, "Starting the Eye…", while it starts),
   a 26px `search` icon button "Search (Ctrl-S /)" (below), then a 26px `plus` icon button, "Tell the Eye or start a task" while an Eye runs, else
   "New task" (`dim`, hover `hover` + `foreground`, shown pressed while the composer is
   open); in the window also a 26px `x` button, "Close (Esc)". No title: Herdr's brand row
@@ -78,7 +78,8 @@ One column on `chrome`, 13px text, in the vocabulary of Herdr's shipped `agents`
     left that area. Leaving an area stamps `shared("agent-tower.areaLeft")[area]` with now,
     so switching in clears it; it also clears when its items leave Done by the usual rules.
     Not drawn on the shown area, with a single area, or in the rail.
-- **The Eye's row**, only while the Eye runs, above the area row (it covers every area),
+- **The Eye's row**, only while the shown area's Eye runs, above the area row (switching
+  areas swaps it),
   8px left and 14px right like the list, in an item row's grammar: an eye icon (the mod's
   own `eye.svg`, 16px in the tile's 18px place), "Eye", its age and mark. Working: one line,
   its status sentence in the tooltip. Waiting: Herdr's full "Needs you" pill (18px, `blocked`
@@ -89,17 +90,22 @@ One column on `chrome`, 13px text, in the vocabulary of Herdr's shipped `agents`
   without an agent: "Starting the Eye…" in place of age and mark. After that, still no
   agent (its program ended and a shell took its place): "Eye · no agent running" in
   `muted`, tooltip "Its program ended. Open it or end it.", and nothing is ever sent to it.
-  Not running: no row. The Eye is never an item, in a group, left over or counted.
+  Not running: no row. An Eye is never an item, in a group or left over; a waiting Eye adds
+  1 to its area's red count.
 - **Composer**, only after `plus`, right under it: 16px left and 10px right padding (the
   input starts with "Work" and ends with the plus box), 8px below, a 1px `border` under it.
   - One 30px input at full width (7px corners, `input` border, `background`, 13px): "What
     needs doing?" for a task, "Tell the Eye" for the Eye.
-  - A chip row when there is a choice (an Eye runs, or the area has two or more recipes):
+  - A chip row when there is a choice (the shown area's Eye runs, or the area has two or more recipes):
     "Eye" first, then the area's recipes; 20px chips, 6px side padding, 4px corners, 11px,
     the chosen one on `selected`, the row pulled 6px left so the text starts at 16px. The Eye
-    chip sends to the Eye; a recipe chip starts a task. While an Eye runs the composer
+    chip sends to the shown area's Eye; a recipe chip starts a task. While it runs the composer
     always opens on the Eye; a recipe chip applies until it closes (the recipe last picked
-    per area is the one a task uses, and the one shown when no Eye runs).
+    per area is the one a task uses, and the one shown when no Eye runs). Switching areas
+    with the composer open redraws its chips and target for the new area: text never goes
+    to another area's Eye. Each area keeps its own words for its Eye: they come back when you
+    return to the area, and across a restart of the list (a layout switch) through the draft,
+    which carries their area.
   - One send or start at a time: while one is in flight Enter does nothing, the input is at
     60% opacity and the plus does not close the composer; the input clears when it
     succeeds. Text from the input has every run of whitespace with a line break in it
@@ -217,7 +223,8 @@ One column on `chrome`, 13px text, in the vocabulary of Herdr's shipped `agents`
   or address) in `muted`, the machine when it is not the area's home; no age (it would only
   say when Tower noticed it) and no mark. A click peeks at the agent.
 - **Space rows** (one or two at the bottom without a header; from three, the folded Spaces group): 30px, the `terminal` glyph in `dim` (no letters anywhere), the space name in `muted` (`foreground` and
-  `selected` for the space on screen), the machine as on item rows.
+  `selected` for the space on screen), the machine as on item rows. A space holding an Eye is
+  never a space row, even while its Eye runs no agent.
 - **Machine lines**, Herdr's: nothing while every machine this area uses is connected.
   Otherwise, pinned under the list with a 1px `border` above, one 26px line per machine
   that is not, 11px `dim`: the `server` icon, the name, a state word ("unreachable since
@@ -225,7 +232,7 @@ One column on `chrome`, 13px text, in the vocabulary of Herdr's shipped `agents`
   that copies `hc machine login <name>` ("Copied" after); "rebuilt" adds Connect, as in
   Herdr's spaces list. A machine is this area's when the area lists it or an item or space
   of the area is on it. Its rows show at 60% opacity with "as of 11:46" in place of the age.
-- **Rail**: the Eye is the first cell, its icon in an 18px box so its badge sits where the
+- **Rail**: the shown area's Eye is the first cell (none with `eye: false`), its icon in an 18px box so its badge sits where the
   tiles' do: running, a click goes to it and a right-click asks the End question; not
   running, `dim`, "Eye: not running. Click to start", and a click starts it (dimmed while it
   starts). When the sidebar is narrower than 160px
@@ -367,7 +374,7 @@ come from the app's program table.
     one (Claude's `--tools` takes every word after it as a tool name), else at the end.
 - **First message to the lead**, two forms, both starting with the recipe's rules, one per
   line:
-  - with the skill (`skill`, default "tower"): one plain line, `Lead this with the {skill}
+  - with the skill (`skill`, default "tower"): one plain line, `Lead task {id} with the {skill}
     skill (questions to me go through task.ask): <your words>`; the skill reads the task id and the workers' command from
     `$TOWER_TASK` and `$TOWER_WORKER`;
   - without (`"skill": null`): the contract from the settings with `{id}` filled in, then
@@ -390,25 +397,42 @@ come from the app's program table.
     stop; `task.ask` before waiting on you and cleared next turn; the last message opens
     with one or two plain sentences; a chain link at milestones; done is said, ending the
     workers left to you. The test checks the order against the installed skill.
-- **The Eye** is the newest live terminal labelled `tower.eye=1` (`model.findEye`; other
-  ones show as ordinary items). It is only ever started by your click on the header's eye
-  icon (or the rail's Eye cell): a space
-  "Eye" on this computer in `eye.folder` (default: a folder of its own, `<tower folder>/eye`,
-  made if missing) with the `roles.eye` agent run through `env TOWER_NEW=<mod folder>/tower-new
-  TOWER_CONFIG=<the settings file the mod really read>` (and `AGENT_TOWER_DIR` in a sandbox),
-  then its terminal is labelled `tower.eye=1` in one call, found the way a new lead is. Its
-  first message (`model.eyeMessage`): the `eye.rules`, then with the skill (only when the skill
-  on this computer has an "## Eye" part, by `grep -qx '## Eye'`) one plain line, "You are the
-  Eye of the Tower: follow the tower skill's Eye part." (the skill has it answer first with
-  where things stand, per area, in the list's words); without it the full text
-  (sees every terminal with `hc ls --json`; starts leads with "$TOWER_NEW", choosing the recipe from "$TOWER_CONFIG"; passes messages with `hc send`;
-  answers from labels, never memory; never does task work or ends anything unasked; asks
-  when unclear; starts its last message with one or two plain sentences). End kills and
-  `hc rm`s the Eye's terminal only; there is no Restart (End, then start it again). The mod
-  never sends the Eye anything but what you typed.
+- **The Eye**, one per area. An area's Eye is the newest live terminal labelled
+  `tower.eye=1` and `tower.area=<area id>` (`model.findEye(terms, area)`); an older Eye with
+  `tower.eye=1` and no `tower.area` (from before Eyes were per area) stands in for every area
+  that has none of its own and doesn't say `eye: false`, until you end it. No terminal with `tower.eye=1` is ever an item.
+  An area with `eye: false` has none: no icon, row, chip or rail cell. An Eye is only ever
+  started by your click on the eye icon (the header's, the rail's Eye cell or the whole
+  window's bar), for the shown area: a space "Eye · <area label>" on this computer in the
+  area's `eye.folder`, else `<eye.folder>/<area id>`, else `<tower folder>/eye/<area id>`
+  (a `/` in the id becomes `-`; made if missing), with the area's `eye.agent`, else
+  `roles.eye` (an unknown agent id falls back to it, with a toast once a day), run through
+  `env TOWER_NEW=<mod folder>/tower-new TOWER_CONFIG=<the settings file the mod really read>
+  TOWER_AREA=<area id>` (and `AGENT_TOWER_DIR` in a sandbox); then its terminal is labelled
+  `tower.eye=1 tower.area=<area id>` in one call, found the way a new lead is. Its first
+  message (`model.eyeMessage(config, area)`): the global `eye.rules`, then the area's, then
+  with the skill (only when the skill on this computer has an "## Eye" part, by
+  `grep -qx '## Eye'`) one plain line, "You are the Eye of the Work area: follow the tower
+  skill's Eye part." (the skill has it answer first with where its area stands, in the
+  list's words); without it the full text (its area's tasks from `hc ls --json` by
+  `task.area`, else the area's machines, else the default area; starts leads with
+  "$TOWER_NEW", choosing one of its area's recipes from "$TOWER_CONFIG"; passes messages to
+  its area's leads with `hc send`; work for another area goes back to you; answers from
+  labels, never memory; never does task work or ends anything unasked; asks when unclear;
+  starts its last message with one or two plain sentences). End kills and `hc rm`s that
+  Eye's terminal only; there is no Restart (End, then start it again). The mod never sends
+  an Eye anything but what you typed.
+  - **In the whole window** (the list hidden), the bar shows the shown area's eye icon after
+    the area chips: a click opens its Eye, a right-click its menu, a red dot while it waits;
+    with none running, a click starts one ("Starting the Eye…" in every copy while it starts,
+    through a shared stamp). No icon with `eye: false`.
+  - **Its limit is a rule and one check, not a wall.** Checked: `tower-new` sends
+    `TOWER_AREA` with the request and a recipe of another area is refused. Rules only:
+    `hc ls` shows every terminal on every machine and `hc send` reaches any of them; an
+    agent that unsets `TOWER_AREA` or writes the request itself gets past the check.
 - **The inbox**, how the Eye starts tasks exactly as the composer does: `tower-new`
-  writes `<tower dir>/inbox/<id>.json` (`{recipe, words, agent?, at}`, written
-  aside and moved in) and waits up to 90 seconds for `outbox/<id>.json`, printing it as
+  writes `<tower dir>/inbox/<id>.json` (`{recipe, words, agent?, area?, at}`, `area` from
+  `TOWER_AREA` when set; written aside and moved in) and waits up to 25 seconds for `outbox/<id>.json`, printing it as
   one line of JSON (exit 0 when it started). The docked copy (never a window) watches the
   inbox with `watchFolder`, scans it at start and on its 30 s tick, and acts only while it
   holds `shared("agent-tower.inboxLease")` (renewed every 30 s, free after 75 s, released
@@ -418,7 +442,9 @@ come from the app's program table.
   big"; an id already handled this session is "already handled";
   `model.checkRequest`: older than two minutes when first seen, by its `at` or the file's
   time, is "too old", more than two minutes ahead is "its time is more than two minutes
-  ahead"; an unknown recipe or agent or no words says so in words. Then it goes
+  ahead"; an unknown recipe or agent or no words says so in words; a request with an `area`
+  naming a recipe of another area is refused ("the recipe X is in Personal; this is Work's
+  Eye"). A request without `area` (by hand, or from an older Eye) is not area-checked. Then it goes
   through the composer's own start (`startTask`: refusals, machine check, pending row,
   label, naming). The answer is `{ok: true, task, lead}` once the lead is labelled, or
   `{ok: false, why}`. Answers nobody fetched are swept from the outbox after ten minutes.
@@ -529,7 +555,8 @@ come from the app's program table.
   before the rename) `~/.config/agent-tasks/config.json`, read with `readTextFile` (which
   gives null for a missing file); when neither exists the mod uses its built-in defaults (it
   does not write the file). A file that is not valid JSON gets a toast naming it, and the
-  defaults: `{ areas: [{ id, label, machines?: [name], default?: true }],
+  defaults: `{ areas: [{ id, label, machines?: [name], default?: true,
+              eye?: { agent?: id, folder?: path, rules?: [text] } | false }],
      agents: [{ id, label, argv: [..] }],
      roles: { eye?: id, lead?: id, worker?: id, namer?: [argv] },
      recipes: [{ id, label, area, machine?: name, folder?: path, rules?: [text],
@@ -639,10 +666,11 @@ come from the app's program table.
 - Picking another agent in the composer starts that agent (`hc get` shows its argv), with
   the skill form of the first message naming the workers' agent and `task.lead` set; with
   `"skill": null` the full contract goes instead.
-- Nothing starts the Eye but your click on the eye icon. Started, it is labelled
-  `tower.eye=1` and has its row; text from the composer reaches it (`hc read`); a waiting
+- Nothing starts an Eye but your click on the eye icon, and it is the shown area's. Started,
+  it is labelled `tower.eye=1 tower.area=<area>` and has its row in that area only; text from the composer reaches it (`hc read`); a waiting
   Eye refuses it; `tower-new <recipe> "<words>"` starts a labelled, named lead and prints
-  `{"ok":true,…}`; a stale or wrong request is answered in words; End leaves every task alone.
+  `{"ok":true,…}`; from Work's Eye, a Personal recipe is refused; a stale or wrong request
+  is answered in words; End leaves every task alone.
 - The design pass of round 3: no Eye row while none runs; the Eye above the area row; chips
   "Eye, recipes" in the composer; "Led by <agent ▾>"; a waiting Eye's "Needs
   you" pill and "Open the Eye" hint; "3 agents left over" folded under its item.

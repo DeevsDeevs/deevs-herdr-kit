@@ -1,0 +1,62 @@
+#!/bin/sh
+# tower-adopt [--apply] [--space <id or name> [--title <words>] [--lead <address>] [--area <id>]]
+# Makes Herdr spaces made before Tower into tasks, by labels only (adopt.js): one space, one task,
+# named after the space, in its machine's area. Without --apply it is a dry run: it prints what each
+# space would become (title, area, lead, workers), with its machine and how long it has been quiet,
+# and changes nothing. --space: only that space, by its id (each line prints it) or its name; with it,
+# --title, --lead (a live terminal of that space) and --area set that task by hand. A dry run with the
+# same flags prints exactly what --apply does. No agent is started, stopped or messaged.
+# Agent Tower (the Herdr mod) does it, since only the app knows its spaces: the request goes to
+# ~/.config/agent-tower/inbox as tower-new's do; the answer is printed. Exits 0 when done, 1 when
+# not, 2 on wrong usage.
+set -u
+apply=false
+space=""
+area=""
+title=""
+lead=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --apply) apply=true ;;
+    --space) [ $# -ge 2 ] || { echo 'usage: tower-adopt [--apply] [--space <id or name> [--title <words>] [--lead <address>] [--area <id>]]' >&2; exit 2; }; space="$2"; shift ;;
+    --area) [ $# -ge 2 ] || { echo 'usage: tower-adopt [--apply] [--space <id or name> [--title <words>] [--lead <address>] [--area <id>]]' >&2; exit 2; }; area="$2"; shift ;;
+    --title) [ $# -ge 2 ] || { echo 'usage: tower-adopt [--apply] [--space <id or name> [--title <words>] [--lead <address>] [--area <id>]]' >&2; exit 2; }; title="$2"; shift ;;
+    --lead) [ $# -ge 2 ] || { echo 'usage: tower-adopt [--apply] [--space <id or name> [--title <words>] [--lead <address>] [--area <id>]]' >&2; exit 2; }; lead="$2"; shift ;;
+    *) echo 'usage: tower-adopt [--apply] [--space <id or name> [--title <words>] [--lead <address>] [--area <id>]]' >&2; exit 2 ;;
+  esac
+  shift
+done
+dir="${AGENT_TOWER_DIR:-$HOME/.config/agent-tower}"
+mkdir -p "$dir/inbox" "$dir/outbox" || exit 1
+esc() {
+  printf '%s' "$1" | awk 'BEGIN { ORS = "" } { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); gsub(/\t/, "\\t"); gsub(/\r/, "\\r"); if (NR > 1) printf "\\n"; print }'
+}
+id="req-$(date +%s)-$$"
+name=""
+[ -n "$space" ] && name=", \"space\": \"$(esc "$space")\""
+[ -n "$area" ] && name="$name, \"area\": \"$(esc "$area")\""
+[ -n "$title" ] && name="$name, \"title\": \"$(esc "$title")\""
+[ -n "$lead" ] && name="$name, \"lead\": \"$(esc "$lead")\""
+printf '{ "adopt": { "apply": %s%s }, "at": %s000 }\n' "$apply" "$name" "$(date +%s)" > "$dir/inbox/.$id.tmp" || exit 1
+mv "$dir/inbox/.$id.tmp" "$dir/inbox/$id.json" || exit 1
+# The answer as text: its "text" (the mapping), else its "why".
+show() {
+  python3 -c 'import json, sys
+a = json.load(sys.stdin)
+print(a.get("text") or a.get("why") or json.dumps(a))' < "$1" 2>/dev/null || cat "$1"
+}
+i=0
+# An apply labels every space's terminals, some on other machines: up to a minute.
+while [ $i -lt 60 ]; do
+  if [ -f "$dir/outbox/$id.json" ]; then
+    show "$dir/outbox/$id.json"
+    answer=$(tr -d '\n' < "$dir/outbox/$id.json")
+    rm -f "$dir/outbox/$id.json"
+    case "$answer" in *'"ok":true'*|*'"ok": true'*) exit 0 ;; *) exit 1 ;; esac
+  fi
+  sleep 1
+  i=$((i + 1))
+done
+rm -f "$dir/inbox/$id.json"
+echo 'No answer in 60 seconds: Agent Tower is not showing in Herdr on this computer, so nothing was changed.' >&2
+exit 1

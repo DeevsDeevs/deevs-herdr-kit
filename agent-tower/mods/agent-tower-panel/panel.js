@@ -490,11 +490,19 @@ export function checkedOf(reads, down, leadKey, now, staleMs = 3 * 60000) {
   return { text, warn, reading };
 }
 
+// Reads of one machine start at most this often, however fast its agents change: one read runs ps,
+// lsof and git for every member (on a busy Mac that was a read.py every second).
+export const READ_FLOOR_MS = 15000;
+// The task's ended members (hc ls --all) and its chain link change rarely: read them at most this often.
+export const LIST_EVERY_MS = 2 * 60000;
+export const CHAIN_EVERY_MS = 5 * 60000;
+
 // How long until the next read of one machine is due, in ms (<= 0: now).
 export function readDue(state, { anyWorking, signature, now }) {
   if (!state || state.at == null && !state.failedAt) return 0;
   if (state.missing) return state.failedAt + 30 * 60000 - now;
-  if (state.signature !== signature && state.fails < 3) return 0;
+  const last = Math.max(state.at ?? 0, state.failedAt ?? 0);
+  if (state.signature !== signature && state.fails < 3) return last + READ_FLOOR_MS - now;
   const every = state.fails >= 3 ? 5 * 60000 : anyWorking ? 60000 : 5 * 60000;
-  return Math.max(state.at ?? 0, state.failedAt ?? 0) + every - now;
+  return last + every - now;
 }

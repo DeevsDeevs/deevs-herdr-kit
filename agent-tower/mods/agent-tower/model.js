@@ -56,6 +56,8 @@ export const DEFAULTS = {
   // folder null: the tower folder's eye/ (a folder of its own, not your home).
   eye: { folder: null, rules: [] },
   doneSignal: "dot",
+  // The perf log (perf.js): one line per render and per command in <tower folder>/perf.jsonl.
+  perf: false,
 };
 
 // How the area switch tells that something finished unseen in another area (an experiment).
@@ -91,6 +93,7 @@ const VALID = {
   eye: (v) => v !== null && typeof v === "object" && !Array.isArray(v)
     && (v.folder === undefined || v.folder === null || typeof v.folder === "string") && (v.rules === undefined || strings(v.rules)),
   doneSignal: (v) => DONE_SIGNALS.includes(v),
+  perf: (v) => typeof v === "boolean",
 };
 
 // Settings as given, checked part by part: a part in the wrong shape falls back to its default
@@ -103,10 +106,19 @@ export function parseConfig(own) {
   const config = Object.fromEntries(Object.keys(VALID).map((k) => [k, given[k] !== undefined && !bad.includes(k) ? given[k] : DEFAULTS[k]]));
   config.roles = { ...ROLES, ...config.roles };
   config.eye = { ...DEFAULTS.eye, ...config.eye };
+  // An area's own Eye settings ({agent?, folder?, rules?}, or false: no Eye); a wrong shape is
+  // dropped (the area gets the default) and named.
+  if (config.areas.some((a) => a.eye !== undefined && !areaEyeOk(a.eye))) {
+    config.areas = config.areas.map((a) => (a.eye === undefined || areaEyeOk(a.eye) ? a : (({ eye: _e, ...rest }) => rest)(a)));
+    bad.push("areas[].eye");
+  }
   return { config, bad };
 }
 
 const agentById = (config, id) => config.agents.find((a) => a.id === id);
+const areaEyeOk = (v) => v === false || (v !== null && typeof v === "object" && !Array.isArray(v)
+  && (v.agent === undefined || typeof v.agent === "string") && (v.folder === undefined || v.folder === null || typeof v.folder === "string")
+  && (v.rules === undefined || strings(v.rules)));
 
 // The lead a start uses: the agent you picked for this recipe, else the recipe's own argv (an old
 // file's; it wins over roles), else the recipe's lead, else roles.lead, else the first agent.
@@ -154,7 +166,10 @@ export const DONE_MS = 12 * 3600 * 1000;
 export const EARLIER_MS = 24 * 3600 * 1000;
 const RANK = { blocked: 4, done: 3, working: 2, idle: 1 };
 
-export const machineOf = (address) => (address.includes("/") ? address.split("/")[0] : null);
+export const machineOf = (address) => {
+  const slash = address.indexOf("/");
+  return slash < 0 ? null : address.slice(0, slash);
+};
 // "home-server/sp1" -> "sp1": labels on a machine hold its own ids.
 export const localId = (id) => id.slice(id.indexOf("/") + 1);
 
@@ -199,11 +214,15 @@ export function ownTitle(t) {
   return telling ? live : null;
 }
 
+// Spaces by id, once per spaces() read (a read is a new array; the map goes with it).
+const spacesById = new WeakMap();
 export function spaceOf(t, spaceList) {
   const local = t?.labels?.["herdr.space"];
   if (!local) return null;
   const machine = machineOf(t.address);
-  return spaceList.find((s) => s.id === (machine ? `${machine}/${local}` : local)) ?? null;
+  let byId = spacesById.get(spaceList);
+  if (!byId) spacesById.set(spaceList, (byId = new Map(spaceList.map((s) => [s.id, s]))));
+  return byId.get(machine ? `${machine}/${local}` : local) ?? null;
 }
 
 // A terminal started with hc run has no space of its own: it lives in the space of what started it.
@@ -239,6 +258,11 @@ function ownerOf(t, byAddress) {
 // more: another line follows the tree at its top level (the fold of quiet rows).
 function treeOf(lead, members, more = false) {
   const inItem = new Set(members.map((t) => t.address));
+  const kidsOf = new Map();
+  for (const m of members) {
+    if (!kidsOf.has(m.parent)) kidsOf.set(m.parent, []);
+    kidsOf.get(m.parent).push(m);
+  }
   const rows = [];
   const placed = new Set(lead ? [lead.address] : []);
   const walk = (kids, lines) => kids.forEach((k, i) => {
@@ -246,7 +270,7 @@ function treeOf(lead, members, more = false) {
     placed.add(k.address);
     const last = i === kids.length - 1 && !(more && !lines.length);
     rows.push({ t: k, lines: [...lines, last ? "└" : "├"] });
-    walk(members.filter((m) => m.parent === k.address), [...lines, last ? "" : "│"]);
+    walk(kidsOf.get(k.address) ?? [], [...lines, last ? "" : "│"]);
   });
   const top = members.filter((m) => m !== lead && (m.parent === lead?.address || !inItem.has(m.parent) || m.parent === m.address));
   walk(top, []);
@@ -277,7 +301,9 @@ export function workItems(terms, listed, spaceList) {
     const lead = taskId ? all.find((t) => isLead(t) && isLive(t)) ?? all.find(isLead) ?? null : byAddress.get(key.slice(6));
     const leadGone = !isLive(lead);
     const live = all.filter(isLive);
-    const tree = treeOf(leadGone ? null : lead, live).map((row) => ({ ...row, status: subStatus(row.t, listed) }));
+    // A member labelled task.role=shell (adopt.js: a plain shell in a task's space) gets no row.
+    const shown = live.filter((t) => t === lead || t.labels?.["task.role"] !== "shell");
+    const tree = treeOf(leadGone ? null : lead, shown).map((row) => ({ ...row, status: subStatus(row.t, listed) }));
     // Rows that work or wait, and those above them, are listed; the rest fold into one line.
     const byRow = new Map(tree.map((r) => [r.t.address, r]));
     const keep = new Set();
@@ -286,6 +312,7 @@ export function workItems(terms, listed, spaceList) {
       for (let at = r; at && !keep.has(at.t.address); at = byRow.get(at.t.parent)) keep.add(at.t.address);
     }
     const quiet = tree.filter((r) => !keep.has(r.t.address));
+    const quietSet = new Set(quiet.map((r) => r.t));
     const status = leadGone ? null : leadStatus(lead, listed);
     // Only the lead's Done makes the task Done: a done worker counts as idle here.
     const top = tree.map((r) => (r.status === "done" ? "idle" : r.status))
@@ -303,7 +330,7 @@ export function workItems(terms, listed, spaceList) {
       top,
       tree,
       // The tree without its quiet rows, with tree lines drawn for what is left; quiet: the rest.
-      activeTree: quiet.length ? treeOf(leadGone ? null : lead, live.filter((t) => !quiet.some((r) => r.t === t)), true)
+      activeTree: quiet.length ? treeOf(leadGone ? null : lead, shown.filter((t) => !quietSet.has(t)), true)
         .map((row) => ({ ...row, status: subStatus(row.t, listed) })) : tree,
       quiet,
       live,
@@ -356,7 +383,9 @@ export function rememberTitles(items, titles, terms, reach = []) {
   const sure = terms.length > 0 && !reach.some((r) => r.name && !r.reachable);
   if (sure) for (const id of Object.keys(next)) if (!ids.has(id)) delete next[id];
   for (const i of items) if (i.taskId && !i.labelTitle && next[i.taskId]) i.labelTitle = next[i.taskId];
-  return JSON.stringify(next) === JSON.stringify(titles) ? null : next;
+  const keys = Object.keys(next);
+  const same = keys.length === Object.keys(titles).length && keys.every((k) => titles[k] === next[k]);
+  return same ? null : next;
 }
 
 // A lead that runs no agent 20 s after it was made (its program exited and a shell took over).
@@ -377,7 +406,7 @@ export function noAgent(item, now, changes) {
 // lines, open} (rows: the quiet rows it holds).
 export function displayRows(item, isOpen = () => false) {
   const lead = item.leadGone ? null : item.lead;
-  const members = item.live.filter((t) => t !== lead);
+  const members = item.live.filter((t) => t !== lead && t.labels?.["task.role"] !== "shell");
   const inItem = new Set(item.live.map((t) => t.address));
   const status = new Map(item.tree.map((r) => [r.t.address, r.status]));
   const busy = (t) => status.get(t.address) === "working" || status.get(t.address) === "blocked";
@@ -528,7 +557,16 @@ export const KINDS = { question: "Asks you", auth: "Needs sign-in", permission: 
 export const waitWords = (t) => KINDS[t.report?.kind] ?? (t.status === "error" ? "Stopped with an error" : "Waiting on you");
 
 // Why an item needs the person, or null: a blocked agent, the lead first.
+// An item's need depends on the item alone (a new pass makes new items): worked out once.
+const needs = new WeakMap();
 export function needOf(item) {
+  if (needs.has(item)) return needs.get(item);
+  const need = needOfFresh(item);
+  needs.set(item, need);
+  return need;
+}
+
+function needOfFresh(item) {
   if (item.leadGone) return null;
   const blocked = [{ t: item.lead, status: item.status }, ...item.tree].find((r) => r.status === "blocked");
   if (blocked) {
@@ -539,7 +577,8 @@ export function needOf(item) {
   // idle). A lead working again clears it first thing, so a working lead's label is stale.
   // A sub-lead (a member that started others in the task) asks the same way; a plain worker's
   // label does not count (it reports to its parent).
-  const leads = [{ t: item.lead, status: item.status }, ...item.tree.filter((r) => item.live.some((m) => m.parent === r.t.address))];
+  const parents = new Set(item.live.map((m) => m.parent));
+  const leads = [{ t: item.lead, status: item.status }, ...item.tree.filter((r) => parents.has(r.t.address))];
   const asking = leads.find((r) => r.t?.labels?.["task.ask"]?.trim() && r.status !== "working");
   return asking ? { t: asking.t, kind: "Asks you", msg: asking.t.labels["task.ask"].trim() } : null;
 }
@@ -560,8 +599,15 @@ export const isStale = (item, changes, now) => {
 };
 
 // When an item last changed: its newest member, on the mod's own clock (see trackChanges).
+// Inside one taskModel pass an item's time is worked out once (stateOf, rowWord and isStale all ask).
+let changedMemo = null;
 export function changedAt(item, changes) {
-  return Math.max(0, ...[item.lead, ...item.live].filter(Boolean).map((t) => changes.get(t.address)?.at ?? 0));
+  if (changedMemo?.changes === changes && changedMemo.map.has(item)) return changedMemo.map.get(item);
+  let at = 0;
+  if (item.lead) at = Math.max(at, changes.get(item.lead.address)?.at ?? 0);
+  for (const t of item.live) at = Math.max(at, changes.get(t.address)?.at ?? 0);
+  if (changedMemo?.changes === changes) changedMemo.map.set(item, at);
+  return at;
 }
 
 // Which state group an item is in, ignoring the pin: needs, done, working, idle or earlier.
@@ -591,7 +637,9 @@ export function groupItems(items, changes, now, listed = new Map(), seen = {}) {
     groups.find((g) => g.id === id).items.push(item);
   }
   for (const g of groups) {
-    g.items.sort((a, b) => isStale(b, changes, now) - isStale(a, changes, now) || changedAt(b, changes) - changedAt(a, changes));
+    // Earlier is a directory of places to return to: A-Z, so each keeps its place.
+    if (g.id === "earlier") g.items.sort((a, b) => (a.title ?? titleOf(a)).localeCompare(b.title ?? titleOf(b), undefined, { sensitivity: "base" }));
+    else g.items.sort((a, b) => isStale(b, changes, now) - isStale(a, changes, now) || changedAt(b, changes) - changedAt(a, changes));
   }
   return groups.filter((g) => g.items.length);
 }
@@ -680,7 +728,8 @@ export function fitRow(listWidth, width, title, { machine = null, count = null, 
 // Spaces that hold no live agent and no task terminal, in Herdr's order.
 export function shellSpaces(spaceList, terms) {
   const byAddress = new Map(terms.map((t) => [t.address, t]));
-  const working = terms.filter((t) => isAgent(t) || (isLive(t) && taskIdOf(t)));
+  // An Eye's space is the Eye's, even while it runs no agent (it never shows as a shell row).
+  const working = terms.filter((t) => isAgent(t) || (isLive(t) && (taskIdOf(t) || isEye(t))));
   const withAgent = new Set(working.map((t) => homeSpace(t, byAddress, spaceList)?.id).filter(Boolean));
   return spaceList.filter((s) => !withAgent.has(s.id));
 }
@@ -757,12 +806,45 @@ export function reachability(prev, listed, layouts, now) {
   ];
 }
 
-// ── The Eye: one agent above everything, a live terminal labelled tower.eye=1. ──
+// ── The Eye: one per area, a live terminal labelled tower.eye=1 and tower.area=<area id>. ──
 
-// The Eye: the newest live terminal carrying tower.eye=1 (others with it are ordinary items).
-export function findEye(terms) {
-  const eyes = terms.filter((t) => isLive(t) && t.labels?.["tower.eye"] === "1");
-  return eyes.sort((a, b) => (b.created_ms ?? 0) - (a.created_ms ?? 0))[0] ?? null;
+export const isEye = (t) => t?.labels?.["tower.eye"] === "1";
+
+// An area's Eye: the newest live one labelled with the area, else an older Eye for all areas (no
+// tower.area), which serves every area that has none of its own. Null for an area without Eye.
+export function findEye(terms, area, config = null) {
+  if (config && eyeOff(config, area)) return null;
+  const eyes = terms.filter((t) => isLive(t) && isEye(t)).sort((a, b) => (b.created_ms ?? 0) - (a.created_ms ?? 0));
+  return eyes.find((t) => area != null && t.labels?.["tower.area"] === area) ?? eyes.find((t) => !t.labels?.["tower.area"]) ?? null;
+}
+
+// The area's own Eye settings ({} when it names none); off: the settings say it has no Eye.
+const areaById = (config, id) => config.areas.find((a) => a.id === id) ?? null;
+export const areaEye = (config, id) => (areaById(config, id)?.eye || {});
+export const eyeOff = (config, id) => areaById(config, id)?.eye === false;
+export const areaLabel = (config, id) => areaById(config, id)?.label ?? id;
+
+// The agent an area's Eye runs: the area's own, else roles.eye (an unknown id falls back).
+export const eyeAgentOf = (config, id) => agentById(config, areaEye(config, id).agent) ?? agentById(config, config.roles.eye) ?? config.agents[0];
+
+// Areas whose Eye names an agent the settings don't have: their labels.
+export const unknownEyeAgents = (config) => config.areas
+  .filter((a) => a.eye && a.eye.agent !== undefined && !agentById(config, a.eye.agent)).map((a) => a.label);
+
+// Its folder: the area's own, else <eye.folder>/<area id>, else <tower folder>/eye/<area id>
+// (a slash in the id becomes "-"). ~ is the caller's to expand.
+export function eyeFolder(config, id, towerDir) {
+  const own = areaEye(config, id).folder;
+  if (own) return own;
+  const name = String(id).replaceAll("/", "-");
+  return config.eye.folder ? `${config.eye.folder}/${name}` : `${towerDir}/eye/${name}`;
+}
+
+// The areas whose Eye waits on you, each adding 1 to that area's red count.
+export function eyeNeeds(terms, config, listed) {
+  const counts = new Map();
+  for (const a of config.areas) if (eyeWaiting(findEye(terms, a.id, config), listed)) counts.set(a.id, 1);
+  return counts;
 }
 
 // The Eye's second line, only while it waits on you: what kind of wait, and its task.ask label
@@ -824,14 +906,17 @@ export const withEnv = (vars, argv) => ["env", ...Object.entries(vars).filter(([
 
 // The Eye's first message: its rules, then one plain line; the skill says the rest. Without the
 // skill, the full text (the start command and settings are in $TOWER_NEW and $TOWER_CONFIG).
-export function eyeMessage(config) {
-  const rules = config.eye?.rules ?? [];
+export function eyeMessage(config, area) {
+  const rules = [...(config.eye?.rules ?? []), ...(areaEye(config, area).rules ?? [])];
+  const of = area == null ? "the Tower" : `the ${areaLabel(config, area)} area`;
   const body = config.skill
-    ? [`You are the Eye of the Tower: follow the ${config.skill} skill's Eye part.`]
+    ? [`You are the Eye of ${of}: follow the ${config.skill} skill's Eye part.`]
     : [
-      "You are the Eye of the Tower: the one agent above all the person's work. They tell you what they want; you start leads for new tasks, pass messages to leads that exist, and tell them what is stuck or waiting.",
+      `You are the Eye of ${of} ($TOWER_AREA): the person tells you what they want done there; you start leads for new tasks, pass messages to leads that exist, and tell them what is stuck or waiting.`,
       "You see every hc terminal on every machine with hc ls --json. A task is the terminals sharing a task.id label; its lead has task.role=lead, its title is in task.title, and task.ask is set when it waits on them.",
-      "For a new piece of work, start a lead with \"$TOWER_NEW\" followed by a recipe id from the settings file \"$TOWER_CONFIG\" (chosen by what they asked and where it belongs) and their words in quotes.",
+      "Your tasks are those whose lead has task.area=$TOWER_AREA; a lead without task.area is the area's whose machines (in the settings file \"$TOWER_CONFIG\") hold its machine, else the area with default: true.",
+      "For a new piece of work, start a lead with \"$TOWER_NEW\" followed by the id of one of your area's recipes from \"$TOWER_CONFIG\" (chosen by what they asked) and their words in quotes.",
+      "Work for another area: tell them which area's Eye to ask; don't start it or pass it on. Send only to your area's leads.",
       "For something a task already covers, pass it to that task's lead with hc send <lead address> \"<their words>\".",
       "When they ask what is stuck or waiting, answer from hc ls --json and the labels, never from memory.",
       "Never do task work yourself. Never end or close anything unless they ask. When it is unclear whether something is new work or belongs to an existing task, ask them.",
@@ -845,13 +930,95 @@ export function eyeMessage(config) {
 export const REQUEST_MAX_AGE = 2 * 60 * 1000;
 export const REQUEST_MAX_BYTES = 64 * 1024;
 export const ANSWER_KEEP_MINUTES = 10;
-// Renewed every 30 s; free 45 s after the last renewal, so a reloaded mod (whose old copy may
-// never release it) takes over within 75 s, inside tower-new's 90 s wait.
-export const LEASE_MS = 45 * 1000;
+// A lease (the inbox's, the recorder's) is renewed every LEASE_RENEW_MS and free LEASE_MS after the
+// last renewal, so the copy that follows one which went without closing (a mod reload) takes over
+// within half a minute: inside tower-new's 25 s wait from the moment it can act, and before the
+// recorder's beat (once a minute) is two minutes old, which would draw a "Herdr was closed" band.
+export const LEASE_MS = 20 * 1000;
+export const LEASE_RENEW_MS = 10 * 1000;
+// The recorder's lease, which nobody waits on: renewed every 20 s, free after 45 s. Its renewals are
+// the recorder's sign of life (a takeover draws no "Herdr was closed" band while they kept coming).
+export const REC_LEASE_MS = 45 * 1000;
+export const REC_LEASE_RENEW_MS = 20 * 1000;
+
+// Which paths of an inbox watch batch (watchFolder) are requests to read: null when the batch says
+// to look at the whole folder (it holds the folder itself, or there was no batch: the timer
+// fallback); [] when none is (a dotfile, an answer, anything else): an idle inbox does nothing.
+export function inboxBatch(paths, inbox) {
+  // The folder itself, or a path spelled otherwise (a link resolved): the whole folder.
+  if (!Array.isArray(paths) || paths.some((p) => p === inbox || p === `${inbox}/` || !p.startsWith(`${inbox}/`))) return null;
+  return [...new Set(paths.filter((p) => p.startsWith(`${inbox}/`) && p.endsWith(".json")
+    && !p.slice(inbox.length + 1).includes("/") && !p.split("/").pop().startsWith(".")))];
+}
 
 // Only one copy of the mod acts on requests: the one holding the lease (lease: {id, at}), which
 // it renews; a lease nobody renewed for LEASE_MS is free.
-export const mayAct = (lease, id, now) => !lease || lease.id === id || now - lease.at > LEASE_MS;
+export const mayAct = (lease, id, now, ms = LEASE_MS) => !lease || lease.id === id || now - lease.at > ms;
+
+// A lease held in a small file ({id, at}), taken and renewed with a compare-and-swap write (write:
+// writeTextFile(path, text, expected)), so no mod redraws and two copies never both hold it. Its
+// reads and writes go one at a time (a renewal can't race a take in the same copy); a write that
+// lost reads the file again and counts as held when it names this copy. read(path) gives null
+// for a missing file.
+// A holder renews by writing alone (expecting the text it wrote last), no read; otherAt: when
+// another copy last renewed it, as this copy last read it (a takeover's sign of life).
+export function leaseKeeper({ path, id, read, write, ms = LEASE_MS, now = () => Date.now() }) {
+  let chain = Promise.resolve();
+  let held = false;
+  let at = 0;
+  let mine = null;
+  let otherAt = 0;
+  const step = (f) => (chain = chain.then(f, f));
+  const parse = (text) => {
+    try {
+      return JSON.parse(text ?? "null");
+    } catch {
+      return null;
+    }
+  };
+  return {
+    held: () => held,
+    // A renewal is due (or this copy doesn't hold it).
+    due: (every = LEASE_RENEW_MS) => !held || now() - at >= every,
+    // Takes a free or stale lease, or renews this copy's: whether this copy holds it now.
+    otherAt: () => otherAt,
+    take: () => step(async () => {
+      const t = now();
+      const next = JSON.stringify({ id, at: t });
+      // Held: the file is what this copy wrote last, unless another took it meanwhile.
+      if (held && mine != null) {
+        try {
+          await write(path, next, mine);
+          mine = next;
+          at = t;
+          return true;
+        } catch {}
+      }
+      const text = await read(path).catch(() => null);
+      const lease = parse(text);
+      if (lease && lease.id !== id) otherAt = Math.max(otherAt, lease.at ?? 0);
+      if (!mayAct(lease, id, t, ms)) return (held = false);
+      try {
+        await write(path, next, text);
+        mine = next;
+        at = t;
+        held = true;
+      } catch {
+        const again = await read(path).catch(() => null);
+        held = parse(again)?.id === id;
+        mine = held ? again : null;
+      }
+      return held;
+    }),
+    // Lets it go at once (a close), if this copy still holds it.
+    release: () => step(async () => {
+      const text = await read(path).catch(() => null);
+      if (held && parse(text)?.id === id) await write(path, "null", text).catch(() => null);
+      held = false;
+      mine = null;
+    }),
+  };
+}
 
 // A request as written ({recipe, words, agent?, at?}), checked: what to start, or why not.
 // age: how old it was when first seen (its at, else the file's time).
@@ -861,6 +1028,10 @@ export function checkRequest(req, config, age) {
   if (age < -REQUEST_MAX_AGE) return { ok: false, why: "its time is more than two minutes ahead" };
   const recipe = config.recipes.find((r) => r.id === req.recipe);
   if (!recipe) return { ok: false, why: `there is no recipe "${req.recipe}"; the settings have ${config.recipes.map((r) => r.id).join(", ")}` };
+  // An area's Eye (tower-new sends its TOWER_AREA) starts only its own area's recipes.
+  if (req.area != null && recipe.area !== req.area) {
+    return { ok: false, why: `the recipe ${recipe.id} is in ${areaLabel(config, recipe.area)}; this is ${areaLabel(config, req.area)}'s Eye` };
+  }
   const words = typeof req.words === "string" ? req.words.trim() : "";
   if (!words) return { ok: false, why: "no words: say what to do" };
   if (req.agent !== undefined && !config.agents.some((a) => a.id === req.agent)) {
@@ -886,7 +1057,7 @@ export function skillCheck(skill, eye = false) {
 export function firstMessage(recipe, config, id, words, skillHere = Boolean(config.skill)) {
   const rules = recipe.rules ?? [];
   const workers = `Start workers with: ${shellQuote(workerAgent(config, recipe).argv)}`;
-  if (config.skill && skillHere) return [...rules, `Lead this with the ${config.skill} skill (questions to me go through task.ask): ${words}`].join("\n");
+  if (config.skill && skillHere) return [...rules, `Lead task ${id} with the ${config.skill} skill (questions to me go through task.ask): ${words}`].join("\n");
   const body = [config.contract.replaceAll("{id}", id).replaceAll("{worker-skill}", config.skill ? `; use the ${config.skill} skill if you have it` : ""), workers];
   return [...rules, ...body, `Task: ${words}`].join("\n");
 }
@@ -972,6 +1143,21 @@ export function searchItems(items, query, word = "this computer") {
 // The area an item is in: its lead's task.area, else the machine's area, else the default.
 export const itemArea = (config, item) => areaOf(config, item.machine, item.taskArea);
 
+// The model, once per change: its inputs as one string cost less than the model (QuickJS, 150
+// terminals: 0.4 ms against 1.7 ms), so a render with nothing new (a hover, another mod's shared
+// state, a timer) reuses the last one. now counts by the minute: an item turns "earlier" or stale at
+// most a minute late, when the minute's redraw comes anyway.
+// memo: one per caller ({}), so two callers with other inputs never evict each other.
+export function taskModelOnce(ctx, memo) {
+  // changesVersion: a caller that owns its changes map says when it changed instead of listing it.
+  const key = JSON.stringify([ctx.terms, [...(ctx.listed ?? [])], ctx.spaces, ctx.changesVersion ?? [...(ctx.changes ?? [])], ctx.seen ?? {}, ctx.titles ?? {},
+    ctx.reach ?? [], ctx.eye?.address ?? null, Math.floor(ctx.now / 60000)]);
+  if (memo.key === key && memo.config === ctx.config) return memo.m;
+  const m = taskModel(ctx);
+  Object.assign(memo, { key, config: ctx.config, m });
+  return m;
+}
+
 // One call for every view. ctx: {terms, listed (agents() status by address), spaces, config,
 // changes, seen, now, titles (remembered), reach, eye (the Eye's terminal, never an item)}.
 // Returns {areas, items, loose, all, titles}: titles is the new remembered map, or null.
@@ -979,7 +1165,17 @@ export const itemArea = (config, item) => areaOf(config, item.machine, item.task
 //   title (titleOf), area (the area's id), group (pinned or its state), state (needs, done, working, idle, earlier: the group
 //   ignoring the pin), word (rowWord), need ({by, kind, text} or null), changed (ms), stale.
 export function taskModel({ terms, listed, spaces: spaceList, config, changes, seen = {}, now, titles = {}, reach = [], eye = null }) {
-  const found = workItems(terms, listed, spaceList).filter((i) => !eye || i.lead?.address !== eye.address);
+  changedMemo = { changes, map: new WeakMap() };
+  try {
+    return taskModelPass({ terms, listed, spaceList, config, changes, seen, now, titles, reach, eye });
+  } finally {
+    changedMemo = null;
+  }
+}
+
+function taskModelPass({ terms, listed, spaceList, config, changes, seen, now, titles, reach, eye }) {
+  // Every Eye (each area's, and an old one for all) is never an item.
+  const found = workItems(terms, listed, spaceList).filter((i) => !isEye(i.lead) && (!eye || i.lead?.address !== eye.address));
   const learned = rememberTitles(found, titles, terms, reach);
   const { items, loose } = placeLeftOvers(found, spaceList, listed);
   const ctx = { listed, seen, now, changes };
@@ -1009,7 +1205,10 @@ export function taskModel({ terms, listed, spaces: spaceList, config, changes, s
 // events.json: {v:1, beat, lanes:{address: {task, taskId, taskTitle, area, role, name, title,
 // machine, parent, created}}, events:[{a, s, turn, at, msg}], looks:[{a, at}], gaps:[{m, from, to}]}.
 
-export const REC_KEEP_MS = 7 * 86400000;
+// events.json keeps 2 days; what is older has moved into the task files (moveOlder), up to
+// rec.moved. A record no move has reached yet keeps 7 days, as before.
+export const REC_KEEP_MS = 2 * 86400000;
+const REC_KEEP_UNMOVED_MS = 7 * 86400000;
 export const REC_GAP_MS = 120 * 1000;
 export const SCREEN_KEEP_MS = 26 * 3600000;
 export const SCREEN_MAX = 1500;
@@ -1020,8 +1219,10 @@ export const newRecord = () => ({ v: 1, beat: 0, lanes: {}, events: [], looks: [
 const recWord = (t) => (t.status === "error" ? "blocked" : t.status ?? null);
 
 // A Herdr gap: nobody watched between the last beat and this start.
-export function recordStart(rec, now) {
-  if (rec.beat && now - rec.beat > REC_GAP_MS) rec.gaps.push({ m: "herdr", from: rec.beat, to: now });
+// alive: another sign of life (the recorder lease's last renewal by the copy before this one).
+export function recordStart(rec, now, alive = 0) {
+  const last = Math.max(rec.beat || 0, alive || 0);
+  if (last && now - last > REC_GAP_MS) rec.gaps.push({ m: "herdr", from: last, to: now });
   rec.beat = now;
   return rec;
 }
@@ -1030,11 +1231,23 @@ export function recordStart(rec, now) {
 // left-overs; look: the focused agent's address while the window is active, else undefined (no
 // look recorded); reach: reachability(). Returns {dirty, toRead: [{a, at}]} (screens to read: a
 // change into blocked, done or idle).
+// Each address's last event, kept per events array (prune, merge and trim make a new one); a step
+// updates it as it pushes, so a render costs what changed, not the whole history.
+const lastEvents = new WeakMap();
+function lastOf(events) {
+  const was = lastEvents.get(events);
+  if (was && was.n === events.length) return was.map;
+  const map = new Map();
+  for (const e of events) map.set(e.a, e);
+  lastEvents.set(events, { n: events.length, map });
+  return map;
+}
+
 export function recordStep(rec, { terms, all, now, reach = [], look }) {
   let dirty = false;
   const toRead = [];
-  const last = new Map();
-  for (const e of rec.events) last.set(e.a, e);
+  const last = lastOf(rec.events);
+  const n0 = rec.events.length;
   // Lanes: who each terminal is, resolved now (the past keeps its own grouping).
   for (const item of all) {
     for (const t of [item.lead, ...item.live].filter(Boolean)) {
@@ -1067,7 +1280,8 @@ export function recordStep(rec, { terms, all, now, reach = [], look }) {
     const at = !machineOf(t.address) && t.status_ms && (!prev || t.status_ms > prev.at) ? t.status_ms : now;
     const msg = s === "blocked" || s === "done" ? t.report?.msg?.trim() || null : null;
     rec.events.push({ a: t.address, s, turn: t.turn ?? null, at, msg });
-    if (s === "blocked" || s === "done" || s === "idle") toRead.push({ a: t.address, at });
+    // A screen for a change; of a state first seen only an ask's (a start would read every agent's).
+    if ((prev || s === "blocked") && (s === "blocked" || s === "done" || s === "idle")) toRead.push({ a: t.address, at });
     dirty = true;
   }
   // Gone from a machine that answered: ended when first missed.
@@ -1093,14 +1307,26 @@ export function recordStep(rec, { terms, all, now, reach = [], look }) {
     rec.looks.push({ a: look, at: now });
     dirty = true;
   }
-  if (dirty) rec.events.sort((x, y) => x.at - y.at);
+  const ev = rec.events;
+  if (ev.length > n0) {
+    // Usually already in order (each push is now or later); sort only when one is not.
+    let ordered = true;
+    for (let i = Math.max(1, n0); i < ev.length && ordered; i++) ordered = ev[i - 1].at <= ev[i].at;
+    if (ordered) {
+      for (let i = n0; i < ev.length; i++) last.set(ev[i].a, ev[i]);
+      lastEvents.set(ev, { n: ev.length, map: last });
+    } else {
+      ev.sort((x, y) => x.at - y.at);
+      lastEvents.delete(ev);
+    }
+  }
   return { dirty, toRead };
 }
 
 // Drops what is older than REC_KEEP_MS, keeping each address's last event before the cut (so its
 // state at the window's left edge is known) and its lane while it has events.
 export function pruneRecord(rec, now) {
-  const cut = now - REC_KEEP_MS;
+  const cut = Math.min(now - REC_KEEP_MS, rec.moved ?? now - REC_KEEP_UNMOVED_MS);
   const keep = new Map();
   for (const e of rec.events) if (e.at < cut) keep.set(e.a, e);
   rec.events = rec.events.filter((e) => e.at >= cut || keep.get(e.a) === e);
@@ -1114,8 +1340,10 @@ export function pruneRecord(rec, now) {
 // Two writers (another window, a seeded file): the union of both, mine winning on lanes.
 export function mergeRecords(theirs, mine) {
   const union = (xs, key) => [...new Map(xs.map((x) => [key(x), x])).values()];
+  const moved = Math.max(theirs.moved ?? 0, mine.moved ?? 0);
   return {
     v: 1,
+    ...(moved ? { moved } : {}),
     beat: Math.max(theirs.beat ?? 0, mine.beat ?? 0),
     lanes: { ...(theirs.lanes ?? {}), ...mine.lanes },
     events: union([...(theirs.events ?? []), ...mine.events], (e) => `${e.a}|${e.at}|${e.s}`).sort((x, y) => x.at - y.at),
@@ -1125,19 +1353,401 @@ export function mergeRecords(theirs, mine) {
   };
 }
 
-// screens.json: {"address@at": text}; the last SCREEN_MAX characters, 26 hours, oldest out past
-// SCREENS_MAX_BYTES.
-export function keepScreens(screens, now) {
+// Herdr refuses to read or write a text file over 1 MiB (mod_files::LIMIT, in UTF-8 bytes). Each
+// recorder file stays under REC_FILE_MAX, measured the same way.
+export const FILE_LIMIT = 1024 * 1024;
+export const REC_FILE_MAX = 900 * 1024;
+export const REC_MSG_CUT = 120;
+
+// UTF-8 bytes of a string; a surrogate pair counts 6, never less than the truth. Counted by the
+// regex engine (in QuickJS about 2.5 times a JS loop), and not at all for plain ASCII.
+export function utf8Bytes(s) {
+  if (!/[^\x00-\x7f]/.test(s)) return s.length;
+  return s.length + s.replace(/[\x00-\x7f]+/g, "").length + s.replace(/[\x00-\u07ff]+/g, "").length;
+}
+
+// Whether text written as UTF-8 stays within max bytes; counted only when it could be over (a
+// UTF-16 unit is at most 3 bytes), so a 2-day events.json under 300 KB costs nothing.
+export const fitsBytes = (text, max) => text.length * 3 <= max || utf8Bytes(text) <= max;
+const jsonBytes = (x) => utf8Bytes(JSON.stringify(x));
+
+// Brings events.json under max (changed in place), cheapest loss first: looks, closed gaps, then
+// working/idle/ended events oldest first (each agent's last event, every ask and Done and the event
+// that ends them stay), lanes no event names, ask and Done messages cut to REC_MSG_CUT; only if all
+// that is not enough, the oldest events of any kind, so recording never stops. Returns how many
+// things went (0: it fitted).
+export function fitRecord(rec, max = REC_FILE_MAX) {
+  let over = jsonBytes(rec) - max;
+  if (over <= 0) return 0;
+  let gone = 0;
+  const cost = (x) => jsonBytes(x) + 1;
+  while (over > 0 && rec.looks.length) {
+    over -= cost(rec.looks.shift());
+    gone++;
+  }
+  for (const g of [...rec.gaps].filter((x) => x.to != null).sort((x, y) => x.from - y.from)) {
+    if (over <= 0) break;
+    rec.gaps.splice(rec.gaps.indexOf(g), 1);
+    over -= cost(g);
+    gone++;
+  }
+  if (over > 0) {
+    const last = new Map();
+    const keep = new Set();
+    const before = new Map();
+    for (const e of rec.events) {
+      last.set(e.a, e);
+      if (e.s === "blocked" || e.s === "done" || ["blocked", "done"].includes(before.get(e.a))) keep.add(e);
+      before.set(e.a, e.s);
+    }
+    const drop = new Set();
+    for (const e of rec.events) {
+      if (over <= 0) break;
+      if (keep.has(e) || last.get(e.a) === e) continue;
+      drop.add(e);
+      over -= cost(e);
+    }
+    rec.events = rec.events.filter((e) => !drop.has(e));
+    gone += drop.size;
+  }
+  if (over > 0) {
+    const used = new Set(rec.events.map((e) => e.a));
+    for (const a of Object.keys(rec.lanes)) {
+      if (over <= 0) break;
+      if (used.has(a)) continue;
+      over -= jsonBytes(a) + cost(rec.lanes[a]);
+      delete rec.lanes[a];
+      gone++;
+    }
+  }
+  for (const e of rec.events) {
+    if (over <= 0) break;
+    if (!e.msg || e.msg.length <= REC_MSG_CUT) continue;
+    const was = jsonBytes(e.msg);
+    e.msg = e.msg.slice(0, REC_MSG_CUT);
+    over -= was - jsonBytes(e.msg);
+    gone++;
+  }
+  let i = 0;
+  while (over > 0 && i < rec.events.length) over -= cost(rec.events[i++]);
+  if (i) rec.events = rec.events.slice(i);
+  return gone + i;
+}
+
+// screens.json: {"address@at": text}; the last SCREEN_MAX characters, 26 hours, and at most
+// SCREENS_MAX_BYTES as written (UTF-8, JSON escapes included): past it, idle screens go first,
+// oldest first, then any, oldest first. rec: the record that says which screens are idle.
+// A screen's bytes as written, measured once per screen (its key and text never change).
+const screenCosts = new Map();
+function screenCost(k, text) {
+  const was = screenCosts.get(k);
+  if (was && was.text === text) return was.cost;
+  const cost = jsonBytes(k) + jsonBytes(text) + 2;
+  screenCosts.set(k, { text, cost });
+  return cost;
+}
+
+export function keepScreens(screens, now, rec = null) {
   const at = (k) => Number(k.slice(k.lastIndexOf("@") + 1));
-  const keys = Object.keys(screens).filter((k) => now - at(k) <= SCREEN_KEEP_MS).sort((x, y) => at(y) - at(x));
-  const out = {};
+  const keys = Object.keys(screens).filter((k) => typeof screens[k] === "string" && now - at(k) <= SCREEN_KEEP_MS).sort((x, y) => at(x) - at(y));
+  const cost = new Map(keys.map((k) => [k, screenCost(k, screens[k])]));
+  if (screenCosts.size > 2 * keys.length + 100) for (const k of screenCosts.keys()) if (!cost.has(k)) screenCosts.delete(k);
   let bytes = 2;
-  for (const k of keys) {
-    bytes += k.length + screens[k].length + 6;
-    if (bytes > SCREENS_MAX_BYTES) break;
-    out[k] = screens[k];
+  for (const k of keys) bytes += cost.get(k);
+  const idle = new Set((rec?.events ?? []).filter((e) => e.s === "idle").map((e) => `${e.a}@${e.at}`));
+  const drop = new Set();
+  for (const first of [(k) => idle.has(k), () => true]) {
+    for (const k of keys) {
+      if (bytes <= SCREENS_MAX_BYTES) break;
+      if (drop.has(k) || !first(k)) continue;
+      drop.add(k);
+      bytes -= cost.get(k);
+    }
+  }
+  return Object.fromEntries(keys.filter((k) => !drop.has(k)).map((k) => [k, screens[k]]));
+}
+
+// backfill.json ({key: {at, …}}) under max: the entries read longest ago go first.
+export function fitBackfill(cache, max = REC_FILE_MAX) {
+  let over = jsonBytes(cache) - max;
+  if (over <= 0) return cache;
+  const out = { ...cache };
+  for (const k of Object.keys(out).sort((x, y) => (out[x]?.at ?? 0) - (out[y]?.at ?? 0))) {
+    if (over <= 0) break;
+    over -= jsonBytes(k) + jsonBytes(out[k]) + 2;
+    delete out[k];
   }
   return out;
+}
+
+// ── The long past (timeline-long.md, Format): once an hour, what events.json holds past 2 days moves
+// into one file per task (timeline/tasks/<encoded task key>.json), thinned with age; index.json
+// names them; a task ended 90 days ago leaves one line in ended.json, kept a year. ──
+const DAY_MS = 86400000;
+export const THIN_FORMS = [
+  { age: 7 * DAY_MS, merge: 600, cut: 120 },
+  { age: 30 * DAY_MS, merge: 3600, cut: 60 },
+];
+export const ENDED_KEEP_MS = 90 * DAY_MS;
+export const SUMMARY_KEEP_MS = 365 * DAY_MS;
+export const FOLDER_BUDGET = 25 * 1024 * 1024;
+export const laneKey = (a, created) => `${a}@${created ?? 0}`;
+export const taskFileName = (key) => `tasks/${encodeURIComponent(key)}.json`;
+export const newIndex = () => ({ v: 1, at: 0, gaps: [], tasks: {} });
+export const newEnded = () => ({ v: 1, tasks: {} });
+const newTaskFile = (part) => ({ v: 1, task: part.key, taskId: part.taskId ?? null, title: part.title ?? null, area: part.area ?? null,
+  from: null, until: null, ended: null, lanes: {}, looks: [] });
+
+// What events.json holds from rec.moved up to 2 days ago, per task and lane (the Eye is no task):
+// {cut, gaps, tasks: [{key, taskId, title, area, lanes: {laneKey: {…lane, events}}, looks}]}. rec unchanged.
+export function takeOlder(rec, now) {
+  const cut = now - REC_KEEP_MS;
+  const since = rec.moved ?? -Infinity;
+  const tasks = new Map();
+  const place = (a) => {
+    const lane = rec.lanes[a];
+    if (!lane?.task || lane.eye) return null;
+    if (!tasks.has(lane.task)) tasks.set(lane.task, { key: lane.task, taskId: lane.taskId ?? null, title: lane.taskTitle ?? null, area: lane.area ?? null, lanes: {}, looks: [] });
+    const t = tasks.get(lane.task);
+    const k = laneKey(a, lane.created);
+    t.lanes[k] ??= { a, role: lane.role ?? null, name: lane.name ?? null, title: lane.title ?? null, machine: lane.machine ?? null,
+      parent: lane.parent ?? null, created: lane.created ?? null, events: [] };
+    return { t, k };
+  };
+  for (const e of rec.events) {
+    if (e.at < since || e.at >= cut) continue;
+    const at = place(e.a);
+    if (at) at.t.lanes[at.k].events.push({ s: e.s, turn: e.turn ?? null, at: e.at, msg: e.msg ?? null });
+  }
+  for (const l of rec.looks) {
+    if (l.at < since || l.at >= cut || !l.a) continue;
+    const at = place(l.a);
+    if (at) at.t.looks.push({ a: at.k, at: l.at });
+  }
+  const gaps = rec.gaps.filter((g) => g.to != null && g.to < cut && g.to >= since);
+  return { cut, gaps, tasks: [...tasks.values()] };
+}
+
+// A part of takeOlder added to its task file (or a new one); adding the same part twice changes nothing.
+export function addToTaskFile(file, part) {
+  const f = file ?? newTaskFile(part);
+  for (const k of ["taskId", "title", "area"]) if (part[k]) f[k] = part[k];
+  const ats = [];
+  for (const [k, l] of Object.entries(part.lanes)) {
+    const was = f.lanes[k] ?? { ended: null, thinTo: null, w: [], asks: [], done: [], events: [] };
+    const seen = new Set(was.events.map((e) => `${e.at}|${e.s}`));
+    const fresh = l.events.filter((e) => !seen.has(`${e.at}|${e.s}`) && (was.thinTo == null || e.at >= was.thinTo));
+    const events = [...was.events, ...fresh].sort((x, y) => x.at - y.at);
+    ats.push(...fresh.map((e) => e.at));
+    const { events: _drop, ...meta } = l;
+    f.lanes[k] = { ...was, ...meta, ended: events.find((e) => e.s === "ended")?.at ?? was.ended, events };
+  }
+  const seenLooks = new Set(f.looks.map((x) => `${x.a}|${x.at}`));
+  const looks = part.looks.filter((x) => !seenLooks.has(`${x.a}|${x.at}`));
+  f.looks = [...f.looks, ...looks].sort((x, y) => x.at - y.at);
+  ats.push(...looks.map((x) => x.at));
+  if (ats.length) {
+    f.from = Math.min(f.from ?? Infinity, ...ats);
+    f.until = Math.max(f.until ?? -Infinity, ...ats);
+  }
+  return f;
+}
+
+// Timeline's rebuilt pasts (backfill.json) into a task file: a lane's own as rebuilt {covers,
+// turns}; an agent hc forgot ("transcript:<program>:<session>", task: this task's id) as a lane of
+// its own (a: null), ended at its last moment.
+export function addRebuilt(file, fill) {
+  for (const [k, lane] of Object.entries(file.lanes)) {
+    const e = fill[k];
+    if (e?.turns) lane.rebuilt = { covers: e.covers ?? null, turns: e.turns };
+  }
+  for (const [k, e] of Object.entries(fill)) {
+    if (!k.startsWith("transcript:") || !e?.turns || e.task == null || e.task !== file.taskId) continue;
+    file.lanes[k] = { a: null, role: e.role ?? "worker", name: e.name ?? null, title: null, machine: e.machine ?? null, parent: null,
+      created: e.first ?? null, ended: e.last ?? null, thinTo: e.last ?? null, w: [], asks: [], done: [], events: [],
+      rebuilt: { covers: e.covers ?? e.first ?? null, turns: e.turns } };
+    if (e.first != null) file.from = Math.min(file.from ?? Infinity, e.first);
+  }
+  return file;
+}
+
+// The indexed tasks whose rebuilt pasts changed since their file was last written.
+export function rebuiltTasks(fill, rec, index) {
+  const taskOfLane = new Map(Object.entries(rec.lanes).map(([a, l]) => [laneKey(a, l.created), l.task]));
+  const out = new Set();
+  for (const [k, e] of Object.entries(fill)) {
+    const task = k.startsWith("transcript:") ? (e?.task != null ? `task:${e.task}` : null) : taskOfLane.get(k);
+    // An entry without its own time was written when the index was.
+    if (task && index.tasks[task] && (e?.at ?? 0) > (index.tasks[task].thinned ?? index.at ?? 0)) out.add(task);
+  }
+  return out;
+}
+
+// A working stretch [from, to] (seconds) onto w, merged with the last one across a gap under merge.
+function addStretch(w, from, to, merge) {
+  if (!(to > from)) return;
+  const last = w.at(-1);
+  if (last && from - last[1] < merge) last[1] = Math.max(last[1], to);
+  else w.push([from, to]);
+}
+const cutMsg = (m, n) => (m == null ? null : m.slice(0, n));
+
+// A lane's raw events before cut (ms) become thinned form: each event lasts until the next, so the
+// last raw one stays raw unless it is the lane's end. thinTo: where the raw events start.
+function thinLane(lane, cut, form) {
+  const ev = lane.events;
+  let k = ev.findIndex((e) => e.at >= cut);
+  if (k < 0) k = ev.at(-1)?.s === "ended" ? ev.length : ev.length - 1;
+  if (k <= 0) return;
+  const c = lane.created ?? 0;
+  const sec = (t) => Math.round((t - c) / 1000);
+  for (let i = 0; i < k; i++) {
+    const e = ev[i];
+    const end = ev[i + 1]?.at ?? e.at;
+    if (e.s === "working") addStretch(lane.w, sec(e.at), sec(end), form.merge);
+    else if (e.s === "blocked") lane.asks.push([sec(e.at), sec(end), cutMsg(e.msg, form.cut)]);
+    else if (e.s === "done" && lane.role === "lead") lane.done.push([sec(e.at), cutMsg(e.msg, form.cut)]);
+  }
+  lane.thinTo = ev[k]?.at ?? ev[k - 1].at;
+  lane.events = ev.slice(k);
+}
+
+// The thinned part before cut (ms) in a coarser form: stretches merged wider, messages cut shorter.
+function coarsenLane(lane, cut, form) {
+  const lim = Math.round((cut - (lane.created ?? 0)) / 1000);
+  const w = [];
+  for (const st of lane.w) {
+    if (st[1] <= lim) addStretch(w, st[0], st[1], form.merge);
+    else w.push(st);
+  }
+  lane.w = w;
+  lane.asks = lane.asks.map((x) => (x[0] < lim ? [x[0], x[1], cutMsg(x[2], form.cut)] : x));
+  lane.done = lane.done.map((x) => (x[0] < lim ? [x[0], cutMsg(x[1], form.cut)] : x));
+}
+
+// A task file thinned by age (forms 1 and 2); looks raw for 7 days, then one per lane per hour.
+export function thinTaskFile(file, now) {
+  const [one, two] = THIN_FORMS;
+  for (const lane of Object.values(file.lanes)) {
+    thinLane(lane, now - one.age, one);
+    coarsenLane(lane, now - two.age, two);
+  }
+  const hourly = new Set();
+  file.looks = file.looks.filter((l) => {
+    if (l.at >= now - one.age) return true;
+    const k = `${l.a}|${Math.floor(l.at / 3600000)}`;
+    if (hourly.has(k)) return false;
+    hourly.add(k);
+    return true;
+  });
+  return file;
+}
+
+// A task file over max: its oldest third one form coarser, then the oldest two thirds, then all;
+// then its looks; then working stretches, oldest first; asks and Dones only if nothing else is left.
+// Returns how many rounds it took (0: it fitted).
+export function fitTaskFile(file, now, max = REC_FILE_MAX) {
+  let rounds = 0;
+  for (let third = 1; third <= 3 && jsonBytes(file) > max; third++, rounds++) coarsenTask(file, now, third);
+  if (jsonBytes(file) <= max) return rounds;
+  file.looks = [];
+  const lanes = Object.values(file.lanes);
+  for (const field of ["w", "asks", "done"]) {
+    while (jsonBytes(file) > max && lanes.some((l) => l[field].length)) {
+      for (const l of lanes) l[field].shift();
+      rounds++;
+    }
+  }
+  return rounds;
+}
+
+// One form coarser up to `thirds` thirds of the file's time (its oldest days first): raw events in
+// form 1, thinned ones in form 2.
+export function coarsenTask(file, now, thirds = 1) {
+  const [one, two] = THIN_FORMS;
+  const from = file.from ?? now;
+  const cut = from + (((file.until ?? now) - from) * thirds) / 3 + 1;
+  for (const lane of Object.values(file.lanes)) {
+    thinLane(lane, cut, one);
+    coarsenLane(lane, cut, two);
+  }
+  return file;
+}
+
+// The budget's second step: no looks older than 7 days.
+export function dropOldLooks(file, now) {
+  file.looks = file.looks.filter((l) => l.at >= now - THIN_FORMS[0].age);
+  return file;
+}
+
+// Its index.json entry (bytes: the file's size as written).
+export function indexEntry(file, bytes, thinned) {
+  const lanes = Object.entries(file.lanes);
+  return { file: taskFileName(file.task), taskId: file.taskId, title: file.title, area: file.area, from: file.from, until: file.until,
+    ended: file.ended, agents: lanes.length, endedLanes: lanes.filter(([, l]) => l.ended != null).map(([k]) => k), bytes, thinned };
+}
+
+// The task files due their thinning: a day or more since the last, holding something over 7 days
+// old (younger, thinning changes nothing); at most max a pass, longest since the last first.
+export function thinDue(index, now, max = 5) {
+  return Object.entries(index.tasks)
+    .filter(([, e]) => now - (e.thinned ?? index.at ?? 0) > DAY_MS && e.from != null && e.from < now - THIN_FORMS[0].age)
+    .sort(([, x], [, y]) => (x.thinned ?? index.at ?? 0) - (y.thinned ?? index.at ?? 0)).slice(0, max).map(([k]) => k);
+}
+
+// A task lives while its row is in the list (live: the model's item keys now); it ends when the row
+// has gone, and lives again if it comes back. Returns the keys whose ended changed.
+export function settleEnds(index, live, now) {
+  const changed = [];
+  for (const [k, e] of Object.entries(index.tasks)) {
+    if (live.has(k) && e.ended != null) e.ended = null;
+    else if (!live.has(k) && e.ended == null) e.ended = now;
+    else continue;
+    changed.push(k);
+  }
+  return changed;
+}
+
+// ended.json's line for a task file.
+export function taskSummary(file) {
+  let workMs = 0;
+  let asks = 0;
+  let longest = 0;
+  const lanes = Object.values(file.lanes);
+  for (const l of lanes) {
+    for (const [a, b] of l.w) workMs += (b - a) * 1000;
+    for (const [a, b] of l.asks) {
+      asks++;
+      if (b != null) longest = Math.max(longest, (b - a) * 1000);
+    }
+    l.events.forEach((e, i) => {
+      const end = l.events[i + 1]?.at;
+      if (e.s === "blocked") asks++;
+      if (end == null) return;
+      if (e.s === "working") workMs += end - e.at;
+      if (e.s === "blocked") longest = Math.max(longest, end - e.at);
+    });
+  }
+  return { taskId: file.taskId, title: file.title, area: file.area, from: file.from, to: file.ended ?? file.until, agents: lanes.length, asks, workMs, longestAskMs: longest };
+}
+
+// ended.json without the lines older than a year.
+export function pruneEnded(ended, now) {
+  ended.tasks = Object.fromEntries(Object.entries(ended.tasks).filter(([, t]) => now - (t.to ?? 0) < SUMMARY_KEEP_MS));
+  return ended;
+}
+
+// Over the folder's budget: what to do, in order (timeline-long.md (d)), each a step the caller
+// takes and then measures again: old looks out of every task file, then ended tasks folded into
+// ended.json (oldest ended first), then live tasks one form coarser (oldest first).
+export function budgetSteps(index) {
+  const entries = Object.entries(index.tasks);
+  const byFrom = [...entries].sort(([, x], [, y]) => (x.from ?? 0) - (y.from ?? 0));
+  return [
+    ...byFrom.map(([key]) => ({ key, step: "looks" })),
+    ...entries.filter(([, e]) => e.ended != null).sort(([, x], [, y]) => x.ended - y.ended).map(([key]) => ({ key, step: "fold" })),
+    ...byFrom.filter(([, e]) => e.ended == null).map(([key]) => ({ key, step: "coarsen" })),
+  ];
 }
 
 // ── Use: which views, shapes and variants you switch to (use.jsonl), summed up in use.md. ──

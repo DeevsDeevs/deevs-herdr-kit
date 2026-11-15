@@ -2,11 +2,9 @@
 // It keeps no grouping, no settings and no actions of its own: a card goes into the task, a member
 // chip or the question into the task with that agent open; a right-click opens the list's menu.
 
-import { div } from "gpui-kit";
-import { v_flex, h_flex } from "gpui-base";
+import { div, v_flex, h_flex } from "./perf.js";
 import { statusMark, rowMark, wordColor, duration } from "./marks.js";
-import { machineOf, localId, quietWords, GROUPS, ROW_MARKS } from "./model.js";
-import { shared } from "herdr";
+import { machineOf, localId, quietWords, GROUPS } from "./model.js";
 
 // The list's groups in the list's order, Needs you first: pinned is not a state and Earlier folds
 // into the area's line.
@@ -51,11 +49,8 @@ function press(el, act) {
     });
 }
 
-// One "Hide text" and one row-mark variant for every view, as the list keeps them.
-const hideText = () => shared("agent-tower.hideText") === true;
-const rowMarkVariant = () => (ROW_MARKS.includes(shared("agent-tower.rowMark")) ? shared("agent-tower.rowMark") : ROW_MARKS[0]);
-
-// t: theme, m: taskModel(), ui: the stage's {now, selectedKey, goInto(item, {agent}), onMenu(el, thing), here, ...}.
+// t: theme, m: taskModel(), ui: the stage's {now, selectedKey, goInto(item, {agent}), onMenu(el, thing), here,
+// hideText, rowMark, ...}: Hide text and the row-mark variant come in ui, read once per render.
 export function render(t, m, ui) {
   const all = lanes(m, ui.area);
   const todo = all.some((l) => l.todo);
@@ -109,13 +104,13 @@ function card(t, item, area, ui) {
     .border_color(need ? t.blocked + "99" : selected ? t.input : t.border)
     .hover((s) => s.border_color(t.input))
     .child(h_flex().gap(7).items_start()
-      .child(rowMark(t, item, word, rowMarkVariant()))
+      .child(rowMark(t, item, word, ui.rowMark))
       .child(div().flex_1().min_w(0).whitespace_normal().font_semibold().text_color(word === "idle" && !selected ? t.muted : t.foreground)
         .child(item.title)))
     .when(Boolean(meta), (el) => el.child(div().pl(25).text_size(11).text_color(t.dim).whitespace_normal().child(meta)))
     .when(Boolean(need), (el) => el.child(press(v_flex().id(`ask-${item.key}`).ml(25).gap(2).pl(8).border_l(2).border_color(t.blocked)
       .child(div().text_size(11).text_color(t.blocked).child(`${askerOf(item)} · ${need.kind}`))
-      .when(Boolean(need.text) && !hideText(), (q) => q.child(div().text_size(12.5).whitespace_normal().child(need.text))),
+      .when(Boolean(need.text) && !ui.hideText, (q) => q.child(div().text_size(12.5).whitespace_normal().child(need.text))),
     () => ui.goInto(item, need.by ? { agent: need.by } : undefined))))
     // Its terminals, on the selected card only: the board stays quiet, and a click on one opens it.
     .when(selected, (el) => el.child(chips(t, item, area, ui))), () => ui.goInto(item)), { task: item });
