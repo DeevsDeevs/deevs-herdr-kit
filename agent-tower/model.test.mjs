@@ -555,7 +555,35 @@ assert.deepEqual(model.forgettable(["t1", "t9", "vps/t2", "vps/t8", "rem/t5", "r
 assert.deepEqual(model.forgettable(["t9"], [], reach2), [], "an empty read forgets nothing");
 const ch = new Map([["t1", { word: null, turn: undefined, at: NOW - 60e3 }], ["t9", { word: "idle", at: NOW - 7 * 86400e3 }], ["rem/t6", { word: "idle", at: NOW - 7 * 86400e3 }]]);
 model.trackChanges(ch, live2, NOW, reach2);
-assert.ok(!ch.has("t9") && ch.has("rem/t6") && ch.has("t1"), "a week-old gone terminal goes; the quiet machine's stays");
+assert.ok(ch.get("t9")?.gone === NOW && ch.has("rem/t6") && ch.has("t1"), "a gone terminal is kept a day, marked gone; the quiet machine's stays");
+model.trackChanges(ch, live2, NOW + 86400e3 + 1, reach2);
+assert.ok(!ch.has("t9") && ch.has("rem/t6"), "gone for a day: it goes");
+// Back with the same word and turn (a restart, a read that missed it): its time stays.
+{
+  const back = new Map([["t1", { word: "idle", turn: 2, at: NOW - 5 * 86400e3, had: true }]]);
+  model.trackChanges(back, [term("t2", "s1")], NOW, [{ name: null, reachable: true }]);
+  assert.equal(back.get("t1").gone, NOW);
+  model.trackChanges(back, [term("t1", "s1", { status: "idle", turn: 2 })], NOW + 60e3, [{ name: null, reachable: true }]);
+  assert.deepEqual([back.get("t1").at, back.get("t1").gone], [NOW - 5 * 86400e3, undefined], "its age is kept");
+  // A done that comes without working before it (Herdr reports an old agent done again when it is
+  // opened) is no new finish; a done after working is.
+  model.trackChanges(back, [term("t1", "s1", { status: "done", turn: 3 })], NOW + 120e3, []);
+  assert.equal(back.get("t1").at, NOW - 5 * 86400e3, "done again after a peek: same age");
+  model.trackChanges(back, [term("t1", "s1", { status: "working", turn: 3 })], NOW + 180e3, []);
+  model.trackChanges(back, [term("t1", "s1", { status: "done", turn: 4 })], NOW + 240e3, []);
+  assert.equal(back.get("t1").at, NOW + 240e3, "a finish after working is new");
+}
+// A finish nobody looked at is Done for a day; older, it goes to Earlier with the other quiet ones.
+{
+  const lead = term("d1", "s1", { status: "done", turn: 1, labels: { "task.id": "dx", "task.role": "lead", "task.title": "Old finish" } });
+  const at = (ms) => new Map([["d1", { word: "done", turn: 1, at: NOW - ms, had: true }]]);
+  const stateAt = (ms) => model.taskModel({ terms: [lead], listed: new Map([["d1", "done"]]), spaces, config: model.parseConfig({}).config, changes: at(ms), now: NOW }).all[0].state;
+  assert.equal(stateAt(3600e3), "done");
+  assert.equal(stateAt(10 * 86400e3), "earlier", "ten days old: in Earlier, not Done");
+}
+// A–Z as a person reads it, in plain JS (Herdr's QuickJS has no Intl).
+assert.deepEqual(["Wine cellar", "dotfiles sync", "éclairs notes", "2026 car service", "10 cats", "2 cats", "Apple", "apple pie"].sort(model.compareTitles),
+  ["2 cats", "10 cats", "2026 car service", "Apple", "apple pie", "dotfiles sync", "éclairs notes", "Wine cellar"]);
 const keptTitles = model.rememberTitles([], { old1: "Old task" }, live2, reach2);
 assert.equal(keptTitles, null, "a quiet machine: no title is dropped");
 assert.deepEqual(model.rememberTitles([], { old1: "Old task" }, live2, reach2.slice(0, 2)), {}, "all answered: a task with no terminal left loses its title");

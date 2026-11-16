@@ -507,6 +507,11 @@ function goTo(address) {
     if (shared(PEEKED)) setShared(PEEKED, null);
     return run("pane.focus", { terminal: address });
   }
+  peek(address);
+}
+
+// The list's own peek, whether or not the terminal has a pane.
+function peek(address) {
   setShared(PEEKED, address);
   openOverlay({ kind: "dialog", width: 0.8, height: 0.8, layout: { type: "column", children: [
     { type: "block", size: { px: 36 }, content: { mod: "agent-tower", props: { peekBar: address } } },
@@ -518,6 +523,33 @@ function goTo(address) {
 // Whether a terminal has a pane: an agent's, or any pane showing it (a lead whose program ended and
 // left a shell is no agent any more, but its pane is still there).
 const hasPane = (address) => agents().some((a) => a.address === address && a.pane) || panes().some((p) => p.terminal === address);
+
+// Open a terminal as a real tab where a pane of it can live (model.keepPlan): here, its task's space
+// shown first, or a new space on its machine, made by labelling it; nameKeptTabs names and shows it.
+// Resolves to whether Herdr was asked.
+function keepAsTab(address, item, spaceName) {
+  const plan = model.keepPlan(address, item, spaces());
+  const sp = plan.how === "new" ? `sp${hex32()}` : null;
+  const space = sp ? { id: plan.machine ? `${plan.machine}/${sp}` : sp, name: spaceName } : null;
+  // Its tab is called by its number until named: the list names it after the terminal.
+  const name = terminals().find((x) => x.address === address)?.name || null;
+  const entry = { address, name, space, at: Date.now() };
+  setShared(KEPT, [...(shared(KEPT) ?? []).filter((k) => k.address !== address), entry]);
+  if (plan.how === "space") run("space.select", { id: plan.space.id });
+  if (!sp) {
+    run("terminal.keep", { terminal: address });
+    return Promise.resolve(true);
+  }
+  return hc(["label", address, `herdr.space=${sp}`, `herdr.tab=tb${hex32()}`]).catch((e) => ({ code: 1, stderr: String(e) })).then((r) => {
+    if (r.code === 0) return true;
+    setShared(KEPT, (shared(KEPT) ?? []).filter((k) => k.address !== address));
+    notify({ title: "Couldn't open it as a tab", body: model.errorWords(r), level: "error" });
+    return false;
+  });
+}
+
+// Asked for less than 10 s ago and not there yet: a second click waits instead of asking again.
+const tabComing = (address) => (shared(KEPT) ?? []).some((k) => k.address === address && Date.now() - (k.at ?? 0) < 10000) && !hasPane(address);
 
 // ── Notifications (notify.md): a tower layout names this mod as its toast ("toast": "agent-tower"),
 // so Herdr's toasts and every notify() are drawn here. Its props: {title, body, level, icon, action,
@@ -606,7 +638,8 @@ export default class AgentTasks extends View {
     // Earlier is open unless closed: long-lived tasks are a glance away, no fold to discover.
     // Folds kept from before (no earlierShown) open it once; a close after that is kept.
     const folded = folds?.folded ?? ["spaces", "done-more", "leftover"];
-    this.folded = new Set(folds?.earlierShown ? folded : folded.filter((f) => f !== "earlier"));
+    // The one fold for every area's Earlier ("earlier") gave way to one per area ("earlier:<area>").
+    this.folded = new Set(folded.filter((f) => f !== "earlier"));
     this.opened = new Set(folds?.opened ?? []);
     this.reconnecting = {};
     this.copiedLogin = null;
@@ -617,6 +650,7 @@ export default class AgentTasks extends View {
     this.renamedTasks = new Set();
     this.refreshingMachines = false;
     this.scroll = ScrollHandle.new();
+    this.scrollEarlier = ScrollHandle.new();
     // Search: every item in every area, group and fold (ctrl-s / or the magnifier).
     this.searching = false;
     this.searchInput = InputState.new({ placeholder: "Tasks, agents, machines" });
@@ -1345,7 +1379,7 @@ export default class AgentTasks extends View {
     this.menuFor = rowKey;
     // From a render (the act channel) there is no cx to notify: the popup opens all the same.
     cx?.notify();
-    openOverlay({ mod: "agent-tower", kind: "popup", width: 250, height: 262, props: {
+    openOverlay({ mod: "agent-tower", kind: "popup", width: 250, height: 293, props: {
       menu: true, from: this.id, keys: items.map((i) => i.key), space, rail: narrow() || noRename, leftOnly,
       leftOf, area: this.shownArea()?.id, areas: this.config.areas,
     } });
@@ -1726,7 +1760,7 @@ export default class AgentTasks extends View {
 
   // Herdr's group label; a click folds it. A fixed gap above, whatever row came before.
   groupHeader(t, g, count, first, onRight) {
-    const open = !this.folded.has(g.id);
+    const open = !this.folded.has(this.foldId(g.id));
     return h_flex().id(`at-g-${g.id}`).px(8).mt(first ? 0 : 10).h(24).flex_none().gap(6).items_center().text_size(11).font_medium()
       .cursor_pointer()
       .when(Boolean(onRight), (el) => el.on_mouse_down("right", (_e, cx) => {
@@ -1736,13 +1770,39 @@ export default class AgentTasks extends View {
       .hover((s) => s.text_color(t.foreground))
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .on_click((_e, cx) => {
-        open ? this.folded.add(g.id) : this.folded.delete(g.id);
+        open ? this.folded.add(this.foldId(g.id)) : this.folded.delete(this.foldId(g.id));
         cx.notify();
       })
       .child(div().truncate().text_color(t[g.status] ?? t.dim).child(g.label))
       .when(count != null, (el) => el.child(div().text_color(t.dim).child(String(count))))
       .child(div().flex_1())
       .when(!open, (el) => el.child(chrome("chevron-right").size(11).flex_none().text_color(t.dim)));
+  }
+
+  // While the list scrolls, row tooltips stay quiet (one would keep naming the row that was under the
+  // pointer); back 0.7 s after the last wheel step. Redrawn once at the start and once at the end.
+  quietTips(cx) {
+    this.wheelAt = Date.now();
+    if (this.tipsQuiet) return;
+    this.tipsQuiet = true;
+    cx.notify();
+    const wake = (cx) => {
+      if (Date.now() - this.wheelAt < 700) return cx.timer.after(700, wake);
+      this.tipsQuiet = false;
+      cx.notify();
+    };
+    cx.timer.after(700, wake);
+  }
+
+  // Whether a row may show its tooltip: not while the list scrolls, nor while its own menu is open.
+  tipFor(key) {
+    // Herdr says nothing when a menu closes: its row's tooltip waits ten seconds at most.
+    return !this.tipsQuiet && (this.menuFor !== key || Date.now() - (this.menuAt ?? 0) > 10000);
+  }
+
+  // A group's fold: Earlier's is the shown area's own ("earlier:<area>"), the others the list's.
+  foldId(groupId) {
+    return groupId === "earlier" ? `earlier:${this.shownArea()?.id ?? ""}` : groupId;
   }
 
   // An explicit open or fold wins; else a tree is open while its task is selected or something in
@@ -1783,7 +1843,7 @@ export default class AgentTasks extends View {
   slots(t, view, machine, chip, age, mark) {
     return [
       // A machine name, or (the title needing the room) the server glyph with the names in its tooltip.
-      machine?.glyph ? div().id(machine.id).flex_none().text_color(t.dim).tooltip(machine.tip).child(chrome("server").size(11))
+      machine?.glyph ? div().id(machine.id).flex_none().text_color(t.dim).when(!machine.quiet, (el) => el.tooltip(machine.tip)).child(chrome("server").size(11))
         : machine ? div().max_w(56).flex_none().text_right().truncate().text_size(10).text_color(t.dim).child(machine) : null,
       // Below 300px the title needs every pixel: no empty chip column, no minimum age width.
       (view.wide ? view.chipSlot : chip) ? div().min_w(18).flex_none().flex().justify_end().child(chip ?? "") : null,
@@ -1892,8 +1952,10 @@ export default class AgentTasks extends View {
     const members = compact ? 0 : item.tree.length + item.leftOvers.length;
     // Where it runs stays; the space note gives way to the title (model.fitRow). The fold chip
     // shows no count: "mac +1" beside "› 1" read as the same thing.
-    const fit = model.fitRow(view.listWidth, view.lineWidth - (!view.wide && members ? 27 : 0), title, {
-      machine: this.machinesLabel(view, item),
+    // Where it runs: one form on every row, the server glyph with the machines in its tooltip.
+    const machineLabel = this.machinesLabel(view, item);
+    const fit = model.fitRow(view.listWidth, view.lineWidth - (!view.wide && members ? 27 : 0) - (machineLabel ? 17 : 0), title, {
+      machine: null,
       note: view.notes.get(item.key) ?? model.spaceNote(item),
     });
     const note = fit.note;
@@ -1910,11 +1972,11 @@ export default class AgentTasks extends View {
         : h_flex().flex_1().min_w(0).gap(5).items_center()
           .child(div().id(`at-title-${item.key}`).min_w(0).truncate().text_color(idle ? t.muted : t.foreground)
             // A title the row can't hold whole is named whole on hover (estimate, 7px a character).
-            .when(7 * [...title].length > view.lineWidth - (fit.machine ? (fit.compact ? 20 : 60) : 0), (el) => el.tooltip(title))
+            .when(this.tipFor(item.key) && 7 * [...title].length > view.lineWidth - (machineLabel ? 17 : 0), (el) => el.tooltip(title))
             .child(title))
           // The note gives way first: it shrinks twenty times faster than the title.
           .when(Boolean(note), (el) => el.child(div().min_w(0).max_w(90).flex_shrink(20).truncate().text_color(t.dim).child(`· ${note}`))))
-      .when(!renaming, (el) => el.children(this.slots(t, view, fit.compact ? { glyph: fit.machine, tip: item.machines.map((x) => x ?? here()).join(", "), id: `at-mg-${item.key}` } : fit.machine,
+      .when(!renaming, (el) => el.children(this.slots(t, view, machineLabel ? { glyph: machineLabel, tip: item.machines.map((x) => x ?? here()).join(", "), id: `at-mg-${item.key}`, quiet: !this.tipFor(item.key) } : null,
         members ? this.fold(t, item.key, open, members, urgent, false) : null,
         this.ageOf(t, item, view, mark === "stale"), this.rightMark(mark))));
     // No tooltip: it covered the next row's wait line; the row names the machines, Details the rest.
@@ -1925,6 +1987,8 @@ export default class AgentTasks extends View {
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .on_mouse_down("right", (_e, cx) => {
         cx.stop_propagation();
+        this.menuFor = item.key;
+        this.menuAt = Date.now();
         this.openItemMenu([item], item.key, cx);
       })
       // A task row selects its task and opens its lead; its lead and
@@ -2274,7 +2338,7 @@ export default class AgentTasks extends View {
         this.openEyeMenu(eye);
       } : null)];
     for (const { g, entries } of sections) {
-      if (g.id === "earlier" && this.folded.has("earlier")) continue;
+      if (g.id === "earlier" && this.folded.has(this.foldId("earlier"))) continue;
       cells.push(div().w(20).h(1).my(4).flex_none().bg(t.border));
       for (const e of entries) {
         const item = e.dup ? e.members[0] : e;
@@ -2537,10 +2601,12 @@ export default class AgentTasks extends View {
         rows.push(...(item.leftOver ? [this.leftRow(t, item, view)] : this.itemRow(t, item, view, g)));
       }
     }
+    let earlierAt = -1;
     for (const { g, entries } of found ? [] : sections) {
       const extra = g.id === "working" ? pending : [];
+      if (g.id === "earlier" && !this.folded.has(this.foldId("earlier"))) earlierAt = rows.length;
       rows.push(this.groupHeader(t, g, g.items.length + extra.length, rows.length === 0));
-      if (this.folded.has(g.id)) continue;
+      if (this.folded.has(this.foldId(g.id))) continue;
       rows.push(...extra.map((p) => this.pendingRow(t, p)));
       const cut = g.id === "done" && entries.length > DONE_SHOWN;
       const shown = cut && this.folded.has("done-more") ? entries.slice(0, DONE_SHOWN) : entries;
@@ -2565,7 +2631,13 @@ export default class AgentTasks extends View {
     // The selected row stays in view when the selection changes or the card beside it resizes
     // (tower-stack sizes its card to its content).
     const scrollFor = `${view.selectedKey}|${find(layout(), "tower-detail")?.size?.px ?? ""}`;
-    if (selectedRow >= 0 && scrollFor !== this.scrolledFor) this.scroll.scroll_to_item(selectedRow);
+    // An open Earlier has its own scroll area under its header, which stays put while it scrolls;
+    // what comes before it scrolls apart, at most a little over half the height.
+    const apart = earlierAt >= 0;
+    if (selectedRow >= 0 && scrollFor !== this.scrolledFor) {
+      if (apart && selectedRow > earlierAt) this.scrollEarlier.scroll_to_item(selectedRow - earlierAt - 1);
+      else this.scroll.scroll_to_item(selectedRow);
+    }
     this.scrolledFor = scrollFor;
 
     const doneLines = this.signal() === "line"
@@ -2584,10 +2656,19 @@ export default class AgentTasks extends View {
       .when(this.composing, (el) => el.child(this.composer(t, area, listed)))
       .when(this.searching, (el) => el.child(this.searchRow(t)))
       .when(!props()?.overlay && viewSwitch() === "menu" && Boolean(this.backChip(t)), (el) => el.child(h_flex().flex_none().px(16).pb(4).child(this.backChip(t))))
-      .child(v_flex().id("at-list").flex_1().min_h(0).pl(8).pr(14).pb(8).overflow_y_scrollbar().mode("always").track_scroll(this.scroll)
+      .when(!apart, (el) => el.child(v_flex().id("at-list").flex_1().min_h(0).pl(8).pr(14).pb(8).overflow_y_scrollbar().mode("always").track_scroll(this.scroll)
+        .on_scroll_wheel((_e, cx) => this.quietTips(cx))
         .when(!items.length && !pending.length && !this.composing, (el) => el.child(div().px(8).pt(4).pb(4).text_size(12).text_color(t.dim)
           .child("No tasks")))
-        .children(rows))
+        .children(rows)))
+      .when(apart, (el) => el
+        .child(v_flex().id("at-list").flex_none().max_h("55%").min_h(0).pl(8).pr(14).overflow_y_scroll().track_scroll(this.scroll)
+          .on_scroll_wheel((_e, cx) => this.quietTips(cx))
+          .children(rows.slice(0, earlierAt)))
+        .child(div().flex_none().pl(8).pr(14).child(rows[earlierAt]))
+        .child(v_flex().id("at-earlier").flex_1().min_h(0).pl(8).pr(14).pb(8).overflow_y_scrollbar().mode("always").track_scroll(this.scrollEarlier)
+          .on_scroll_wheel((_e, cx) => this.quietTips(cx))
+          .children(rows.slice(earlierAt + 1))))
       .when(Boolean(bottom), (el) => el.child(bottom))
       .when(Boolean(down), (el) => el.child(down));
   }
@@ -2924,7 +3005,17 @@ export default class AgentTasks extends View {
     // Its own last terminal, else the selected task's lead; in its pane, on the list's screen.
     const focus = (a.focus && own.some((i) => i.live.some((t) => t.address === a.focus)) ? a.focus : null) ?? leadOf(item);
     if (focus && v.view === "list" && hasPane(focus)) run("pane.focus", { terminal: focus });
-    else if (a.peek && focus) goTo(focus);
+    else if (a.peek && focus) this.openTarget(item, focus);
+  }
+
+  // Into a task: its lead without a pane of its own gets a real tab and is gone to (so Details
+  // stays readable, the agent has a place to return to); a worker, or a hidden centre, peeks.
+  openTarget(item, address) {
+    const viewUp = viewNow().view !== "list" || sidebarHidden();
+    if (viewUp || !item || address !== leadOf(item) || hasPane(address)) return goTo(address);
+    if (tabComing(address)) return;
+    if (shared(PEEKED)) setShared(PEEKED, null);
+    keepAsTab(address, item, model.titleOf(item));
   }
 
   // Into a task from a view: selected, the list's screen back (the sidebar shown), its lead open
@@ -2952,7 +3043,7 @@ export default class AgentTasks extends View {
     setShared(VIEW, { ...viewNow(), from });
     // Leaving tower-window is a layout switch: the next layout's list opens it.
     if (leaving) setShared(ARRIVE, { area: item.area ?? shared(AREA), selected: item.key, focus: target, peek: true, at: Date.now() });
-    else if (target) goTo(target);
+    else if (target) this.openTarget(item, target);
   }
 
   // A terminal of no task (the Eye): open on the list's screen, the view kept one step back.
@@ -3002,7 +3093,7 @@ export default class AgentTasks extends View {
     this.menuFor = thing?.task?.key ?? thing?.agent ?? thing?.area ?? null;
     if (thing?.task) {
       const item = items.find((i) => i.key === thing.task.key) ?? thing.task;
-      openOverlay({ mod: "agent-tower", kind: "popup", width: 250, height: 262, props: {
+      openOverlay({ mod: "agent-tower", kind: "popup", width: 250, height: 293, props: {
         menu: true, from, keys: [item.key], space: item.space?.id ?? null, rail: from !== this.id || Boolean(props()?.stage), leftOnly: false,
         leftOf: null, area: shared(AREA), areas: (this.config ?? liveConfig).areas,
       } });
@@ -3049,21 +3140,27 @@ export default class AgentTasks extends View {
     this.chosen = "lead";
   }
 
-  // A kept worker's tab, once Herdr has made it (its herdr.tab label), gets the worker's name;
-  // a wish older than a minute is dropped.
+  // A kept terminal's new space, once Herdr has made it, is named and shown; its tab (its herdr.tab
+  // label) gets the terminal's name. A wish older than a minute is dropped.
   nameKeptTabs() {
     const kept = shared(KEPT) ?? [];
     if (!kept.length) return;
     const now = Date.now();
+    let changed = false;
     const left = kept.filter((k) => {
       if (now - (k.at ?? 0) > 60000) return false;
+      if (k.space && !k.shown && spaces().some((sp) => sp.id === k.space.id)) {
+        if (k.space.name) run("space.rename", { id: k.space.id, name: k.space.name });
+        run("space.select", { id: k.space.id });
+        k.shown = changed = true;
+      }
       const tab = terminals().find((x) => x.address === k.address)?.labels?.["herdr.tab"];
       const found = tab && spaces().flatMap((sp) => sp.tabs).find((tb) => tb.id === tab || tb.id.endsWith(`/${tab}`));
-      if (!found) return true;
-      if (!found.named) run("tab.rename", { id: found.id, name: k.name });
+      if (!found || (k.space && !k.shown)) return true;
+      if (k.name && !found.named) run("tab.rename", { id: found.id, name: k.name });
       return false;
     });
-    if (left.length !== kept.length) setShared(KEPT, left);
+    if (changed || left.length !== kept.length) setShared(KEPT, left);
   }
 
   // The area's recipe buttons as a row of chips (with the header icon, B, and the foot row, C, whose
@@ -3428,37 +3525,24 @@ export default class AgentTasks extends View {
   // ── Where a terminal runs: the header of the list's own peek, and of panes in the tower layouts. ──
 
   initHead() {
-    this.want = null; // a new space Keep is waiting for Herdr to make: {id, name}
+    this.want = false; // Keep asked Herdr for a new space, and this copy waits for the pane
     this.hovered = false;
   }
 
-  // Keep the peeked terminal where a pane of it can live (model.keepPlan), then close the peek.
-  keep(address, plan, name, cx) {
+  // Keep the peeked terminal where a pane of it can live (keepAsTab), then close the peek.
+  keep(address, plan, name, w, cx) {
     const overlay = props().overlay;
     const v = viewNow();
     if (v.view !== "list") {
       setView({ view: "list" }, "keep");
       setShared(VIEW, { ...viewNow(), from: { view: v.view, shape: v.shape } });
     }
-    // Its tab is called by its number until named: the list names it after the worker.
-    const worker = terminals().find((x) => x.address === address)?.name;
-    if (worker) setShared(KEPT, [...(shared(KEPT) ?? []).filter((k) => k.address !== address), { address, name: worker, at: Date.now() }]);
-    if (plan.how === "space") run("space.select", { id: plan.space.id });
-    if (plan.how !== "new") {
-      run("terminal.keep", { terminal: address });
-      closeOverlay(overlay);
-      return;
-    }
-    // A label with a space id Herdr doesn't know makes that space on the terminal's own machine;
-    // render finishes once spaces() has it (this copy stays open until then).
-    const sp = `sp${hex32()}`;
-    this.want = { id: plan.machine ? `${plan.machine}/${sp}` : sp, name };
-    cx.spawn(async (cx) => {
-      const r = await hc(["label", address, `herdr.space=${sp}`, `herdr.tab=tb${hex32()}`]).catch((e) => ({ code: 1, stderr: String(e) }));
-      if (r.code !== 0) {
-        this.want = null;
-        notify({ title: "Couldn't keep it", body: model.errorWords(r), level: "error" });
-      }
+    const asked = keepAsTab(address, w.item, name);
+    if (plan.how !== "new") return closeOverlay(overlay);
+    // This copy stays open until the new space shows the terminal.
+    this.want = true;
+    asked.then((ok) => {
+      if (!ok) this.want = false;
       cx.notify();
     });
     cx.notify();
@@ -3467,11 +3551,12 @@ export default class AgentTasks extends View {
   renderPeekBar(t) {
     const address = props().peekBar;
     const overlay = props().overlay;
-    if (this.want && spaces().some((s) => s.id === this.want.id)) {
-      run("space.rename", { id: this.want.id, name: this.want.name });
-      run("space.select", { id: this.want.id });
-      this.want = null;
-      closeOverlay(overlay);
+    if (this.want) {
+      this.nameKeptTabs();
+      if (hasPane(address)) {
+        this.want = false;
+        closeOverlay(overlay);
+      }
     }
     const w = whereOf(address);
     const name = w.t?.name || w.t?.template || w.t?.program?.name || address;
@@ -3492,7 +3577,7 @@ export default class AgentTasks extends View {
       }, null)
       : this.want ? div().flex_none().text_color(t.dim).child(`Opening it on ${w.word}…`)
         : silent ? div().flex_none().text_color(t.dim).child(silentWords([w.machine], "kept"))
-          : button("at-keep", model.keepWords(plan, w.word), (cx) => this.keep(address, plan, w.title ? `${w.title} · ${name}` : name, cx),
+          : button("at-keep", model.keepWords(plan, w.word), (cx) => this.keep(address, plan, w.title ? `${w.title} · ${name}` : name, w, cx),
             plan.how === "space" ? `Beside ${plan.space.name}` : plan.how === "new" ? `A tab called “${w.title ? `${w.title} · ${name}` : name}”` : null))
       .child(button("at-peek-x", chrome("x").size(13), () => closeOverlay(overlay), "Close"));
   }
@@ -3583,6 +3668,11 @@ export default class AgentTasks extends View {
     if (p.leftOnly) return items.length ? [endLeft(items, p.leftOf)] : [];
     return [
       ...(one ? [{ label: "Details", icon: "panel-right", act: () => this.details(one) }] : []),
+      // Herdr's word: a look at the lead without going in (a click into the task opens it as a tab).
+      ...(one && leadOf(one) ? [{ label: "Peek", icon: "monitor", act: () => {
+        closeOverlay(p.overlay);
+        peek(leadOf(one));
+      } }] : []),
       // The rail has no row to rename in.
       // Herdr's pin, on the lead: the item stays at the top in Pinned.
       ...(one?.lead && !one.leadGone ? [{ label: one.pinned ? "Unpin" : "Pin to the top", icon: one.pinned ? "pin-off" : "pin", act: () => {

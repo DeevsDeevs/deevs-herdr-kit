@@ -245,7 +245,7 @@ One column on `chrome`, 13px text, in the vocabulary of Herdr's shipped `agents`
 - **Empty area**: "No tasks" in 12px `dim`.
 - **The item menu** (right-click on an item), Herdr's menu: a `popover` popup 250px wide,
   5px padding, 12.8px; 31px items with a 14px `muted` icon: "Details" (`panel-right`, one
-  item only), "Rename" (`square-pen`, not in the rail, which has no row to rename in),
+  item only), "Peek" (`monitor`, one item with a lead), "Rename" (`square-pen`, not in the rail, which has no row to rename in),
   "End task…", "End agent…" for an unlabelled agent, "End all 6…" on a merged row (Herdr's
   word for a terminal and what it started; "Close" is for spaces and panes),
   "End 8 agents left over…" when it has left-over agents
@@ -329,7 +329,14 @@ come from the app's program table.
   the views switch sits: the list's first line, the bar, or the foot row) goes back one step,
   shape included. Any other view switch forgets it. Views call `ui.select` for this; `ui.pick`
   selects without leaving the view. A click on its lead or worker row opens that terminal: `pane.focus
-  {terminal}` when it has a pane; when not (a worker started with `hc run`), the list's own
+  {terminal}` when it has a pane. A lead without a pane (started with `hc run`) gets a real
+  tab the first time the task is clicked into (a row, a search hit, a rail dot, Details, a
+  toast, an arrival from another area's window), where Keep below puts one: here, its task's
+  space, or a new space on its machine named after the task. The list goes to that tab, and
+  the next click goes to it with `pane.focus`. A click while the tab is still coming (under
+  10 s) does nothing. A worker without a pane, any click while the centre is hidden (a view
+  or the whole window is up), a list row under "Peeks, the view stays", and "Peek" in the
+  item menu (a look at the lead without going in) open the list's own
   peek, Herdr's 80% dialog with this mod as its 36px header (`props.peekBar`): the machine
   (`server` glyph and name on `raised`), the task title, the worker's name, its state in
   Herdr's words, then Keep and ✕. Herdr's own peek names neither machine nor task, and its
@@ -874,7 +881,8 @@ Top to bottom:
   sentences, reports, saved title and Next, branch names and folder with "Text hidden" /
   "branch hidden", and drops the tooltips except the title's.
 - **Clicks**:
-  - The title, once: goes to the lead after 250ms (`pane.focus`, else `terminal.peek`).
+  - The title, once: goes to the lead after 250ms (`pane.focus`; a lead without a pane gets a
+    tab first, as a click into the task does).
   - The title, twice: rename. As the sidebar does it, this is one `hc label` with
     `task.title` and `task.by=you`, and the space takes the name when it is alone.
   - The close box: `layout.hide {id: "tower-detail"}`.

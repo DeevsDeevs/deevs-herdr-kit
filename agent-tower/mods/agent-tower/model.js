@@ -613,9 +613,11 @@ export function changedAt(item, changes) {
 // Which state group an item is in, ignoring the pin: needs, done, working, idle or earlier.
 export function stateOf(item, { listed, seen, now, changes }) {
   if (needOf(item)) return "needs";
-  if (finishedUnseen(item, listed, seen, now, changes)) return "done";
+  const quietFor = now - changedAt(item, changes);
+  // A finish nobody looked at is Done for a day; older, it is one of the quiet ones in Earlier.
+  if (finishedUnseen(item, listed, seen, now, changes) && quietFor < EARLIER_MS) return "done";
   if (item.top === "working") return "working";
-  return now - changedAt(item, changes) >= EARLIER_MS ? "earlier" : "idle";
+  return quietFor >= EARLIER_MS ? "earlier" : "idle";
 }
 
 // Herdr's order: "Pinned" (your pins, whatever their state or age), "Needs you", "Done", "Working", "Idle", then "Earlier" (quiet for a day), each most
@@ -630,6 +632,30 @@ export const GROUPS = [
   { id: "earlier", label: "Earlier", status: null },
 ];
 
+// A–Z as a person reads it: case and accents don't count ("dotfiles" under D, "éclairs" under E),
+// numbers by their value ("2 x" before "10 x"). Herdr's QuickJS has no Intl and its localeCompare
+// ignores options, so this is plain JS. titleKey once per title, then compareTitleKeys.
+export const titleKey = (title) => (String(title ?? "").normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().match(/\d+|\D+/g) ?? []);
+export function compareTitleKeys(x, y) {
+  for (let i = 0; i < Math.min(x.length, y.length); i++) {
+    const a = x[i];
+    const b = y[i];
+    if (a === b) continue;
+    const na = a >= "0" && a <= "9" && /^\d/.test(a);
+    const nb = /^\d/.test(b);
+    if (na && nb) {
+      const da = a.replace(/^0+/, "");
+      const db = b.replace(/^0+/, "");
+      if (da.length !== db.length) return da.length - db.length;
+      if (da !== db) return da < db ? -1 : 1;
+      continue;
+    }
+    return a < b ? -1 : 1;
+  }
+  return x.length - y.length;
+}
+export const compareTitles = (a, b) => compareTitleKeys(titleKey(a), titleKey(b));
+
 export function groupItems(items, changes, now, listed = new Map(), seen = {}) {
   const groups = GROUPS.map((g) => ({ ...g, items: [] }));
   for (const item of items) {
@@ -638,7 +664,10 @@ export function groupItems(items, changes, now, listed = new Map(), seen = {}) {
   }
   for (const g of groups) {
     // Earlier is a directory of places to return to: A-Z, so each keeps its place.
-    if (g.id === "earlier") g.items.sort((a, b) => (a.title ?? titleOf(a)).localeCompare(b.title ?? titleOf(b), undefined, { sensitivity: "base" }));
+    if (g.id === "earlier") {
+      const keys = new Map(g.items.map((i) => [i, titleKey(i.title ?? titleOf(i))]));
+      g.items.sort((a, b) => compareTitleKeys(keys.get(a), keys.get(b)));
+    }
     else g.items.sort((a, b) => isStale(b, changes, now) - isStale(a, changes, now) || changedAt(b, changes) - changedAt(a, changes));
   }
   return groups.filter((g) => g.items.length);
@@ -764,17 +793,34 @@ export function trackChanges(changes, terms, now, reach = []) {
   let dirty = false;
   for (const t of terms) {
     const prev = changes.get(t.address);
-    if (prev && prev.word === (t.status ?? null) && prev.turn === t.turn) continue;
+    // Back with the same word and turn (a restart, a read that missed it): its time stays.
+    if (prev && prev.word === (t.status ?? null) && prev.turn === t.turn) {
+      if (prev.gone) {
+        const { gone: _g, ...back } = prev;
+        changes.set(t.address, back);
+        dirty = true;
+      }
+      continue;
+    }
+    // A done that comes without working before it (Herdr reports an old agent done again when it
+    // is opened or peeked at) is no new finish: its time stays.
+    const again = prev && t.status === "done" && prev.word !== "working";
     // had: it reported a state once (so a state gone null later means its agent left).
-    changes.set(t.address, { word: t.status ?? null, turn: t.turn, at: prev ? now : t.status_ms ?? now, had: Boolean(prev?.had || t.status != null) });
+    changes.set(t.address, { word: t.status ?? null, turn: t.turn, at: !prev ? t.status_ms ?? now : again ? prev.at : now,
+      had: Boolean(prev?.had || t.status != null) });
     dirty = true;
   }
-  // Gone terminals go now; anything not seen for 30 days goes anyway (a machine removed).
+  // Gone terminals are kept a day, marked gone, in case they come back (a machine's read that
+  // missed them); then they go. Anything not seen for 30 days goes anyway (a machine removed).
   const present = new Set(terms.map((t) => t.address));
   const gone = new Set(forgettable([...changes.keys()], terms, reach));
   for (const [address, c] of changes) {
-    if (gone.has(address) || (!present.has(address) && now - c.at > 30 * 86400000)) {
+    if (present.has(address)) continue;
+    if ((c.gone && now - c.gone > 86400000) || now - c.at > 30 * 86400000) {
       changes.delete(address);
+      dirty = true;
+    } else if (gone.has(address) && !c.gone) {
+      changes.set(address, { ...c, gone: now });
       dirty = true;
     }
   }
