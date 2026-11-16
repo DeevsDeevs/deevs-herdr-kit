@@ -67,7 +67,7 @@ One column on `chrome`, 13px text, in the vocabulary of Herdr's shipped `agents`
     it, so it lasts 5 to 6 minutes, and a burst is one long pulse. With a red count beside
     it, it stays still.
   - **Line**: nothing on the header; at the bottom, above the machine lines, one 26px line
-    per other area with news: "Personal · Back up the 2025 photos  3m ●" for one finish,
+    per other area with news: "Personal · File the 2025 tax return  3m ●" for one finish,
     "Personal · 10 done  <1m ●" for several (the newest one's age), tooltip with the newest
     three and "Open it" / "Go to Personal". A click on one finish
     does what a Done row does (marks it seen, selects it, goes to it) and stays in this

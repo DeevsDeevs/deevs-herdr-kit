@@ -21,7 +21,7 @@ export const CASES = [
 // Watchlist's files: tickers named in the fixture's titles, and a long notes file (only its newest
 // lines are drawn).
 function watchlistFiles(towerDir) {
-  const tickers = ["LEDGER", "BILLING", "SEARCH", "TAX", "BUDGET", "DOCS", "ROUTER", "PHOTO", "GARDEN", "SENSOR", "SHELF", "INVOICE"]
+  const tickers = ["LEDGER", "BILLING", "SEARCH", "TAX", "BUDGET", "DOCS", "ROUTER", "RECIPES", "GARDEN", "SENSOR", "SHELF", "INVOICE"]
     .map((symbol) => ({ symbol, name: `${symbol[0]}${symbol.slice(1).toLowerCase()} Holding`, note: "Hold until the next report." }));
   const notes = Array.from({ length: 4000 }, (_, i) => `- ${i}: made-up memo line about a made-up ticker.`).join("\n");
   return { [`${towerDir}/watchlist.json`]: JSON.stringify({ tickers }), [`${towerDir}/investing-notes.md`]: notes };

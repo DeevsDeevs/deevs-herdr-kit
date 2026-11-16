@@ -121,7 +121,7 @@ const recorded = {
   lanes: {
     t10: { task: "task:b1", role: "lead", name: "b1-lead", area: "work" },
     t12: { task: "task:b1", role: "worker", name: "b1-old", area: "work" },
-    t30: { task: "task:gone", taskTitle: "Photo backup", role: "lead", name: "p-lead", area: "personal" },
+    t30: { task: "task:gone", taskTitle: "Tax return", role: "lead", name: "p-lead", area: "personal" },
     t40: { task: "agent:t40", taskTitle: "eye", role: "lead", name: "eye", area: "personal", eye: true },
   },
   events: [
@@ -155,7 +155,7 @@ const recorded = {
   const quietItem = { ...billing, activeTree: billing.tree.slice(0, 1), quiet: [{ ...billing.tree[1], status: "idle" }] };
   const q = T.lanesOf({ ...m, items: [quietItem] }, h, { now, start: ago(480) })[0].tasks[0];
   assert.deepEqual([q.lanes.map((l) => l.a), q.folded.map((l) => l.a), T.foldWords(q)], [["t10", "t11"], ["vps/t3", "t12"], "1 idle · 1 ended"]);
-  assert.deepEqual(groups[1].tasks.map((tk) => [tk.title, !!tk.item]), [["Hallway bookshelf", true], ["Photo backup", false]], "a task hc forgot keeps its past");
+  assert.deepEqual(groups[1].tasks.map((tk) => [tk.title, !!tk.item]), [["Hallway bookshelf", true], ["Tax return", false]], "a task hc forgot keeps its past");
   assert.equal(T.lanesOf(m, h, { now, start: ago(60) })[1].tasks.length, 1, "an ended task outside the span is not drawn");
   // The Eye is not a task: an ended one (recorded with eye: true) and a live one are left out.
   assert.ok(!groups.flatMap((g) => g.tasks).some((tk) => tk.key === "agent:t40"));
