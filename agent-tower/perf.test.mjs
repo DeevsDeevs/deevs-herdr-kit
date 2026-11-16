@@ -2,7 +2,9 @@
 // t47's made-up records, timed as the median of several renders, and its time on the owner's Mac is
 // projected: QuickJS's interpreter (what Herdr runs a first render on) × MAC_FACTOR, or V8 ×
 // V8_RATIO × MAC_FACTOR without qjs ($QJS, else on PATH). Fails when a projection passes its
-// record's limit in two runs out of two, or a view builds more elements than its ceiling.
+// record's limit in two runs out of two, or a view builds more elements than its ceiling. In V8 (a
+// laptop, maybe busy) a view's time is its best of V8_TRIES runs, scaled by a fixed loop timed in
+// the same process; when that loop shows the machine busy, the time limits are skipped.
 // Then perf.js (off by default, lines, names, cap) and that Watchlist's cache updates.
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
@@ -33,6 +35,12 @@ export const LIMITS = { mac: BUDGET_MS / 2, big: BUDGET_MS };
 // and Month, which then built 11,600 and 9,900 (the over-budget renders) and must come down.
 const CEILING = { model: 0, "timeline Day": 3500, "timeline Week": 5000, "timeline Month": 5000, "timeline Day, all open": 5000, board: 700, radar: 800, watchlist: 700 };
 const RUNS = 15;
+// V8 only. CAL_REF_MS: calibrate() on the machine the factors were measured on, quiet (0.26-0.27
+// ms there, node 26). A machine now slower than that (busy, or a slower core) has its times scaled
+// down by as much, a faster one up; past BUSY times the reference it is too busy to judge.
+export const CAL_REF_MS = 0.26;
+const BUSY = 1.5;
+const V8_TRIES = 3;
 const PRESETS = (process.env.PERF_PRESET ?? "mac,big").split(",");
 
 function findQjs() {
@@ -59,22 +67,73 @@ async function timeViews(preset) {
   const { buildFixture } = await import("./perf/fixture.mjs");
   const { bench } = await import("./perf/bench.mjs");
   return bench({ kit: mods, fixture: buildFixture(preset), clock: () => performance.now(),
-    settle: () => new Promise((r) => setTimeout(r, 5)), runs: RUNS });
+    settle, runs: RUNS });
 }
 
-const mac = (r) => +(r.median * scale).toFixed(1);
+// A fixed piece of work the size of a render (small objects, strings, a Map, a sort), timed as a view
+// is: after the same 5 ms pause, the median of RUNS, best of V8_TRIES. Render-sized and paused on
+// purpose: a busy machine's time slices slow a long loop that a sub-millisecond render slips
+// between, and a render after a pause starts on a cache the others have used.
+const settle = () => new Promise((r) => setTimeout(r, 5));
+async function calibrate() {
+  const once = () => {
+    const t0 = performance.now();
+    const seen = new Map();
+    const rows = [];
+    for (let i = 0; i < 2500; i++) {
+      const key = `t${i % 997}`;
+      const row = { key, at: (i * 7) % 1013, label: `${key}:${i & 255}` };
+      seen.set(key, row);
+      rows.push(row);
+    }
+    rows.sort((a, b) => a.at - b.at || (a.key < b.key ? -1 : 1));
+    let n = seen.size;
+    for (const r of rows) n += r.label.length;
+    const ms = performance.now() - t0;
+    assert.ok(n > 0);
+    return ms;
+  };
+  for (let i = 0; i < 20; i++) once();
+  let bestMedian = Infinity;
+  for (let k = 0; k < V8_TRIES; k++) {
+    const times = [];
+    for (let i = 0; i < RUNS; i++) {
+      await settle();
+      times.push(once());
+    }
+    bestMedian = Math.min(bestMedian, times.sort((a, b) => a - b)[RUNS >> 1]);
+  }
+  return bestMedian;
+}
+
+// The faster median of each case.
+const best = (rows, more) => rows.map((r) => ({ ...r, median: Math.min(r.median, more.find((x) => x.case === r.case)?.median ?? r.median) }));
+
 for (const preset of PRESETS) {
   const limit = LIMITS[preset];
-  let rows = await timeViews(preset);
-  // One slow run is not a failure: a view over the limit is timed again, and its faster median counts.
-  if (rows.some((r) => mac(r) > limit)) {
-    const again = await timeViews(preset);
-    rows = rows.map((r) => ({ ...r, median: Math.min(r.median, again.find((x) => x.case === r.case)?.median ?? r.median) }));
+  let rows;
+  let speed = 1;
+  let busy = false;
+  let cal = null;
+  if (qjs) {
+    rows = await timeViews(preset);
+    // One slow run is not a failure: a view over the limit is timed again, and its faster median counts.
+    if (rows.some((r) => r.median * scale > limit)) rows = best(rows, await timeViews(preset));
+  } else {
+    const before = await calibrate();
+    rows = await timeViews(preset);
+    for (let k = 1; k < V8_TRIES; k++) rows = best(rows, await timeViews(preset));
+    cal = +Math.min(before, await calibrate()).toFixed(2);
+    speed = CAL_REF_MS / cal;
+    busy = cal > BUSY * CAL_REF_MS;
   }
-  console.log(`${preset} record, ${engine} × ${scale} = projected Mac ms (limit ${limit}): ${rows.map((r) => `${r.case} ${mac(r)}`).join(", ")}`);
+  const mac = (r) => +(r.median * scale * speed).toFixed(1);
+  const how = qjs ? `${engine} × ${scale}` : `${engine} × ${scale} × ${speed.toFixed(2)} (calibration ${cal} ms, quiet ${CAL_REF_MS})`;
+  console.log(`${preset} record, ${how} = projected Mac ms (limit ${limit}): ${rows.map((r) => `${r.case} ${mac(r)}`).join(", ")}`);
+  if (busy) console.log("perf: machine busy, limits skipped");
   assert.deepEqual(rows.map((r) => r.case).filter((c) => /board|radar|watchlist|timeline/.test(c)).length, 7, "every view timed");
   for (const r of rows) {
-    assert.ok(mac(r) <= limit, `${preset} record, ${r.case}: projected ${mac(r)} ms on the Mac (${r.median} ms in ${engine}), over ${limit}`);
+    if (!busy) assert.ok(mac(r) <= limit, `${preset} record, ${r.case}: projected ${mac(r)} ms on the Mac (${r.median} ms in ${engine}), over ${limit}`);
     if (preset === "big") assert.ok(r.elements <= (CEILING[r.case] ?? 700), `${r.case}: ${r.elements} elements, over ${CEILING[r.case] ?? 700}`);
   }
 }

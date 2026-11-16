@@ -52,7 +52,7 @@ const term = (s, { program = claude, status = "idle", tab = 0, parent = null, st
 };
 
 // 1. One agent with a pane (most common): eight of them, three on the work server.
-for (const [name, m, days] of [["invoice parser", null, 8], ["garden plan", null, 12], ["thesis notes", "home-box", 10], ["photo archive", null, 14],
+for (const [name, m, days] of [["invoice parser", null, 8], ["garden plan", null, 12], ["thesis notes", "home-box", 10], ["recipe box", null, 14],
   ["billing sync", "work-vps", 7], ["search index", "work-vps", 9], ["rate limiter", "work-vps", 11], ["router setup", "home-box", 13]]) {
   term(space(name, m), { title: `✳ ${name}`, quietDays: days });
 }
@@ -118,7 +118,7 @@ assert.deepEqual(plan.map(lineOf), [
   "invoice parser [s1] (this computer, quiet 8d) → \"invoice parser\" in personal: lead t1",
   "garden plan [s2] (this computer, quiet 12d) → \"garden plan\" in personal: lead t2",
   "thesis notes [home-box/s1] (home-box, quiet 10d) → \"thesis notes\" in personal: lead home-box/t1",
-  "photo archive [s3] (this computer, quiet 14d) → \"photo archive\" in personal: lead t3",
+  "recipe box [s3] (this computer, quiet 14d) → \"recipe box\" in personal: lead t3",
   "billing sync [work-vps/s1] (work-vps, quiet 7d) → \"billing sync\" in work: lead work-vps/t1",
   "search index [work-vps/s2] (work-vps, quiet 9d) → \"search index\" in work: lead work-vps/t2",
   "rate limiter [work-vps/s3] (work-vps, quiet 11d) → \"rate limiter\" in work: lead work-vps/t3",
