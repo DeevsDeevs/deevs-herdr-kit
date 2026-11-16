@@ -812,7 +812,7 @@ export default class AgentTasks extends View {
     for (const p of this.pending.filter((p) => !p.found)) {
       const found = model.findLead(p, spaceList, terms);
       if (found) labelling.push(hc(["label", found.terminal.address, ...model.leadPairs(p)]).catch(() => null));
-      else notify({ title: "A task may start unlabelled", body: `"${p.name}" was still starting when the window closed, so it won't show as a task.`, level: "warning" });
+      else notify({ title: "A task may start unlabelled", body: `"${p.words}" was still starting when the window closed, so it won't show as a task.`, level: "warning" });
     }
     await Promise.all(labelling);
   }
@@ -860,6 +860,7 @@ export default class AgentTasks extends View {
 
   closeComposer(cx) {
     this.composing = false;
+    this.into = null;
     this.input.set_value("");
     if (shared(DRAFT)) setShared(DRAFT, null);
     cx.notify();
@@ -875,6 +876,19 @@ export default class AgentTasks extends View {
     if (!words || !recipe) return;
     this.busy = true;
     cx.notify();
+    // "in <title>": a new lead or worker inside that task instead of a new task.
+    const into = this.intoItem();
+    if (into) {
+      return this.joinTask(cx, into, recipe, words, this.intoAs === "lead" ? this.leadFor(recipe).id : null, this.intoAs, {
+        launched: (cx) => {
+          this.busy = false;
+          this.closeComposer(cx);
+        },
+        reply: (a) => {
+          if (!a.ok) this.busy = false;
+        },
+      });
+    }
     this.startTask(cx, recipe, words, null, {
       launched: (cx) => {
         this.busy = false;
@@ -896,15 +910,18 @@ export default class AgentTasks extends View {
   // lead is labelled, or {ok: false, why}; launched runs when the space is asked for. Refusals
   // toast as before.
   startTask(cx, recipe, words, agentId, { reply = () => {}, launched = () => {} } = {}) {
-    // Herdr stores a space name trimmed; findLead compares names exactly.
-    const name = words.replace(/\s+/g, " ").slice(0, 40).trim();
-    if (this.pending.some((p) => p.name === name) || this.starting.has(name)) {
+    // Never the words as a name: "New task" until the namer's title (model.wantedNames). findLead
+    // tells two starts on one machine apart by name, so a second one is "New task 2".
+    if (this.pending.some((p) => !p.eye && p.words === words) || this.starting.has(`words:${words}`)) {
       notify({ title: "That task is still starting", body: "Wait for it, or use other words.", level: "warning" });
       reply({ ok: false, why: "a task with these words is still starting" });
       return;
     }
     const machine = recipe.machine ?? null;
+    let name = model.NEW_TASK;
+    for (let n = 2; this.pending.some((p) => p.name === name) || this.starting.has(name); n++) name = `${model.NEW_TASK} ${n}`;
     this.starting.add(name);
+    this.starting.add(`words:${words}`);
     cx.spawn(async (cx) => {
       // The settings as they are now: a role or recipe changed since Herdr started counts.
       this.config = await loadConfig();
@@ -918,9 +935,10 @@ export default class AgentTasks extends View {
       } else {
         const skill = await this.skillOn(machine);
         const id = await this.launch(cx, recipe, words, name, agentId, reply, skill);
-        launched(cx, id);
+        if (id) launched(cx, id);
       }
       this.starting.delete(name);
+      this.starting.delete(`words:${words}`);
       cx.notify();
     });
   }
@@ -948,10 +966,19 @@ export default class AgentTasks extends View {
     const machine = recipe.machine ?? null;
     const lead = model.leadAgent(this.config, recipe, agentId ?? (shared(LEAD_PICK) ?? {})[recipe.id]);
     const worker = await this.workerCommand(machine, model.workerAgent(this.config, recipe));
+    // The recipe's folder, else one of its own: never the shown space's (space.new's default).
+    const folder = recipe.folder ?? await this.makeFolder(machine, model.taskFolder(this.config, recipe.area, words, id));
+    if (!folder) {
+      const why = `its folder could not be made in ${model.taskFolder(this.config, recipe.area, words, id)}`;
+      notify({ title: "The task didn't start", body: why, level: "error" });
+      reply?.({ ok: false, why });
+      return null;
+    }
     this.pending.push({ id, name, words, machine, recipe: recipe.id, area: recipe.area, lead: lead.id, reply, before: new Set(spaces().map((s) => s.id)), at: Date.now(), found: false });
     run("space.new", {
       name,
-      ...(recipe.folder ? { folder: recipe.folder } : {}),
+      tab: model.LEAD_TAB,
+      folder,
       machine: machine ?? "",
       // Its task id and its workers' command in its environment (the skill reads them there).
       argv: model.withEnv({ TOWER_TASK: id, TOWER_WORKER: worker }, lead.argv),
@@ -959,6 +986,12 @@ export default class AgentTasks extends View {
     });
     this.looker ??= cx.timer.every(1500, (cx) => this.lookForLeads(cx));
     return id;
+  }
+
+  // A task's folder made on its machine (~ is that machine's home): its full path, or null.
+  async makeFolder(machine, dir) {
+    const r = await exec("sh", ["-c", model.MKDIR_SCRIPT, "mk", dir], { on: machine, timeout: 15000 }).catch(() => null);
+    return r?.code === 0 && r.stdout.trim() ? r.stdout.trim() : null;
   }
 
   // The workers' command for a lead on that machine: the path of a small script that runs the
@@ -991,22 +1024,106 @@ export default class AgentTasks extends View {
         fail(p, `${p.machine} does not answer.`);
       } else if (!p.found && now - p.at > START_GIVE_UP_MS) {
         // A labelled lead shows as an item within a second; one still pending by now has gone.
-        fail(p, `No terminal showed up for "${p.name}" within a minute.`);
+        fail(p, `No terminal showed up for "${p.words}" within a minute.`);
       }
     }
     this.pending = this.pending.filter((p) => !p.failed && !p.done);
-    if (!this.pending.length) {
-      this.looker.cancel();
+    for (const j of this.joining ?? []) {
+      if (j.found || !j.recipe) continue;
+      const found = model.findJoined(j, spaceList, terms);
+      if (found) {
+        j.found = true;
+        this.labelJoin(cx, j, found);
+      } else if (now - j.at > START_GIVE_UP_MS) {
+        j.done = true;
+        notify({ title: "The agent didn't start", body: `No terminal showed up in "${j.title}" within a minute.`, level: "error" });
+        j.reply({ ok: false, why: `no terminal showed up in "${j.title}" within a minute` });
+      }
+    }
+    this.joining = (this.joining ?? []).filter((j) => !j.done);
+    if (!this.pending.length && !this.joining.length) {
+      this.looker?.cancel();
       this.looker = null;
     }
     cx.notify();
+  }
+
+  // A new lead or worker inside a task (model.checkJoin): a new tab in the task's space, on the
+  // task's machine, in its folder, with its task.id. A new lead takes over (model.oldLeadPairs).
+  joinTask(cx, item, recipe, words, agentId, as, { reply = () => {}, launched = () => {} } = {}) {
+    this.joining ??= [];
+    if (this.joining.some((j) => j.task === item.taskId)) {
+      notify({ title: "That task's new agent is still starting", level: "warning" });
+      reply({ ok: false, why: "a new agent in this task is still starting" });
+      return;
+    }
+    const anchor = item.leadGone ? item.live[0] ?? item.lead : item.lead;
+    const machine = model.machineOf(anchor.address);
+    const title = model.titleOf(item);
+    const join = { task: item.taskId, item, as, title, machine, at: Date.now(), reply, found: false, members: new Set(item.live.map((t) => t.address)) };
+    this.joining.push(join);
+    const fail = (cx, why) => {
+      this.joining = this.joining.filter((j) => j !== join);
+      notify({ title: "The agent didn't start", body: why, level: "error" });
+      reply({ ok: false, why });
+      cx.notify();
+    };
+    cx.spawn(async (cx) => {
+      this.config = await loadConfig();
+      recipe = this.config.recipes.find((r) => r.id === recipe.id) ?? recipe;
+      const silent = machine ? await silentNow([`${machine}/x`]) : [];
+      if (silent.length) return fail(cx, silentWords(silent, "started"));
+      const skill = await this.skillOn(machine);
+      const agent = as === "lead" ? model.leadAgent(this.config, recipe, agentId)
+        : this.config.agents.find((a) => a.id === agentId) ?? model.workerAgent(this.config, recipe);
+      const worker = as === "lead" ? await this.workerCommand(machine, model.workerAgent(this.config, recipe)) : null;
+      const dir = model.taskFolder(this.config, item.area ?? recipe.area, title, item.taskId);
+      const folder = model.joinFolder(item) ?? recipe.folder ?? await this.makeFolder(machine, dir);
+      if (!folder) return fail(cx, `its folder could not be made in ${dir}`);
+      const argv = model.withEnv({ TOWER_TASK: item.taskId, TOWER_WORKER: worker }, agent.argv);
+      const task = model.joinMessage(recipe, this.config, item, as, words, skill);
+      const tab = as === "lead" ? { name: model.LEAD_TAB } : {};
+      const space = item.space && (item.space.machine ?? null) === machine ? spaces().find((s) => s.id === item.space.id) : null;
+      if (space) {
+        Object.assign(join, { space: space.id, tabsBefore: new Set((space.tabs ?? []).map((tb) => model.localOf(tb.id, space.machine))) });
+        run("tab.new", { space: space.id, ...tab, folder, argv, task });
+      } else {
+        // Its space has gone: a new one on its machine, called after the task.
+        Object.assign(join, { name: model.plainName(title), before: new Set(spaces().map((s) => s.id)), tabsBefore: new Set() });
+        run("space.new", { name: join.name, ...(tab.name ? { tab: tab.name } : {}), folder, machine: machine ?? "", argv, task });
+      }
+      Object.assign(join, { recipe, agent: agent.id });
+      launched(cx, item.taskId);
+      this.looker ??= cx.timer.every(1500, (cx) => this.lookForLeads(cx));
+    });
+  }
+
+  // The new member's labels in one call; then the lead before it becomes a worker or a shell.
+  labelJoin(cx, j, { terminal }) {
+    cx.spawn(async (cx) => {
+      const pairs = [...model.joinPairs(j.item, j.as, j.recipe, j.agent), ...(j.name ? [`${model.SPACE_NAME}=${j.name}`] : [])];
+      const r = await hc(["label", terminal.address, ...pairs]).catch((e) => ({ code: 1, stderr: String(e) }));
+      j.done = true;
+      if (r.code !== 0) {
+        notify({ title: "Couldn't label the new agent", body: model.errorWords(r), level: "error" });
+        j.reply({ ok: false, why: `it started but could not be labelled: ${model.errorWords(r)}` });
+        cx.notify();
+        return;
+      }
+      // The old lead as it is now (its program may have ended since the start).
+      const before = j.as === "lead" && j.item.lead ? terminals().find((t) => t.address === j.item.lead.address) : null;
+      const old = before ? model.oldLeadPairs({ lead: before, leadGone: false }) : null;
+      if (old) await hc(["label", before.address, ...old]).catch(() => null);
+      j.reply({ ok: true, task: j.task, [j.as]: terminal.address });
+      cx.notify();
+    });
   }
 
   // One label call: a lead's task labels, or an Eye's tower.eye=1 and tower.area (an Eye is not named);
   // with the name its space.new gave, so that name stays ours to keep in step (model.wantedNames).
   labelLead(cx, p, { terminal }) {
     cx.spawn(async (cx) => {
-      const pairs = p.eye ? ["tower.eye=1", ...(p.eyeArea ? [`tower.area=${p.eyeArea}`] : [])] : model.leadPairs(p);
+      const pairs = p.eye ? ["tower.eye=1", ...(p.eyeArea ? [`tower.area=${p.eyeArea}`] : [])] : [...model.leadPairs(p), `${model.TAB_NAME}=${model.LEAD_TAB}`];
       const r = await hc(["label", terminal.address, ...pairs, `${model.SPACE_NAME}=${p.name}`])
         .catch((e) => ({ code: 1, stderr: String(e) }));
       if (r.code !== 0) {
@@ -1228,6 +1345,21 @@ export default class AgentTasks extends View {
         continue;
       }
       const checked = model.checkRequest(req, this.config, now - at);
+      // tower-new --task: a new lead (or worker) inside that task.
+      if (checked.ok && req.task != null) {
+        const join = model.checkJoin(req, this.items ?? [], this.config);
+        if (!join.ok) answer({ ok: false, why: join.why });
+        else this.joinTask(cx, join.item, checked.recipe, checked.words, checked.agent, join.as, {
+          reply: (a) => {
+            if (!a.ok && !this.answered?.has(id)) answer(a);
+          },
+          launched: (_cx, task) => {
+            (this.answered ??= new Set()).add(id);
+            answer({ ok: true, task, as: join.as, starting: true });
+          },
+        });
+        continue;
+      }
       if (!checked.ok) answer({ ok: false, why: checked.why });
       // Answered as soon as the lead's space is asked for (an agent's tool may wait only seconds);
       // a later failure shows in the list.
@@ -1343,7 +1475,9 @@ export default class AgentTasks extends View {
     if (w?.code === 0 && !this.renamedTasks.has(taskId)) this.rememberTitle(taskId, name);
   }
 
-  beginRename(key, cx) {
+  // Also taken in a render (takeRequest), where cx.notify throws: state first, a redraw only when
+  // not drawing (a double click).
+  beginRename(key, cx, drawing = false) {
     const item = this.items?.find((i) => i.key === key);
     if (!item?.lead) return;
     this.renaming = key;
@@ -1356,7 +1490,7 @@ export default class AgentTasks extends View {
       this.renameInput.focus();
       this.renameInput.set_selected_range({ start: 0, end: title.length });
     });
-    cx.notify();
+    if (!drawing) cx.notify();
   }
 
   endRename(cx) {
@@ -1417,7 +1551,8 @@ export default class AgentTasks extends View {
     const request = shared(REQUEST);
     if (request?.from !== this.id) return;
     setShared(REQUEST, null);
-    if (request.action === "rename") this.beginRename(request.keys[0], cx);
+    if (request.action === "rename") this.beginRename(request.keys[0], cx, true);
+    else if (request.action === "newLead") this.composeInto(request.keys[0]);
     else if (request.action === "close") this.closeItem(request, cx);
     else if (request.action === "adopt") {
       cx.spawn(async (cx) => {
@@ -1455,7 +1590,7 @@ export default class AgentTasks extends View {
     this.menuFor = rowKey;
     // From a render (the act channel) there is no cx to notify: the popup opens all the same.
     cx?.notify();
-    openOverlay({ mod: "agent-tower", kind: "popup", width: 250, height: 293, props: {
+    openOverlay({ mod: "agent-tower", kind: "popup", width: 250, height: 324, props: {
       menu: true, from: this.id, keys: items.map((i) => i.key), space, rail: narrow() || noRename, leftOnly,
       leftOf, area: this.shownArea()?.id, areas: this.config.areas,
     } });
@@ -1626,6 +1761,29 @@ export default class AgentTasks extends View {
     return !model.eyeOff(this.config, this.shownArea()?.id);
   }
 
+  // The task the composer starts in ("in <title>" on), or null for a new task.
+  intoItem() {
+    return this.into ? this.items?.find((i) => i.taskId === this.into) ?? null : null;
+  }
+
+  // The selected task, which the composer offers to start in.
+  selectedTask() {
+    const key = shared(SELECTED)?.key;
+    return key ? this.items?.find((i) => i.key === key && i.taskId) ?? null : null;
+  }
+
+  // The row menu's New lead: the composer on that task, as its lead, with its own recipe. Taken in
+  // a render (takeRequest), where cx.notify throws: the state is set here and drawn by that render.
+  composeInto(key) {
+    const item = this.items?.find((i) => i.key === key && i.taskId);
+    if (!item) return;
+    const area = this.shownArea()?.id;
+    const own = item.lead?.labels?.["task.recipe"];
+    if (this.config.recipes.some((r) => r.id === own && r.area === area)) this.recipeChoice[area] = own;
+    Object.assign(this, { composing: true, chosen: "lead", composeTo: "lead", into: item.taskId, intoAs: "lead" });
+    this.input.focus();
+  }
+
   // The composer's chips: the Eye first (while one runs), then the area's recipes.
   composeChips(area) {
     const recipes = this.config.recipes.filter((r) => r.area === area);
@@ -1650,6 +1808,8 @@ export default class AgentTasks extends View {
     const current = toEye ? "eye" : chosen?.id;
     const showChips = chips.length > 1;
     const lead = !toEye && chosen ? this.leadFor(chosen) : null;
+    const target = toEye ? null : this.intoItem() ?? this.selectedTask();
+    const into = Boolean(target && this.into === target.taskId);
     const wait = toEye ? model.eyeWait(this.eye, listed) : null;
     const running = toEye ? model.eyeAgent(this.eye, Date.now(), this.changes) : null;
     const hint = div().h(15).flex_none().min_w(0).truncate().text_size(11).line_height("15px");
@@ -1662,6 +1822,8 @@ export default class AgentTasks extends View {
           : wait === "open" ? control(hint.id("at-eye-open").text_color(t.muted).hover((s) => s.text_color(t.foreground))
             .child("Open the Eye"), () => this.go(this.eye.address))
             : hint
+      : chosen && into && this.intoAs === "worker"
+        ? hint.text_color(t.dim).child(model.workerAgent(this.config, chosen).label)
       : !chosen
         // Two lines at most, whole words; the full path in the tooltip.
         ? div().id("at-no-recipe").flex_none().min_w(0).max_h(30).overflow_hidden().whitespace_normal().text_size(11)
@@ -1713,9 +1875,34 @@ export default class AgentTasks extends View {
             (cx) => this.chooseChip(area, c, cx),
           );
         })))
-        .when(showChips, (el) => el.child(div().w(1).h(12).mx(2).bg(t.border)))
-        .child(this.newSpaceChip(t)))
+        .when(showChips && !into, (el) => el.child(div().w(1).h(12).mx(2).bg(t.border)))
+        .when(!into, (el) => el.child(this.newSpaceChip(t))))
+      // The selected task: start in it (as its new lead or a worker) instead of a new task.
+      .when(Boolean(target), (el) => el.child(h_flex().ml(-6).gap(4).items_center().min_w(0)
+        .child(this.composeChip(t, "at-into", `in ${model.titleOf(target)}`, into, (cx) => {
+          this.into = into ? null : target.taskId;
+          this.intoAs ??= "lead";
+          this.input.focus();
+          cx.notify();
+        }, 150))
+        .when(into, (el) => el.children(["lead", "worker"].map((as) => this.composeChip(t, `at-into-${as}`, as, this.intoAs === as, (cx) => {
+          this.intoAs = as;
+          this.input.focus();
+          cx.notify();
+        }))))))
       .child(hintLine);
+  }
+
+  // A chip of the composer's row (as the recipe chips are drawn); maxW cuts a long label.
+  composeChip(t, id, label, on, act, maxW = null) {
+    return control(
+      h_flex().id(id).h(20).px(6).items_center().rounded(4).text_size(11).min_w(0)
+        .when(on, (el) => el.bg(t.selected))
+        .text_color(on ? t.foreground : t.muted)
+        .hover((s) => s.text_color(t.foreground))
+        .child(maxW ? div().max_w(maxW).truncate().child(label) : label),
+      act,
+    );
   }
 
   // Herdr's own new space: what its + does (space.new, on the shown space's machine); with other
@@ -2036,6 +2223,7 @@ export default class AgentTasks extends View {
     });
     const note = fit.note;
     const idle = (mark ?? "idle") === "idle" && !selected;
+    // A lead whose agent left (a shell now); a lead whose terminal ended says "lead gone" in its mark.
     const lost = !need && model.noAgent(item, view.now, this.changes);
     const urgent = item.tree.reduce((m, r) => ((RANK[r.status] ?? 0) > (RANK[m] ?? 0) ? r.status : m), null);
     const line = h_flex().h(20).gap(9).items_center()
@@ -2080,7 +2268,7 @@ export default class AgentTasks extends View {
       })
       .child(line)
       // A lead whose program ended (a shell took its place) is not quietly idle.
-      .when(lost, (el) => el.child(div().pl(27).pr(22).pt(1).truncate().text_size(11.5).line_height("15px").text_color(t.blocked).child("no agent running")))
+      .when(lost, (el) => el.child(div().pl(27).pr(22).pt(1).truncate().text_size(11.5).line_height("15px").text_color(t.blocked).child("lead ended")))
       // The kind in red, the agent's own words after it, at most two lines.
       .when(Boolean(need), (el) => el.child(this.waitLine(t, `at-need-${item.key}`, need, view)))
       .when(Boolean(said), (el) => el.child(div().pl(27).pr(22).pt(1).truncate().text_size(11.5).line_height("15px").text_color(t.muted).child(said)));
@@ -3169,7 +3357,7 @@ export default class AgentTasks extends View {
     this.menuFor = thing?.task?.key ?? thing?.agent ?? thing?.area ?? null;
     if (thing?.task) {
       const item = items.find((i) => i.key === thing.task.key) ?? thing.task;
-      openOverlay({ mod: "agent-tower", kind: "popup", width: 250, height: 293, props: {
+      openOverlay({ mod: "agent-tower", kind: "popup", width: 250, height: 324, props: {
         menu: true, from, keys: [item.key], space: item.space?.id ?? null, rail: from !== this.id || Boolean(props()?.stage), leftOnly: false,
         leftOf: null, area: shared(AREA), areas: (this.config ?? liveConfig).areas,
       } });
@@ -3753,6 +3941,7 @@ export default class AgentTasks extends View {
         closeOverlay(p.overlay);
       } }] : []),
       ...(one?.lead && !p.rail ? [{ label: "Rename", icon: "square-pen", act: () => this.request({ action: "rename" }) }] : []),
+      ...(one?.taskId && !p.rail ? [{ label: "New lead", icon: "plus", act: () => this.request({ action: "newLead" }) }] : []),
       // Not a task yet (an agent's own row, a space with only shells): its space becomes one (adopt.js).
       ...(p.space && (p.shellSpace || (one && !one.taskId)) ? [{ label: "Make a task", icon: "plus", act: () => this.request({ action: "adopt", space: p.space }) }] : []),
       // Herdr's words: "End" for terminals and what they started ("Close" is for spaces and panes).

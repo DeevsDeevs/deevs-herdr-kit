@@ -57,6 +57,10 @@ falls back to its default and a toast names it.
 - `eye`: for every area's Eye, `folder` (an area's Eye starts in `<folder>/<area id>`; default
   `<tower folder>/eye/<area id>`) and `rules` (lines put first in its message). Its agent is
   `roles.eye` unless the area names one.
+- `taskRoot`: where a task lives when its recipe names no `folder`, at the top or per area
+  (default `~/tasks`): `<taskRoot>/<slug>-<task id>`, the slug from the title or the first words
+  typed, made on the lead's machine. A start whose folder can't be made is refused; a task never
+  takes the shown space's folder.
 - `skill`: the skill leads and the Eye follow (default `"tower"`); `null` sends the full rules
   (`contract`) in the first message instead.
 - `contract`: those full rules, as text (`{id}` is the task id).
@@ -119,7 +123,11 @@ The Eye on Codex, leads on Opus, workers on Sonnet:
   picks who leads. "New space" beside them is Herdr's own new space (its ▾: on which machine).
 - A row is a task, on every machine it runs on. Click it to select it (Details follows);
   click its lead or a worker under it to open that terminal. Right-click for Details, Pin to
-  the top, Rename, End.
+  the top, Rename, New lead, End.
+- **New lead** gives a task a fresh lead in a new tab of its space and folder, as the same task.
+  The old lead stays as a worker while its agent runs, else as a plain shell. A row whose lead
+  ended says "lead ended". With a task selected, the composer's "in <title>" chip starts a lead
+  or a worker inside it instead of a new task.
 - The magnifier (`ctrl-s /`) searches every task, agent and machine in every area.
 - The eye icon in the header starts the shown area's Eye (in the whole window, the icon in the
   bar); right-click the Eye to end it.
@@ -131,7 +139,8 @@ The Eye on Codex, leads on Opus, workers on Sonnet:
   the area shown. An agent you open later in one of its tabs joins it as a worker.
 - Earlier lists its tasks A–Z, one line each.
 - Herdr's own screens name a task's space after its title and its tabs lead, a worker's name,
-  shell or Eye. A space still carrying Herdr's own name (its folder's) takes its task's title at
+  shell or Eye. A new task's space is "New task" with a "lead" tab until the namer's title
+  comes (if the namer fails, until a Rename). A space still carrying Herdr's own name (its folder's) takes its task's title at
   once; only a name someone typed is kept. `tower-names` shows what it would rename
   (`--apply` does it; `--named` also replaces names you typed).
 - `tower-eye status|start|end [--area <id>]` shows, starts or ends an area's Eye without a click.
@@ -143,6 +152,9 @@ shown area's Eye only: its row above the area row, the composer's Eye chip, the 
 End. A waiting Eye counts in its area's red number. It runs on this computer in a space
 "Eye · <area>", labelled `tower.eye=1` and `tower.area=<area id>`, with `TOWER_AREA` in its
 environment beside `TOWER_NEW` and `TOWER_CONFIG`.
+
+An Eye gives a task whose lead ended a fresh one with `tower-new --task <id> <recipe id>
+"<words>"` (`--as worker` adds a worker instead), never a new task.
 
 An Eye keeps to its area by its rules and one check, not by a wall:
 - **Checked:** `tower-new` sends the Eye's area with the request, and Agent Tower refuses a recipe

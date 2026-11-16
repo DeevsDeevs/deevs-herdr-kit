@@ -92,7 +92,7 @@ term(space("course notes"), { program: zsh });
   term(s, { tab: 1, title: "✳ Old sidebar notes", quietDays: 20 });
 }
 // 8. An unnamed space (Herdr names it after its folder) and a finished-only space.
-term(space("~", null, false), { title: "✳ Kyoto trip", quietDays: 5 });
+term(space("~", null, false), { title: "✳ Bird feeder", quietDays: 5 });
 term(space("old probe", "home-box"), { state: "ended", quietDays: 16 });
 // 9. The Personal area's Eye, in a space of its own: never touched.
 term(space("eye"), { quietDays: 0, labels: { "tower.eye": "1", "tower.area": "personal" } });
@@ -101,7 +101,7 @@ term(space("eye"), { quietDays: 0, labels: { "tower.eye": "1", "tower.area": "pe
 // own title. A title another task already has gets the machine, else a number.
 term(space("billing-api", null, false), { title: "✳ Old chat about logging", quietDays: 4 });
 term(space("Downloads", "home-box"), { title: "✳ garden plan", quietDays: 3 });
-term(space("me"), { title: "✳ Kyoto trip", quietDays: 2 });
+term(space("me"), { title: "✳ Bird feeder", quietDays: 2 });
 // 11. One name, two spaces on different machines: --space needs the id.
 term(space("notes"), { quietDays: 1 });
 term(space("notes", "home-box"), { quietDays: 1 });
@@ -129,12 +129,12 @@ assert.deepEqual(plan.map(lineOf), [
   "course notes [s6] (this computer, quiet 9d) → \"course notes\" in personal: lead t9",
   "bond ladder [work-vps/s5] (work-vps, working now) → \"bond ladder\" in work: lead work-vps/t18, +5 started by them, 10 finished, untouched",
   "tower build [s7] (this computer, working now): left alone, hosts task k7x2q; t12 becomes its own task \"tower build 2\" in work",
-  "~ [s8] (this computer, quiet 5d) → \"Kyoto trip\" in personal: lead t13",
+  "~ [s8] (this computer, quiet 5d) → \"Bird feeder\" in personal: lead t13",
   "old probe [home-box/s3] (home-box, quiet 16d): left alone, nothing live",
   "eye [s9] (this computer, quiet <1m): left alone, the Eye's",
   "billing-api [s10] (this computer, quiet 4d) → \"billing-api\" in personal: lead t15",
   "Downloads [home-box/s4] (home-box, quiet 3d) → \"garden plan · home-box\" in personal: lead home-box/t4",
-  "me [s11] (this computer, quiet 2d) → \"Kyoto trip 2\" in personal: lead t16",
+  "me [s11] (this computer, quiet 2d) → \"Bird feeder 2\" in personal: lead t16",
   "notes [s12] (this computer, quiet 1d) → \"notes\" in personal: lead t17",
   "notes [home-box/s5] (home-box, quiet 1d) → \"notes · home-box\" in personal: lead home-box/t5",
 ]);

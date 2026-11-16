@@ -155,4 +155,90 @@ for (const [name, args] of [["tower-names", ["--nope"]], ["tower-eye", ["stop"]]
   assert.equal(code, 2, `${name} ${args.join(" ")}`);
 }
 
+// ── A raw title and Herdr's trimming (the raw-title trimming case) ──
+{
+  const want = (ts, sps) => model.wantedNames({ terms: ts, spaces: sps, items: model.workItems(ts, new Map(), sps) });
+  const raw = "so garden plan task - i want to sort the seed list into a planting calendar - we will ";
+  // Our label holds the name as we sent it; Herdr stored it trimmed. Still ours: it follows the namer's title.
+  const ts = [lead("t1", "j1", "Garden planting calendar", "sp1", "tb1", { "task.by": "llm", "tower.space-name": raw, "tower.tab-name": `lead · ${raw}` })];
+  const w = want(ts, [space("sp1", raw.trim(), true, [["tb1", `lead · ${raw.trim()}`, true]])]);
+  assert.deepEqual([w[0].state, w[0].to, w[0].tabs[0].state, w[0].tabs[0].to], ["change", "Garden planting calendar", "change", "lead"]);
+  // A title that is still the words typed names nothing: the space keeps "New task", the tab "lead".
+  const born = [lead("t2", "j2", raw, "sp2", "tb2", { "task.by": "raw", "tower.space-name": "New task", "tower.tab-name": "lead" })];
+  const w2 = want(born, [space("sp2", "New task", true, [["tb2", "lead", true]])]);
+  assert.deepEqual([w2[0].state, w2[0].tabs[0].state], ["wait", "same"]);
+  assert.deepEqual(model.nameChanges(w2), []);
+  assert.ok(model.namesText(w2).includes('sp2  "New task"  kept until the task has its title'));
+  // Even in a space someone named, a raw title never goes into the lead's tab.
+  const w3 = want([lead("t3", "j3", raw, "sp3", "tb3", { "task.by": "raw", "tower.tab-name": "lead" })], [space("sp3", "Trips", true, [["tb3", "lead", true]])]);
+  assert.equal(w3[0].tabs[0].to, "lead");
+}
+// ── herdr.space holds whatever id Herdr made the space under: an old one may be a name, "/" and all ──
+{
+  assert.equal(model.localOf("plots/garden", null), "plots/garden");
+  assert.equal(model.localOf("box/plots/garden", "box"), "plots/garden");
+  assert.equal(model.localOf("box/sp1", "box"), "sp1");
+  for (const [id, machine, address] of [["garden plots", null, "t1"], ["plots/garden", null, "t1"], ["box/plots/garden", "box", "box/t1"]]) {
+    const ts = [{ ...lead(address, "k1", "Recipe box", localOf(id, machine), "tb1"), address }];
+    const sps = [space(id, "old", false, [[machine ? `${machine}/tb1` : "tb1", "1", false]], machine)];
+    const w = model.wantedNames({ terms: ts, spaces: sps, items: model.workItems(ts, new Map(), sps) });
+    assert.deepEqual([w.length, w[0]?.to, w[0]?.tabs[0]?.to], [1, "Recipe box", "lead"], id);
+  }
+  function localOf(id, machine) {
+    return model.localOf(id, machine);
+  }
+}
+// ── Where a task lives without a recipe folder: <taskRoot>/<slug>-<id> ──
+{
+  assert.equal(model.slugOf("so garden plan task - i want to start"), "so-garden-plan-task");
+  assert.equal(model.slugOf("Fix: the café's CSV, again!"), "fix-the-café-s");
+  assert.equal(model.slugOf("Supercalifragilisticexpialidocious and more words"), "supercalifragilisticexpialidocio");
+  assert.equal(model.slugOf("!!!"), "");
+  const config = model.parseConfig({ taskRoot: "/srv/work/", areas: [{ id: "work", label: "Work", taskRoot: "~/jobs" }, { id: "personal", label: "Personal" }] }).config;
+  assert.equal(model.taskFolder(config, "work", "Billing schema check", "b7"), "~/jobs/billing-schema-check-b7");
+  assert.equal(model.taskFolder(config, "personal", "Garden plan", "g2"), "/srv/work/garden-plan-g2");
+  assert.equal(model.taskFolder(model.DEFAULTS, "personal", "", "g3"), "~/tasks/g3");
+  const bad = model.parseConfig({ taskRoot: 7 });
+  assert.deepEqual([bad.bad, bad.config.taskRoot], [["taskRoot"], "~/tasks"]);
+  assert.deepEqual(model.parseConfig({ areas: [{ id: "w", label: "W", taskRoot: 3 }] }).bad, ["areas"]);
+}
+// ── A new lead or worker inside a task ──
+{
+  const config = model.DEFAULTS;
+  const recipe = config.recipes.find((r) => r.id === "personal-lead");
+  const shell = term("t1", { "task.id": "g1", "task.role": "lead", "task.title": "Garden plan", "task.by": "you", "task.area": "personal", "tower.space-name": "Garden plan", "herdr.space": "sp1", "herdr.tab": "tb1" },
+    { status: null, program: { agent: false, name: "zsh" }, cwd: "/home/me/tasks/garden-plan-g1" });
+  const worker = term("t2", { "task.id": "g1", "task.role": "worker" }, { parent: "t1", cwd: "/home/me/tasks/garden-plan-g1/notes" });
+  const items = model.workItems([shell, worker], new Map(), [space("sp1", "Garden plan", true, [["tb1", "lead", true]])]).map((i) => ({ ...i, area: "personal" }));
+  const item = items[0];
+  // checkJoin: the task by id, lead or worker, an Eye's own area only.
+  assert.equal(model.checkJoin({ task: "g1" }, items, config).as, "lead");
+  assert.equal(model.checkJoin({ task: "g1", as: "worker" }, items, config).item, item);
+  assert.match(model.checkJoin({ task: "g1", as: "boss" }, items, config).why, /not lead or worker/);
+  assert.match(model.checkJoin({ task: "nope" }, items, config).why, /no task "nope"/);
+  assert.match(model.checkJoin({ task: "g1", area: "work" }, items, config).why, /in Personal; this is Work's Eye/);
+  // Its folder: the lead's, unless that is a home folder.
+  assert.equal(model.joinFolder(item), "/home/me/tasks/garden-plan-g1");
+  for (const cwd of ["/home/me", "/home/me/", "/Users/me", "/root", "~", null]) assert.equal(model.joinFolder({ ...item, lead: { ...shell, cwd } }), null, String(cwd));
+  // Labels: the new lead keeps the title, who gave it and our space name; the old lead whose program ended is a shell.
+  assert.deepEqual(model.joinPairs(item, "lead", recipe, "claude-opus"), ["task.id=g1", "task.role=lead", "task.title=Garden plan", "task.by=you",
+    "task.recipe=personal-lead", "task.area=personal", "task.lead=claude-opus", "tower.tab-name=lead", "tower.space-name=Garden plan"]);
+  assert.deepEqual(model.joinPairs(item, "worker", recipe, "claude-opus"), ["task.id=g1", "task.role=worker"]);
+  assert.deepEqual(model.oldLeadPairs(item), ["task.role=shell"]);
+  assert.deepEqual(model.oldLeadPairs({ lead: { ...shell, status: "idle" }, leadGone: false }), ["task.role=worker"], "still an agent: a worker");
+  assert.equal(model.oldLeadPairs({ lead: { ...shell, state: "finished" }, leadGone: true }), null, "an ended terminal keeps its labels");
+  // First messages: with the skill one line more than a start's; without, the full contract; a worker's says where to report.
+  const withSkill = model.joinMessage(recipe, config, item, "lead", "make a planting calendar", true);
+  assert.equal(withSkill, 'You are the new lead of task g1, "Garden plan", taking over from its earlier lead: its terminals and its chain say where it stands.\nLead task g1 with the tower skill (questions to me go through task.ask): make a planting calendar');
+  const full = model.joinMessage(recipe, config, item, "lead", "make a planting calendar", false);
+  assert.ok(full.startsWith("You are the new lead of task g1") && full.includes("You lead task g1.") && full.endsWith("Task: make a planting calendar"));
+  const w = model.joinMessage(recipe, config, item, "worker", "water the beans", true);
+  assert.ok(w.startsWith('You are a worker on task g1, "Garden plan"; use the tower skill if you have it.') && w.includes("--label task.role=lead | jq -r '.terminals[].address'") && w.endsWith("Task: water the beans"), w);
+  // findJoined: the live terminal in a new tab of that space, not one the task had.
+  const join = { space: "sp1", machine: null, tabsBefore: new Set(["tb1"]), members: new Set(["t1", "t2"]) };
+  const sps = [space("sp1", "Garden plan", true, [["tb1", "lead", true], ["tb2", "lead", true]])];
+  assert.equal(model.findJoined(join, sps, [shell, worker]), null);
+  const fresh = term("t3", { "herdr.space": "sp1", "herdr.tab": "tb2" });
+  assert.equal(model.findJoined(join, sps, [shell, worker, fresh]).terminal, fresh);
+}
 console.log("names ok");

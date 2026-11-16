@@ -114,8 +114,8 @@ const billing = {
   lead: term("t10"), leadGone: false, live: [],
   tree: [{ t: term("t11", { name: "b1-schema" }), lines: ["├"], status: "working" }, { t: term("vps/t3", { name: "b1-load" }), lines: ["└"], status: "idle" }],
 };
-const kyoto = { key: "task:k1", title: "Kyoto trip", area: "personal", machine: null, machines: [null], word: "done", status: "done", lead: term("t20"), leadGone: false, live: [], tree: [] };
-const m = { areas: [{ id: "work", label: "Work" }, { id: "personal", label: "Personal" }], items: [billing, kyoto] };
+const shelf = { key: "task:k1", title: "Hallway bookshelf", area: "personal", machine: null, machines: [null], word: "done", status: "done", lead: term("t20"), leadGone: false, live: [], tree: [] };
+const m = { areas: [{ id: "work", label: "Work" }, { id: "personal", label: "Personal" }], items: [billing, shelf] };
 const recorded = {
   v: 1, beat: ago(1),
   lanes: {
@@ -155,14 +155,14 @@ const recorded = {
   const quietItem = { ...billing, activeTree: billing.tree.slice(0, 1), quiet: [{ ...billing.tree[1], status: "idle" }] };
   const q = T.lanesOf({ ...m, items: [quietItem] }, h, { now, start: ago(480) })[0].tasks[0];
   assert.deepEqual([q.lanes.map((l) => l.a), q.folded.map((l) => l.a), T.foldWords(q)], [["t10", "t11"], ["vps/t3", "t12"], "1 idle · 1 ended"]);
-  assert.deepEqual(groups[1].tasks.map((tk) => [tk.title, !!tk.item]), [["Kyoto trip", true], ["Photo backup", false]], "a task hc forgot keeps its past");
+  assert.deepEqual(groups[1].tasks.map((tk) => [tk.title, !!tk.item]), [["Hallway bookshelf", true], ["Photo backup", false]], "a task hc forgot keeps its past");
   assert.equal(T.lanesOf(m, h, { now, start: ago(60) })[1].tasks.length, 1, "an ended task outside the span is not drawn");
   // The Eye is not a task: an ended one (recorded with eye: true) and a live one are left out.
   assert.ok(!groups.flatMap((g) => g.tasks).some((tk) => tk.key === "agent:t40"));
-  const eyeItem = { ...kyoto, key: "agent:t41", lead: term("t41", { labels: { "tower.eye": "1" } }) };
+  const eyeItem = { ...shelf, key: "agent:t41", lead: term("t41", { labels: { "tower.eye": "1" } }) };
   assert.ok(!T.lanesOf({ ...m, items: [...m.items, eyeItem] }, h, { now, start: ago(480) }).flatMap((g) => g.tasks).some((tk) => tk.key === "agent:t41"));
   assert.deepEqual(T.lanesOf(m, h, { now, start: ago(480), first: "personal" }).map((g) => g.label), ["Work", "Personal"], "an area with an open ask leads, even before the shown one");
-  const calm = { ...m, items: [{ ...billing, status: "working", tree: [] }, kyoto] };
+  const calm = { ...m, items: [{ ...billing, status: "working", tree: [] }, shelf] };
   assert.deepEqual(T.lanesOf(calm, h, { now, start: ago(480), first: "personal" }).map((g) => g.label), ["Personal", "Work"], "no asks: the shown area first, every area kept");
   const lanes = groups.flatMap((g) => g.tasks.flatMap((tk) => [...tk.lanes, ...tk.folded])).map((l) => ({ ...l, stretches: T.stretches(h, l.a, now, { live: l.live }) }));
   const att = T.attention(h, lanes, ago(480), now);

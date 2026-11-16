@@ -168,6 +168,18 @@ assert.deepEqual(model.selectionOf(task), { key: "task:x1", lead: "t1", members:
   status: null, need: { by: "t2", kind: "Asks you", text: "Which branch?" } });
 assert.equal(model.selectionOf(task, { listed: new Map(), seen: {}, now: NOW, changes: new Map() }).status, "blocked", "the row's word");
 assert.equal(model.selectionOf(null), null);
+// Details' Workers leave out the task's plain shells (an old lead whose agent ended, adopt's shells);
+// a task with nothing but shells left still names them, so Details doesn't call it gone.
+{
+  const sh = (address, role) => term(address, "s1", { status: null, program: { agent: false, name: "zsh" }, labels: { "task.id": "z1", "task.role": role } });
+  const lead = term("t1", "s1", { labels: { "task.id": "z1", "task.role": "lead" } });
+  const worker = term("t2", "s1", { labels: { "task.id": "z1", "task.role": "worker" } });
+  const one = model.workItems([lead, worker, sh("t3", "shell")], new Map(), spaces).find((i) => i.taskId === "z1");
+  assert.deepEqual(model.selectionOf(one).members, ["t1", "t2"]);
+  const gone = { ...lead, state: "finished" };
+  const left = model.workItems([gone, sh("t3", "shell")], new Map(), spaces).find((i) => i.taskId === "z1");
+  assert.deepEqual([left.leadGone, model.selectionOf(left).members], [true, ["t3"]]);
+}
 assert.equal(model.itemHolding(items, "t4").key, "task:x1", "a worker's worker finds its task");
 assert.equal(model.itemHolding(items, "t11"), null, "a plain shell is no item");
 
@@ -206,13 +218,15 @@ const leadRules = [
   "You must ask the person through",
   "task.ask=<one plain sentence, under 140 characters>",
   "first thing next turn:",
+  "Your task's terminals: hc ls --json --label task.id=",
+  "| jq -r '.terminals[].address' (add --all for ended ones); one terminal's labels: hc get <address> | jq .labels.",
+  "hc ls --json carries no labels; use hc get.",
   "brief on the run line (hc tracks it)",
   "--label task.role=worker --name",
   "--cwd <dir> [--on <machine>] <agent command>",
   "short, lowercase, unique in the task",
   "never a shared one such as /tmp or a home folder",
   "never the bare name",
-  "lists them all",
   "Before starting a new worker, reuse an idle worker of the task when its context fits the new work",
   "(a sub-lead) is started the same way, with",
   "A brief gives: goal, what the worker owns, what it must not touch, when it is done, a result file path it can write.",
@@ -542,8 +556,9 @@ assert.equal(model.splitWait("Asks you", "Supercalifragilisticexpialidociousword
 // Names fit the sidebar: the namer is asked for four words under 26 characters; up to 28 kept.
 assert.ok(model.namePrompt("x").includes("in at most four words, under 26 characters"));
 assert.equal(model.acceptName("Travel router VPN setup\n"), "Travel router VPN setup");
-assert.equal(model.acceptName("x".repeat(28)), "x".repeat(28));
-assert.equal(model.acceptName("x".repeat(29)), null, "longer than 28: your words stay");
+assert.equal(model.acceptName("Seed list sorted by sowing months\n"), "Seed list sorted by sowing months", "haiku's usual length is taken");
+assert.equal(model.acceptName("x".repeat(40)), "x".repeat(40));
+assert.equal(model.acceptName("x".repeat(41)), null, "longer than 40: your words stay");
 assert.equal(model.acceptName("two\nlines"), null);
 
 // Per-terminal memory forgets gone terminals, but only on machines that answered and showed

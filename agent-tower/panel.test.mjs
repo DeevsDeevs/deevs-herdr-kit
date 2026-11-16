@@ -241,7 +241,7 @@ assert.ok(panel.folded(asking, 2, 0.4).startsWith("… First question:"), "narro
 assert.equal(panel.prose("Short version:\n---\nPlan *A*"), "Short version: Plan A", "a rule is not text");
 
 assert.equal(panel.folderOf("/home/me/work/tasks/rate-limiter"), "rate-limiter");
-assert.equal(panel.folderOf("/Users/a/japan/"), "japan");
+assert.equal(panel.folderOf("/Users/a/garden/"), "garden");
 
 // Reads: at once the first time; on a status change once READ_FLOOR_MS has passed since the last
 // read (a busy task changes every second); then every 60 s while working, 5 min otherwise; 5 min

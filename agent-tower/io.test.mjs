@@ -363,4 +363,113 @@ const answered = (fx, id) => fx.files[`${OUTBOX}/${id}.json`] ?? null;
   await batch([`${INBOX}/req-st.json`]);
   assert.equal(JSON.parse(answered(fx, "req-st")).text, "Work: none\nPersonal: t4, idle");
 }
+// A start never names the space with the words typed: "New task" and "lead" at birth, recorded as ours
+// in the lead's one label call, in a folder of its own (<taskRoot>/<slug>-<id>), never the shown space's;
+// the space takes the namer's title when it comes.
+{
+  const fx = world();
+  const { v, cx, tick, batch } = await copy();
+  fx.runs = [];
+  fx.made = [];
+  fx.hcCalls = [];
+  const words = "so garden plan task - i want to sort the seed list into a planting calendar we will share ";
+  fx.files[`${INBOX}/req-new.json`] = JSON.stringify({ recipe: "personal-lead", words, at: clock });
+  await batch([`${INBOX}/req-new.json`]);
+  await settle();
+  const a = JSON.parse(answered(fx, "req-new"));
+  assert.ok(a.ok && a.starting, JSON.stringify(a));
+  const [cmd, args] = fx.runs.find((r) => r[0] === "space.new");
+  assert.equal(cmd, "space.new");
+  assert.deepEqual([args.name, args.tab, args.folder], ["New task", "lead", `/home/me/tasks/so-garden-plan-task-${a.task}`]);
+  assert.deepEqual(fx.made, [[null, `~/tasks/so-garden-plan-task-${a.task}`]], "made on the lead's machine");
+  // Herdr makes it; the lead is labelled once it shows.
+  fx.fixture.spaces = [{ id: "sp9", name: "New task", named: true, machine: null, active: true, tabs: [{ id: "tb9", name: "lead", named: true }] }];
+  const t9 = { address: "t9", state: "live", status: "working", turn: 1, cwd: args.folder, program: { agent: true, name: "Claude Code" }, labels: { "herdr.space": "sp9", "herdr.tab": "tb9" } };
+  fx.fixture.terms = [t9];
+  await tick(1600);
+  const label = fx.hcCalls.find((x) => x[0] === "label" && x[1] === "t9");
+  assert.ok(label.includes("task.by=raw") && label.includes("tower.space-name=New task") && label.includes("tower.tab-name=lead"), label.join(" "));
+  t9.labels = Object.fromEntries([...Object.entries(t9.labels), ...label.slice(2).map((x) => [x.slice(0, x.indexOf("=")), x.slice(x.indexOf("=") + 1)])]);
+  // The words are the title until the namer answers: nothing is renamed meanwhile.
+  fx.hcCalls = [];
+  fx.log = [];
+  v.render(cx);
+  await tick(2500);
+  assert.deepEqual(fx.hcCalls.filter((x) => x[0] === "label"), [], "no name from the words");
+  assert.ok(!fx.log.some((x) => /rename/.test(x.what)));
+  // The namer's title: the space follows it at once.
+  t9.labels = { ...t9.labels, "task.title": "Garden planting calendar", "task.by": "llm" };
+  v.render(cx);
+  await tick(2500);
+  assert.deepEqual(fx.hcCalls.filter((x) => x[0] === "label").map((x) => x.slice(1).join(" ")), ["t9 tower.space-name=Garden planting calendar"]);
+  // A folder that can't be made: no start, and never the shown space's folder.
+  fx.noMkdir = true;
+  fx.runs = [];
+  fx.files[`${INBOX}/req-nofolder.json`] = JSON.stringify({ recipe: "personal-lead", words: "made-up words", at: clock });
+  await batch([`${INBOX}/req-nofolder.json`]);
+  await settle();
+  assert.match(answered(fx, "req-nofolder"), /folder could not be made/);
+  assert.deepEqual(fx.runs, []);
+}
+// A new lead inside a task whose lead has ended (its pane a shell now): a new "lead" tab in the
+// task's own space, in its folder, with its task.id and title; the old lead becomes a shell; one row.
+{
+  const fx = world();
+  const old = { address: "t1", state: "live", status: null, cwd: "/home/me/tasks/garden-plan-j1", program: { agent: false, name: "zsh" },
+    labels: { "task.id": "j1", "task.role": "lead", "task.title": "Garden plan", "task.by": "llm", "task.recipe": "personal-lead", "task.area": "personal",
+      "herdr.space": "sp1", "herdr.tab": "tb1", "tower.space-name": "Garden plan", "tower.tab-name": "lead" } };
+  fx.fixture.terms = [old];
+  fx.fixture.spaces = [{ id: "sp1", name: "Garden plan", named: true, machine: null, active: true, tabs: [{ id: "tb1", name: "lead", named: true }] }];
+  const { v, cx, tick, batch } = await copy();
+  fx.runs = [];
+  fx.made = [];
+  fx.hcCalls = [];
+  fx.files[`${INBOX}/req-none.json`] = JSON.stringify({ recipe: "personal-lead", words: "made-up", task: "zz9", at: clock });
+  await batch([`${INBOX}/req-none.json`]);
+  assert.match(answered(fx, "req-none"), /there is no task \\"zz9\\"/);
+  fx.files[`${INBOX}/req-join.json`] = JSON.stringify({ recipe: "personal-lead", words: "make a planting calendar", task: "j1", at: clock });
+  await batch([`${INBOX}/req-join.json`]);
+  await settle();
+  const a = JSON.parse(answered(fx, "req-join"));
+  assert.deepEqual([a.ok, a.task, a.as, a.starting], [true, "j1", "lead", true], JSON.stringify(a));
+  assert.ok(!fx.runs.some((r) => r[0] === "space.new"), "no new task, no new space");
+  const [, args] = fx.runs.find((r) => r[0] === "tab.new");
+  assert.deepEqual([args.space, args.name, args.folder], ["sp1", "lead", "/home/me/tasks/garden-plan-j1"]);
+  assert.deepEqual(fx.made, [], "the task's own folder");
+  assert.ok(args.argv.includes("TOWER_TASK=j1") && args.task.includes('You are the new lead of task j1, "Garden plan"'), args.task);
+  // Herdr makes the tab; the new lead is labelled, then the old one becomes a shell.
+  fx.fixture.spaces[0].tabs.push({ id: "tb2", name: "lead", named: true });
+  const t2 = { address: "t2", state: "live", status: "working", turn: 1, cwd: args.folder, program: { agent: true, name: "Claude Code" }, labels: { "herdr.space": "sp1", "herdr.tab": "tb2" } };
+  fx.fixture.terms = [old, t2];
+  await tick(1600);
+  const labels = fx.hcCalls.filter((x) => x[0] === "label").map((x) => x.slice(1).join(" "));
+  assert.deepEqual(labels, ["t2 task.id=j1 task.role=lead task.title=Garden plan task.by=llm task.recipe=personal-lead task.area=personal task.lead=claude-fable tower.tab-name=lead tower.space-name=Garden plan",
+    "t1 task.role=shell"]);
+  old.labels = { ...old.labels, "task.role": "shell" };
+  t2.labels = { ...t2.labels, "task.id": "j1", "task.role": "lead", "task.title": "Garden plan", "task.by": "llm", "task.area": "personal", "tower.tab-name": "lead", "tower.space-name": "Garden plan" };
+  fx.hcCalls = [];
+  v.render(cx);
+  assert.deepEqual(v.items.filter((i) => i.taskId === "j1").map((i) => i.lead.address), ["t2"], "one row, led by the new lead");
+  // The naming pass: the old lead's tab is a shell's now; the space keeps the task's title.
+  await tick(2500);
+  assert.deepEqual(fx.hcCalls.filter((x) => x[0] === "label").map((x) => x.slice(1).join(" ")), ["t1 tower.tab-name=shell"]);
+}
+// The row menu's New lead, taken in a render (where Herdr's cx.notify throws): the composer opens on
+// that task as its new lead, with the "in <title>" chip and lead | worker.
+{
+  const fx = world();
+  fx.fixture.terms = [{ address: "t1", state: "live", status: "idle", program: { agent: true, name: "Claude Code" },
+    labels: { "task.id": "g1", "task.role": "lead", "task.title": "Garden plan", "task.area": "personal", "task.recipe": "personal-lead" } }];
+  const { v, cx } = await copy();
+  fx.shared["agent-tower.request"] = { from: v.id, keys: ["task:g1"], action: "newLead" };
+  v.render({ ...cx, notify() { throw new Error("cx.notify in a render"); } });
+  assert.deepEqual([v.composing, v.composeTo, v.into, v.intoAs], [true, "lead", "g1", "lead"]);
+  fx.ids = new Set();
+  v.render(cx);
+  assert.ok(["at-into", "at-into-lead", "at-into-worker"].every((id) => fx.ids.has(id)));
+  // Rename from the menu, also taken in a render.
+  fx.shared["agent-tower.request"] = { from: v.id, keys: ["task:g1"], action: "rename" };
+  v.render({ ...cx, notify() { throw new Error("cx.notify in a render"); } });
+  assert.equal(v.renaming, "task:g1");
+}
 console.log("io ok");

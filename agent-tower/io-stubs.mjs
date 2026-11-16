@@ -11,8 +11,19 @@ export const writeTextFile = (p, text, expected) => {
   return Promise.resolve(null);
 };
 export const watchFolder = (dir) => new Promise((ok) => fx().watchers.push({ dir, ok }));
-export const exec = (cmd, args = []) => {
+// run with its arguments too (fx().runs), for tests that check where something was started.
+export const run = (cmd, args) => {
+  fx().log?.push({ what: `run ${cmd}`, at: Date.now() });
+  fx().runs?.push([cmd, args]);
+};
+export const exec = (cmd, args = [], opts = {}) => {
   fx().execs.push(cmd);
+  // A task's folder (model.MKDIR_SCRIPT): made, with ~ as the made-up home; fx().noMkdir fails it.
+  if (cmd === "sh" && args[2] === "mk") {
+    fx().made?.push([opts.on ?? null, args[3]]);
+    if (fx().noMkdir) return Promise.resolve({ code: 1, stdout: "", stderr: "mkdir: Permission denied" });
+    return Promise.resolve({ code: 0, stdout: `${args[3].replace(/^~/, "/home/me")}\n`, stderr: "" });
+  }
   const files = fx().files;
   if (cmd === "find") {
     if (fx().failFind > 0) {
