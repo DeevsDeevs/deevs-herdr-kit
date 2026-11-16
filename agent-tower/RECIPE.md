@@ -106,6 +106,10 @@ One column on `chrome`, 13px text, in the vocabulary of Herdr's shipped `agents`
     to another area's Eye. Each area keeps its own words for its Eye: they come back when you
     return to the area, and across a restart of the list (a layout switch) through the draft,
     which carries their area.
+  - While a task is selected, an "in <title>" chip (off by default, the title cut to fit);
+    on, it shows "lead | worker" beside it, and Enter starts that agent inside the task (New
+    lead, below) instead of a new task. The row menu's New lead opens the composer with it on,
+    "lead" picked and the task's own recipe chosen when it is in the shown area.
   - One send or start at a time: while one is in flight Enter does nothing, the input is at
     60% opacity and the plus does not close the composer; the input clears when it
     succeeds. Text from the input has every run of whitespace with a line break in it
@@ -185,7 +189,8 @@ One column on `chrome`, 13px text, in the vocabulary of Herdr's shipped `agents`
   the kind's left edge and ends in "…" when cut. The Eye's waits line is the same. In Done
   the second line is the lead's own last sentence, one line in `muted`, when it gave one.
   A task's lead that runs no agent 20 seconds after it was made (its program ended and a
-  shell took its place) reads "no agent running" in `blocked` on its second line.
+  shell took its place), or whose terminal ended, reads "lead ended" in `blocked` under its
+  row; its item menu offers New lead.
 - **The title wins.** When the list is narrower than 300px (the sidebar's width from
   `layout()`; the window counts as 320px) no row prints a machine; it stays in the
   tooltip. At any width the extras give way before the title, in this order: the machine,
@@ -245,7 +250,8 @@ One column on `chrome`, 13px text, in the vocabulary of Herdr's shipped `agents`
 - **Empty area**: "No tasks" in 12px `dim`.
 - **The item menu** (right-click on an item), Herdr's menu: a `popover` popup 250px wide,
   5px padding, 12.8px; 31px items with a 14px `muted` icon: "Details" (`panel-right`, one
-  item only), "Peek" (`monitor`, one item with a lead), "Rename" (`square-pen`, not in the rail, which has no row to rename in),
+  item only), "Peek" (`monitor`, one item with a lead), "New lead" (`plus`, one task, not in
+  the rail), "Rename" (`square-pen`, not in the rail, which has no row to rename in),
   "End task…", "End agent…" for an unlabelled agent, "End all 6…" on a merged row (Herdr's
   word for a terminal and what it started; "Close" is for spaces and panes),
   "End 8 agents left over…" when it has left-over agents
@@ -358,8 +364,14 @@ come from the app's program table.
   `hc machine ls`; if that machine does not answer it toasts "The task didn't start ·
   work-vps does not answer; nothing was started.", starts nothing and keeps your words.
   Then it makes a 5-character id, opens a new space for
-  the lead with `space.new {name, folder, machine, argv, task}` (name: your words cut to 40
-  characters; folder and machine from the recipe, argv the lead agent's run through
+  the lead with `space.new {name, tab, folder, machine, argv, task}` (name "New task", or
+  "New task 2" and on while a start with that name is pending; tab "lead"; machine from the
+  recipe; folder the recipe's `folder`, else `<taskRoot>/<slug>-<task id>` made on the lead's
+  machine (`model.taskFolder`: the area's `taskRoot`, else the settings', else `~/tasks`; the
+  slug the first four words typed, three when four pass 32 characters, lowercase, joined by
+  hyphens, punctuation dropped; `sh -c 'mkdir -p … && cd … && pwd'` there, so `~` is that
+  machine's home). If the folder can't be made the start is refused, "its folder could not be
+  made in <dir>"; a task never gets the shown space's folder. argv the lead agent's run through
   `env TOWER_TASK=<id> TOWER_WORKER=<workers' agent command>`, so the message you read holds
   no ids, paths or usage text; task: the first message below),
   closes the composer, then watches for the space with that name on that machine, finds
@@ -393,7 +405,9 @@ come from the app's program table.
     not a plain skill name counts as missing), once per machine, kept for the session (a
     check that could not run is asked again). Missing: the full contract.
   - The full contract (`DEFAULTS.contract`) says what the tower skill's Lead part says, in
-    its order, in plain lines: plan and delegate; start workers with the agent command named
+    its order, in plain lines: plan and delegate; the task's terminals (`hc ls --json --label
+    task.id=<id> | jq -r '.terminals[].address'`, `--all` for ended ones) and one terminal's
+    labels (`hc get <address> | jq .labels`); start workers with the agent command named
     below, brief on the run line, `--cwd <dir>` (the task's own folder), a remote worker by
     `<machine>/<id>-<role>`; what a brief gives and how it ends (report to the parent with
     the result path); after starting workers `hc read` each once (a folder-trust or sign-in
@@ -422,7 +436,10 @@ come from the app's program table.
   skill's Eye part." (the skill has it answer first with where its area stands, in the
   list's words); without it the full text (its area's tasks from `hc ls --json` by
   `task.area`, else the area's machines, else the default area; starts leads with
-  "$TOWER_NEW", choosing one of its area's recipes from "$TOWER_CONFIG"; passes messages to
+  "$TOWER_NEW", choosing one of its area's recipes from "$TOWER_CONFIG"; a task's terminals and
+  labels by the same `hc ls`/`hc get` lines as a lead's; a task whose lead has ended, or that
+  you want a fresh lead for, gets `"$TOWER_NEW" --task <id> <recipe id> "<their words>"`,
+  never a new task; passes messages to
   its area's leads with `hc send`; work for another area goes back to you; answers from
   labels, never memory; never does task work or ends anything unasked; asks when unclear;
   starts its last message with one or two plain sentences). End kills and `hc rm`s that
@@ -448,8 +465,8 @@ come from the app's program table.
     every area is refused ("end it from its menu"). From an Eye (`TOWER_AREA` set, sent as
     `by`), `start` and `end` act on its own area only; `status` sees all.
 - **The inbox**, how the Eye starts tasks exactly as the composer does: `tower-new`
-  writes `<tower dir>/inbox/<id>.json` (`{recipe, words, agent?, area?, at}`, `area` from
-  `TOWER_AREA` when set; written aside and moved in) and waits up to 25 seconds for `outbox/<id>.json`, printing it as
+  writes `<tower dir>/inbox/<id>.json` (`{recipe, words, agent?, area?, task?, as?, at}`,
+  `area` from `TOWER_AREA` when set, `task` and `as` from `--task <id>` and `--as lead|worker`; written aside and moved in) and waits up to 25 seconds for `outbox/<id>.json`, printing it as
   one line of JSON (exit 0 when it started). The docked copy (never a window) watches the
   inbox with `watchFolder`, scans it at start and on its 30 s tick, and acts only while it
   holds `shared("agent-tower.inboxLease")` (renewed every 30 s, free after 75 s, released
@@ -465,6 +482,10 @@ come from the app's program table.
   through the composer's own start (`startTask`: refusals, machine check, pending row,
   label, naming). The answer is `{ok: true, task, lead}` once the lead is labelled, or
   `{ok: false, why}`. Answers nobody fetched are swept from the outbox after ten minutes.
+  A request with `task` goes to New lead (below) instead (`model.checkJoin`): `as` left out is
+  lead; refused with "there is no task "x"", "task x is in Personal; this is Work's Eye" or
+  ""boss" is not lead or worker"; answered `{ok: true, task, as, starting: true}` once the tab
+  is asked for.
   Two more request shapes go the same way (same lease, size, age and id checks), each
   answered with `{ok, why?, text}` that the script prints: `{names: {apply, named, space}}`
   from `tower-names` (Names, below) and `{eye: {do, area, by}}` from `tower-eye` (`by` is
@@ -489,8 +510,12 @@ come from the app's program table.
   space follows through Names, unless someone typed its name. The model never touches a
   task whose `task.by` is `you`.
 - **Names** (`model.wantedNames`), in Herdr's own screens (its spaces, tabs and Agents list):
-  - A space holding one task alone takes the task's title, and follows it (your words, the
-    namer's name, a Rename). A space with several tasks, or none, keeps its name; an Eye's
+  - At birth a task's space is "New task" and its tab "lead", both recorded as ours in the
+    lead's one label call. While the title is still the raw words (`task.by=raw`) nothing is
+    renamed; the space takes the namer's title when it answers, and stays "New task" until a
+    Rename if the namer fails.
+  - A space holding one task alone takes the task's title, and follows it (the namer's name,
+    a Rename). A space with several tasks, or none, keeps its name; an Eye's
     space keeps "Eye · <area label>".
   - Tabs, by the first terminal in them (Eye, then lead, worker, shell): "Eye"; "lead"; a
     worker's hc name, else "<program> worker"; "shell", or "shell · <folder>" when the
@@ -512,6 +537,26 @@ come from the app's program table.
     run prints each space, then its tabs, old → new, and a typed name as "kept: <name> | with
     --named: <title>", counted on the last line. `--apply` sets them; `--named` also
     replaces typed names. Exit 0 done, 1 not, 2 wrong usage.
+- **New lead** (item menu, the composer's "in <title>", or `tower-new --task <id> [--as
+  lead|worker]`) starts an agent inside a task (`joinTask`): a new tab in the task's space on
+  its lead's machine (named "lead" for a lead), or, if that space has gone, a new space named
+  after the task. Folder: the lead's own (`model.joinFolder`, unless it is a home folder),
+  else the recipe's, else `<taskRoot>/<slug>-<task id>` as for a start. One at a time per
+  task ("a new agent in this task is still starting"). Found like a start (a live terminal in
+  a tab of that space that wasn't there before, given up after a minute) and labelled in one
+  call: a lead gets `task.id`, `task.role=lead`, the task's `task.title` and `task.by`,
+  `task.recipe`, `task.area`, `task.lead` and `tower.tab-name=lead`; a worker `task.id` and
+  `task.role=worker`. Then the lead before it becomes `task.role=worker` while its agent runs,
+  `task.role=shell` (no row) once its program has ended; an ended terminal keeps its labels.
+  - A new lead's first message, with the skill, two lines:
+    `You are the new lead of task <id>, "<title>", taking over from its earlier lead: its terminals and its chain say where it stands.`
+    and `Lead task <id> with the tower skill (questions to me go through task.ask): <words>`.
+    Without the skill: the recipe's rules, that same "You are the new lead…" line, then the
+    full contract and "Task: <words>".
+  - A worker added from the list gets:
+    `You are a worker on task <id>, "<title>"; use the tower skill if you have it.`, then
+    `When done or blocked, hc send one plain sentence and the result path to the task's lead (<lead address, or: hc ls --json --label task.id=<id> --label task.role=lead | jq -r '.terminals[].address'>), then finish your turn.`,
+    then `Task: <words>`.
 - **Close** (item menu): the question counts what would end: for a task, every terminal
   carrying its `task.id`; for an unlabelled agent, it and the live terminals that belong
   to it (not another task's workers); on a merged row, all of that for every member.
@@ -603,12 +648,12 @@ come from the app's program table.
   gives null for a missing file); when neither exists the mod uses its built-in defaults (it
   does not write the file). A file that is not valid JSON gets a toast naming it, and the
   defaults: `{ areas: [{ id, label, machines?: [name], default?: true,
-              eye?: { agent?: id, folder?: path, rules?: [text] } | false }],
+              eye?: { agent?: id, folder?: path, rules?: [text] } | false, taskRoot?: path }],
      agents: [{ id, label, argv: [..] }],
      roles: { eye?: id, lead?: id, worker?: id, namer?: [argv] },
      recipes: [{ id, label, area, machine?: name, folder?: path, rules?: [text],
                  lead?: id, worker?: id, argv?: [..] (old files) }],
-     skill: name | null, contract: text with {id},
+     skill: name | null, contract: text with {id}, taskRoot?: path (default "~/tasks"),
      doneSignal?: "dot" | "pulse" | "line" | "off" }`.
   Parsed by `model.parseConfig`: a part in the wrong shape falls back to its default and is
   named in a toast; `roles` fill in per role. Old files keep loading: `activities` and a

@@ -1,13 +1,29 @@
 #!/bin/sh
-# tower-new <recipe id> "<words>" [agent id]
+# tower-new [--task <id> [--as lead|worker]] <recipe id> "<words>" [agent id]
 # Asks Agent Tower (the Herdr mod) to start a task, exactly as its composer does: writes a request
 # to ~/.config/agent-tower/inbox, waits up to 25 seconds for the answer in .../outbox and prints it
 # as one line of JSON. Exits 0 when the task started, 1 when not, 2 on wrong usage.
 # An area's Eye has TOWER_AREA in its environment: the request then names that area, and Agent
 # Tower refuses a recipe of another area.
+# --task <id>: a new agent inside that task instead of a new task, in a new tab of its space and
+# folder; --as lead (the default: the old lead steps down) or worker.
 set -u
-if [ $# -lt 2 ] || [ $# -gt 3 ]; then
-  echo 'usage: tower-new <recipe id> "<words>" [agent id]' >&2
+usage='usage: tower-new [--task <id> [--as lead|worker]] <recipe id> "<words>" [agent id]'
+task=""
+as=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --task) [ $# -ge 2 ] && [ -n "$2" ] || { echo "$usage" >&2; exit 2; }; task="$2"; shift 2 ;;
+    --as) [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }
+      case "$2" in lead|worker) as="$2" ;; *) echo "$usage" >&2; exit 2 ;; esac
+      shift 2 ;;
+    --) shift; break ;;
+    --*) echo "$usage" >&2; exit 2 ;;
+    *) break ;;
+  esac
+done
+if [ $# -lt 2 ] || [ $# -gt 3 ] || { [ -n "$as" ] && [ -z "$task" ]; }; then
+  echo "$usage" >&2
   exit 2
 fi
 dir="${AGENT_TOWER_DIR:-$HOME/.config/agent-tower}"
@@ -23,6 +39,7 @@ agent=""
 [ $# -eq 3 ] && agent=", \"agent\": \"$(esc "$3")\""
 area=""
 [ -n "${TOWER_AREA:-}" ] && area=", \"area\": \"$(esc "$TOWER_AREA")\""
+[ -n "$task" ] && area="$area, \"task\": \"$(esc "$task")\", \"as\": \"${as:-lead}\""
 # Written aside, then moved in, so the mod never reads half a request.
 printf '{ "recipe": "%s", "words": "%s"%s, "at": %s000 }\n' "$(esc "$1")" "$(esc "$2")" "$agent$area" "$(date +%s)" > "$dir/inbox/.$id.tmp" || exit 1
 mv "$dir/inbox/.$id.tmp" "$dir/inbox/$id.json" || exit 1

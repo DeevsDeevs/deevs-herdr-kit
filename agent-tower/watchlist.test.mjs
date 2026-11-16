@@ -55,7 +55,7 @@ const items = [
   item("a", "Research ASML before results", "idle", { changed: 5 }),
   item("b", "Weekly portfolio review", "blocked", { lead: { labels: { "task.topic": "vwce, asml" } }, need: { text: "Sell ASML or hold?" } }),
   item("c", "CASMLX is not ASML", "working", { changed: 9 }),
-  item("d", "Kyoto trip", "done"),
+  item("d", "Bird feeder", "done"),
 ];
 assert.deepEqual(w.tasksFor("ASML", items).map((i) => i.key), ["b", "c", "a"]);
 assert.deepEqual(w.tasksFor("VWCE", items).map((i) => i.key), ["b"]);

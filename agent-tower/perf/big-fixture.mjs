@@ -41,7 +41,7 @@ export const utf8 = (s) => {
   return b;
 };
 
-const TOPICS = ["ledger export", "rate limiter", "billing sync", "search index", "kyoto trip", "tax forms", "garden plan", "invoice parser",
+const TOPICS = ["ledger export", "rate limiter", "billing sync", "search index", "bird feeder", "tax forms", "garden plan", "invoice parser",
   "release notes", "backup check", "photo archive", "budget sheet", "docs site", "sensor logger", "router setup", "fund review", "bond ladder",
   "dividend log", "watchlist memo", "sector notes"];
 const ROLES = ["build", "review", "tests", "docs", "probe", "fix", "check", "merge", "bench", "walk", "notes", "cold"];
