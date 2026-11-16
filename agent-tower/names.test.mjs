@@ -1,0 +1,158 @@
+// node names.test.mjs: names in Herdr's own screens (model.wantedNames, tower-names) and an area's Eye
+// without a click (model.checkEyeRequest, tower-eye). Made-up spaces: Herdr's own names, names we set,
+// a name someone typed (a converted space), two tasks in one space, another machine, an Eye, an Eye
+// started by hand; and both scripts' requests and answers through a made-up inbox.
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import * as model from "./mods/agent-tower/model.js";
+
+const agent = { agent: true, name: "Claude Code" };
+const term = (address, labels, more = {}) => ({ address, state: "live", status: "idle", program: agent, labels, ...more });
+const lead = (address, id, title, sp, tb, more = {}) =>
+  term(address, { "task.id": id, "task.role": "lead", "task.title": title, "herdr.space": sp, "herdr.tab": tb, ...more });
+const space = (id, name, named, tabs, machine = null) => ({ id, name, named, machine, tabs: tabs.map(([tid, tname, tnamed], i) => ({ id: tid, index: i + 1, name: tname, named: tnamed })) });
+
+const terms = [
+  // One task, Herdr's own names everywhere: a lead, a worker, a shell.
+  lead("t1", "a1", "Invoice CSV export", "sp1", "tb1"),
+  term("t2", { "task.id": "a1", "herdr.space": "sp1", "herdr.tab": "tb2" }, { name: "study-v01", parent: "t1" }),
+  term("t3", { "task.id": "a1", "task.role": "shell", "herdr.space": "sp1", "herdr.tab": "tb3" }, { status: null, program: { agent: false, name: "zsh" }, cwd: "/home/me/shop" }),
+  // Converted: the space's name was typed by someone; its task now has another title.
+  lead("t4", "a2", "Billing schema check", "sp2", "tb4"),
+  // Ours: the name we set is still there.
+  lead("t5", "a3", "Garden plan", "sp3", "tb5", { "tower.space-name": "garden", "tower.tab-name": "lead" }),
+  // Ours once, then renamed by someone.
+  lead("t6", "a4", "Reading list", "sp4", "tb6", { "tower.space-name": "Reading" }),
+  // Two tasks in one space.
+  lead("t7", "a5", "Alpha", "sp5", "tb7"),
+  lead("t8", "a6", "Beta", "sp5", "tb8"),
+  // Another machine: its ids carry the machine, its labels don't.
+  lead("work-vps/t1", "a7", "Load test", "sp6", "tb9"),
+  // An Eye.
+  term("t9", { "tower.eye": "1", "tower.area": "Work", "herdr.space": "sp7", "herdr.tab": "tb10" }),
+  // A space of plain shells, no task: not ours to name.
+  term("t10", { "herdr.space": "sp8", "herdr.tab": "tb11" }, { status: null, program: { agent: false, name: "zsh" } }),
+];
+const spaceList = [
+  space("sp1", "~/shop", false, [["tb1", "1", false], ["tb2", "2", false], ["tb3", "3", false]]),
+  space("sp2", "Billing", true, [["tb4", "1", false]]),
+  space("sp3", "garden", true, [["tb5", "lead", true]]),
+  space("sp4", "My books", true, [["tb6", "Mine", true]]),
+  space("sp5", "shared", true, [["tb7", "1", false], ["tb8", "2", false]]),
+  space("work-vps/sp6", "~", false, [["work-vps/tb9", "1", false]], "work-vps"),
+  space("sp7", "Eye · Work", true, [["tb10", "1", false]]),
+  space("sp8", "notes", true, [["tb11", "1", false]]),
+];
+const items = model.workItems(terms, new Map(), spaceList);
+const wanted = model.wantedNames({ terms, spaces: spaceList, items });
+const byId = Object.fromEntries(wanted.map((s) => [s.id, s]));
+
+assert.deepEqual(wanted.map((s) => s.id), ["sp1", "sp2", "sp3", "sp4", "sp5", "work-vps/sp6", "sp7"], "every space holding a task or an Eye, none other");
+assert.deepEqual([byId.sp1.state, byId.sp1.to, byId.sp1.anchor], ["change", "Invoice CSV export", "t1"], "Herdr's name: the task's title, recorded on its lead");
+assert.deepEqual(byId.sp1.tabs.map((tb) => [tb.to, tb.state, tb.anchor]), [["lead", "change", "t1"], ["study-v01", "change", "t2"], ["shell", "change", "t3"]]);
+assert.deepEqual([byId.sp2.state, byId.sp2.from, byId.sp2.to], ["named", "Billing", "Billing schema check"], "a typed name stays, with the title --named would give");
+assert.deepEqual([byId.sp2.tabs[0].to, byId.sp2.tabs[0].alt], ["lead · Billing schema check", "lead"], "its lead's tab says the task while the space doesn't; lead once it does");
+assert.deepEqual([byId.sp3.state, byId.sp3.to, byId.sp3.tabs[0].state], ["change", "Garden plan", "same"], "still ours: follows the title");
+assert.deepEqual([byId.sp4.state, byId.sp4.tabs[0].state], ["named", "named"], "renamed by someone after us: theirs now");
+assert.deepEqual([byId.sp5.state, byId.sp5.tabs.map((tb) => tb.to)], ["tasks", ["lead · Alpha", "lead · Beta"]], "two tasks: the space keeps its name");
+assert.deepEqual([byId["work-vps/sp6"].state, byId["work-vps/sp6"].to, byId["work-vps/sp6"].tabs[0].id], ["change", "Load test", "work-vps/tb9"], "another machine");
+assert.deepEqual([byId.sp7.state, byId.sp7.tabs[0].to], ["same", "Eye"], "the Eye's space keeps its name; its tab is Eye");
+
+// Two shell tabs: each says its folder.
+const twoShells = model.wantedNames({
+  terms: [lead("t1", "a1", "X", "sp1", "tb1"),
+    term("t2", { "task.id": "a1", "task.role": "shell", "herdr.space": "sp1", "herdr.tab": "tb2" }, { status: null, program: { agent: false }, cwd: "/home/me/api" }),
+    term("t3", { "task.id": "a1", "task.role": "shell", "herdr.space": "sp1", "herdr.tab": "tb3" }, { status: null, program: { agent: false }, cwd: "/home/me/web/" })],
+  spaces: [space("sp1", "X", false, [["tb1", "1", false], ["tb2", "2", false], ["tb3", "3", false]])],
+  items: model.workItems([lead("t1", "a1", "X", "sp1", "tb1"),
+    term("t2", { "task.id": "a1", "task.role": "shell", "herdr.space": "sp1", "herdr.tab": "tb2" }, { status: null, program: { agent: false }, cwd: "/home/me/api" }),
+    term("t3", { "task.id": "a1", "task.role": "shell", "herdr.space": "sp1", "herdr.tab": "tb3" }, { status: null, program: { agent: false }, cwd: "/home/me/web/" })], new Map(), []),
+});
+assert.deepEqual(twoShells[0].tabs.map((tb) => tb.to), ["lead", "shell · api", "shell · web"]);
+
+// What to do: only names that are ours, the space before its tabs.
+const changes = model.nameChanges(wanted);
+assert.deepEqual(changes.filter((c) => c.id.startsWith("sp1") || c.id === "tb1" || c.id === "tb2" || c.id === "tb3").map((c) => [c.kind, c.id, c.to]),
+  [["space", "sp1", "Invoice CSV export"], ["tab", "tb1", "lead"], ["tab", "tb2", "study-v01"], ["tab", "tb3", "shell"]]);
+assert.ok(!changes.some((c) => c.id === "sp2" || c.id === "sp4" || c.id === "sp5" || c.id === "tb6"), "never a typed name, nor a shared space");
+
+// --named: the typed names too.
+const all = model.wantedNames({ terms, spaces: spaceList, items, named: true });
+assert.deepEqual(model.nameChanges(all).filter((c) => ["sp2", "sp4", "tb6"].includes(c.id)).map((c) => c.to), ["Billing schema check", "Reading list", "lead"]);
+
+// One space, by id or name.
+assert.deepEqual(model.wantedNames({ terms, spaces: spaceList, items, only: "Billing" }).map((s) => s.id), ["sp2"]);
+assert.deepEqual(model.wantedNames({ terms, spaces: spaceList, items, only: "work-vps/sp6" }).map((s) => s.id), ["work-vps/sp6"]);
+
+// The dry run's text: old → new; a typed name shows both outcomes side by side.
+const dry = model.namesText(wanted);
+assert.ok(dry.includes('sp1  "~/shop"  →  "Invoice CSV export"\n  tab tb1  "1"  →  "lead"'), dry);
+assert.ok(dry.includes('sp2  "Billing"  kept: "Billing"  |  with --named: "Billing schema check"\n  tab tb4  "1"  →  "lead · Billing schema check"  |  with --named: "lead"'), dry);
+assert.ok(dry.includes('sp5  "shared"  kept: 2 tasks live there'), dry);
+assert.ok(dry.includes('  tab tb6  "Mine"  kept: "Mine"  |  with --named: "lead"'), dry);
+assert.ok(dry.endsWith("Dry run: nothing changed. tower-names --apply renames 3 spaces and 8 tabs. 3 names someone typed stay; --named gives them the name shown."), dry.split("\n").pop());
+assert.ok(model.namesText(wanted, { apply: true, failed: 2 }).includes("Renamed 9 of 11; 2 could not be labelled."));
+assert.equal(model.namesText([]), "No space holds a task.\nDry run: nothing changed. tower-names --apply renames 0 spaces and 0 tabs.");
+
+// ── tower-eye's request ──
+const config = { ...model.DEFAULTS, areas: [{ id: "Work", label: "Work" }, { id: "Personal", label: "Personal", default: true }, { id: "Investing", label: "Investing", eye: false }] };
+const eyes = [
+  term("t9", { "tower.eye": "1", "tower.area": "Work", "herdr.space": "sp7" }),
+  // Started by hand with the mod's own arguments: in "Eye · Personal", never labelled.
+  term("t11", { "herdr.space": "sp9" }),
+];
+const eyeSpaces = [space("sp7", "Eye · Work", true, []), space("sp9", "Eye · Personal", true, [])];
+const ask = (req, t = eyes, age = 0) => model.checkEyeRequest(req, config, t, eyeSpaces, age);
+assert.deepEqual([ask({}).do, ask({}).area], ["status", "Personal"], "status, in the default area");
+assert.equal(ask({ do: "start", area: "Work" }).eye.address, "t9", "Work's Eye runs");
+assert.deepEqual([ask({ do: "start" }).eye, ask({ do: "start" }).byHand?.address, ask({ do: "start" }).name], [null, "t11", "Eye · Personal"], "the one started by hand is found");
+assert.equal(ask({ do: "start", area: "Personal" }, [eyes[0], { ...eyes[1], address: "mac/t11" }]).byHand, null, "only on this computer");
+assert.match(ask({ do: "start", area: "Nope" }).why, /no area "Nope"; the settings have Work, Personal, Investing/);
+assert.match(ask({ do: "start", area: "Investing" }).why, /Investing has no Eye/);
+assert.match(ask({ do: "end", area: "Personal", by: "Work" }).why, /this is Work's Eye; Personal is another area/);
+assert.equal(ask({ do: "status", by: "Work" }).ok, true, "any Eye may look");
+assert.match(ask({ do: "restart" }).why, /not status, start or end/);
+assert.match(ask({ do: "end" }, [], 3 * 60 * 1000).why, /too old/);
+const old = [term("t12", { "tower.eye": "1" })];
+assert.match(ask({ do: "end", area: "Personal" }, old).why, /serves every area: end it from its menu/);
+assert.equal(ask({ do: "end", area: "Work" }, eyes).eye.address, "t9");
+assert.equal(model.eyeStatusText(config, eyes, (a) => a === "Personal"), "Work: t9, idle\nPersonal: starting\nInvesting: no Eye (eye: false)");
+assert.equal(model.eyeStatusText(config, old), "Work: t12, idle (the Eye for every area)\nPersonal: t12, idle (the Eye for every area)\nInvesting: no Eye (eye: false)");
+
+// ── The scripts: each writes its request to the inbox, prints the answer's text, exits 0 or 1. ──
+async function script(name, args, answer, env = {}) {
+  const dir = mkdtempSync(join(tmpdir(), `${name}-`));
+  const child = spawn(new URL(`./mods/agent-tower/${name}`, import.meta.url).pathname, args, { env: { ...process.env, AGENT_TOWER_DIR: dir, TOWER_AREA: "", ...env } });
+  let out = "";
+  child.stdout.on("data", (d) => (out += d));
+  let request = null;
+  for (let i = 0; i < 100 && !request; i++) {
+    await new Promise((r) => setTimeout(r, 50));
+    const file = (() => { try { return readdirSync(join(dir, "inbox")).find((f) => !f.startsWith(".")); } catch { return null; } })();
+    if (!file) continue;
+    request = JSON.parse(readFileSync(join(dir, "inbox", file), "utf8"));
+    writeFileSync(join(dir, "outbox", `.${file}`), JSON.stringify(answer));
+    renameSync(join(dir, "outbox", `.${file}`), join(dir, "outbox", file));
+  }
+  const code = await new Promise((r) => child.on("exit", r));
+  return { request, out, code };
+}
+const n1 = await script("tower-names", [], { ok: true, text: "sp1 ...\nDry run: nothing changed." });
+assert.deepEqual([n1.request.names, n1.out, n1.code], [{ apply: false, named: false }, "sp1 ...\nDry run: nothing changed.\n", 0]);
+const n2 = await script("tower-names", ["--apply", "--named", "--space", 'Billing "old"'], { ok: false, why: "1 label call failed", text: "…" });
+assert.deepEqual([n2.request.names, n2.code], [{ apply: true, named: true, space: 'Billing "old"' }, 1]);
+const e1 = await script("tower-eye", ["start", "--area", "Work"], { ok: true, address: "t9", text: "Started Work's Eye: t9." });
+assert.deepEqual([e1.request.eye, e1.out, e1.code], [{ do: "start", area: "Work" }, "Started Work's Eye: t9.\n", 0]);
+const e2 = await script("tower-eye", [], { ok: true, text: "Work: none" }, { TOWER_AREA: "Work" });
+assert.deepEqual(e2.request.eye, { do: "status", by: "Work" });
+const e3 = await script("tower-eye", ["end"], { ok: false, why: "no" });
+assert.deepEqual([e3.request.eye, e3.code], [{ do: "end" }, 1]);
+for (const [name, args] of [["tower-names", ["--nope"]], ["tower-eye", ["stop"]], ["tower-eye", ["--area"]]]) {
+  const code = await new Promise((r) => spawn(new URL(`./mods/agent-tower/${name}`, import.meta.url).pathname, args).on("exit", r));
+  assert.equal(code, 2, `${name} ${args.join(" ")}`);
+}
+
+console.log("names ok");

@@ -1,0 +1,56 @@
+#!/bin/sh
+# tower-names [--apply] [--named] [--space <id or name>]
+# Names Herdr's spaces and tabs after the tasks in them, for Herdr's own screens (the default layout,
+# another client, the phone): a space holding one task takes its title; a tab "lead", a worker's
+# name, "shell" or "Eye". Without --apply it is a dry run: it prints, per space and tab, the name now
+# and the name it would get, and changes nothing. A name someone typed stays; the dry run shows it
+# beside the name --named would give it. --space: only that space, by its id or its name. A dry run
+# with the same flags prints exactly what --apply does. Agent Tower keeps the names it set in step
+# by itself; this is for what was there before, and to look.
+# Agent Tower (the Herdr mod) does it, since only the app knows its spaces and tabs: the request goes
+# to ~/.config/agent-tower/inbox as tower-new's do; the answer is printed. Exits 0 when done, 1 when
+# not, 2 on wrong usage.
+set -u
+usage='usage: tower-names [--apply] [--named] [--space <id or name>]'
+apply=false
+named=false
+space=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --apply) apply=true ;;
+    --named) named=true ;;
+    --space) [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }; space="$2"; shift ;;
+    *) echo "$usage" >&2; exit 2 ;;
+  esac
+  shift
+done
+dir="${AGENT_TOWER_DIR:-$HOME/.config/agent-tower}"
+mkdir -p "$dir/inbox" "$dir/outbox" || exit 1
+esc() {
+  printf '%s' "$1" | awk 'BEGIN { ORS = "" } { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); gsub(/\t/, "\\t"); gsub(/\r/, "\\r"); if (NR > 1) printf "\\n"; print }'
+}
+id="req-$(date +%s)-$$"
+only=""
+[ -n "$space" ] && only=", \"space\": \"$(esc "$space")\""
+printf '{ "names": { "apply": %s, "named": %s%s }, "at": %s000 }\n' "$apply" "$named" "$only" "$(date +%s)" > "$dir/inbox/.$id.tmp" || exit 1
+mv "$dir/inbox/.$id.tmp" "$dir/inbox/$id.json" || exit 1
+show() {
+  python3 -c 'import json, sys
+a = json.load(sys.stdin)
+print(a.get("text") or a.get("why") or json.dumps(a))' < "$1" 2>/dev/null || cat "$1"
+}
+i=0
+# An apply labels terminals, some on other machines: up to a minute.
+while [ $i -lt 60 ]; do
+  if [ -f "$dir/outbox/$id.json" ]; then
+    show "$dir/outbox/$id.json"
+    answer=$(tr -d '\n' < "$dir/outbox/$id.json")
+    rm -f "$dir/outbox/$id.json"
+    case "$answer" in *'"ok":true'*|*'"ok": true'*) exit 0 ;; *) exit 1 ;; esac
+  fi
+  sleep 1
+  i=$((i + 1))
+done
+rm -f "$dir/inbox/$id.json"
+echo 'No answer in 60 seconds: Agent Tower is not showing in Herdr on this computer, so nothing was changed.' >&2
+exit 1

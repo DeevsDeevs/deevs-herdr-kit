@@ -1,0 +1,52 @@
+#!/bin/sh
+# tower-eye [status | start | end] [--area <id>]
+# An area's Eye without a click, as the list's Start and the Eye's End do. status (the default)
+# prints each area's Eye; start starts the area's Eye (an Eye already running is left as it is, and
+# an agent started by hand in a space named "Eye · <area>" on this computer is labelled as the area's
+# Eye instead of a second one); end ends the area's Eye and nothing else. --area: an area id from the
+# settings (default: the area with "default": true). An Eye (TOWER_AREA set) acts on its own area only.
+# Agent Tower (the Herdr mod) does it: the request goes to ~/.config/agent-tower/inbox as tower-new's
+# do; the answer is printed. Exits 0 when done, 1 when not, 2 on wrong usage.
+set -u
+usage='usage: tower-eye [status | start | end] [--area <id>]'
+what=status
+area=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    status|start|end) what="$1" ;;
+    --area) [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }; area="$2"; shift ;;
+    *) echo "$usage" >&2; exit 2 ;;
+  esac
+  shift
+done
+dir="${AGENT_TOWER_DIR:-$HOME/.config/agent-tower}"
+mkdir -p "$dir/inbox" "$dir/outbox" || exit 1
+esc() {
+  printf '%s' "$1" | awk 'BEGIN { ORS = "" } { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); gsub(/\t/, "\\t"); gsub(/\r/, "\\r"); if (NR > 1) printf "\\n"; print }'
+}
+id="req-$(date +%s)-$$"
+more=""
+[ -n "$area" ] && more=", \"area\": \"$(esc "$area")\""
+[ -n "${TOWER_AREA:-}" ] && more="$more, \"by\": \"$(esc "$TOWER_AREA")\""
+printf '{ "eye": { "do": "%s"%s }, "at": %s000 }\n' "$what" "$more" "$(date +%s)" > "$dir/inbox/.$id.tmp" || exit 1
+mv "$dir/inbox/.$id.tmp" "$dir/inbox/$id.json" || exit 1
+show() {
+  python3 -c 'import json, sys
+a = json.load(sys.stdin)
+print(a.get("text") or a.get("why") or json.dumps(a))' < "$1" 2>/dev/null || cat "$1"
+}
+i=0
+# A start answers once the Eye's terminal is labelled.
+while [ $i -lt 25 ]; do
+  if [ -f "$dir/outbox/$id.json" ]; then
+    show "$dir/outbox/$id.json"
+    answer=$(tr -d '\n' < "$dir/outbox/$id.json")
+    rm -f "$dir/outbox/$id.json"
+    case "$answer" in *'"ok":true'*|*'"ok": true'*) exit 0 ;; *) exit 1 ;; esac
+  fi
+  sleep 1
+  i=$((i + 1))
+done
+rm -f "$dir/inbox/$id.json"
+echo 'No answer in 25 seconds: Agent Tower is not showing in Herdr on this computer, or the Eye did not show up; see the list.' >&2
+exit 1

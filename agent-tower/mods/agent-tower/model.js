@@ -1086,6 +1086,42 @@ export function checkRequest(req, config, age) {
   return { ok: true, recipe, words, agent: req.agent ?? null };
 }
 
+// tower-eye's request {eye: {do, area, by}}: status, start or end an area's Eye without a click.
+// by: the asking Eye's TOWER_AREA, which may act on its own area only. Gives {ok, do, area, eye,
+// byHand} or {ok: false, why}: eye is the area's Eye, byHand a live agent on this computer in a
+// space named as the area's Eye ("Eye · <area>") that nobody labelled (started by hand).
+export function checkEyeRequest(req, config, terms, spaceList, age) {
+  if (!req || typeof req !== "object") return { ok: false, why: "not a request: it is not a JSON object" };
+  if (age > REQUEST_MAX_AGE) return { ok: false, why: "too old" };
+  const what = req.do ?? "status";
+  if (!["status", "start", "end"].includes(what)) return { ok: false, why: `"${what}" is not status, start or end` };
+  const area = req.area ?? (config.areas.find((a) => a.default) ?? config.areas[0])?.id ?? null;
+  if (!config.areas.some((a) => a.id === area)) {
+    return { ok: false, why: `there is no area "${area}"; the settings have ${config.areas.map((a) => a.id).join(", ")}` };
+  }
+  if (req.by != null && req.by !== area && what !== "status") return { ok: false, why: `this is ${areaLabel(config, req.by)}'s Eye; ${areaLabel(config, area)} is another area` };
+  if (what !== "status" && eyeOff(config, area)) return { ok: false, why: `${areaLabel(config, area)} has no Eye (eye: false in the settings)` };
+  const eye = findEye(terms, area, config);
+  if (what === "end" && eye && eye.labels?.["tower.area"] !== area) {
+    return { ok: false, why: `the Eye shown in ${areaLabel(config, area)} serves every area: end it from its menu` };
+  }
+  const name = `Eye · ${areaLabel(config, area)}`;
+  const own = spaceList.filter((s) => !s.machine && s.name === name).map((s) => s.id);
+  const byHand = eye ? null : terms.find((t) => isAgent(t) && !isEye(t) && !machineOf(t.address) && own.includes(t.labels?.["herdr.space"])) ?? null;
+  return { ok: true, do: what, area, eye, byHand, name };
+}
+
+// tower-eye status: one line per area.
+export function eyeStatusText(config, terms, starting = () => false) {
+  return config.areas.map((a) => {
+    const label = areaLabel(config, a.id);
+    if (eyeOff(config, a.id)) return `${label}: no Eye (eye: false)`;
+    const eye = findEye(terms, a.id, config);
+    if (eye) return `${label}: ${eye.address}, ${eye.status ?? "running"}${eye.labels?.["tower.area"] ? "" : " (the Eye for every area)"}`;
+    return `${label}: ${starting(a.id) ? "starting" : "none"}`;
+  }).join("\n");
+}
+
 // Whether the skill is on a machine: a shell test run there (the name is an argument, never part
 // of the script). For the Eye the skill must also have an "## Eye" part. Null for a name that is
 // not a plain skill name.
@@ -1159,6 +1195,116 @@ export function keepPlan(address, item, spaceList) {
 
 // Its words on the Keep button: what you get, a tab, and where. where: the machine's word.
 export const keepWords = (plan, where) => (plan.how === "here" ? "Open as a tab here" : `Open as a tab on ${where}`);
+
+// ── Names in Herdr's own screens (the default layout, another client, the phone). ──
+
+// A task's space is called after its title while it holds that one task; a tab after what it shows:
+// "Eye", "lead" ("lead · <title>" where the space's name doesn't say the task), a worker's hc name, "shell". Herdr tells only whether someone named a space or tab
+// (named, after any rename), so each name set here is also a label on a terminal in it: a name is
+// ours to change when nobody named it, or when it is still the one we set. Any other is a person's.
+export const SPACE_NAME = "tower.space-name";
+export const TAB_NAME = "tower.tab-name";
+const RANKS = { eye: 0, lead: 1, worker: 2, shell: 3 };
+const baseName = (path) => (path ?? "").replace(/\/+$/, "").split("/").pop() || "~";
+
+// Every space holding a task or an Eye, with its tabs: {id, machine, from, to, state, anchor, tabs}.
+// state: "change" (ours to set), "named" (a person's name; to is what --named sets), "same",
+// "tasks" (several tasks there: no name). anchor: the terminal that carries our label.
+// named: also change a person's name. only: a space id or name.
+export function wantedNames({ terms, spaces: spaceList, items, named = false, only = null }) {
+  const role = new Map();
+  for (const item of items) {
+    if (!item.taskId) continue;
+    for (const t of item.live) {
+      const r = t === item.lead ? "lead" : t.labels?.["task.role"] === "shell" || !isAgent(t) ? "shell" : "worker";
+      role.set(t.address, { role: r, item, t });
+    }
+  }
+  for (const t of terms) if (isLive(t) && isEye(t)) role.set(t.address, { role: "eye", item: null, t });
+  const where = new Map();
+  for (const { t } of role.values()) {
+    const sp = t.labels?.["herdr.space"];
+    if (!sp) continue;
+    const key = `${machineOf(t.address) ?? ""}|${sp}`;
+    if (!where.has(key)) where.set(key, []);
+    where.get(key).push(role.get(t.address));
+  }
+  const out = [];
+  for (const s of spaceList) {
+    if (only && s.id !== only && s.name !== only) continue;
+    const here = where.get(`${s.machine ?? ""}|${localId(s.id)}`) ?? [];
+    if (!here.length) continue;
+    const tasks = [...new Set(here.filter((x) => x.item).map((x) => x.item))];
+    const eye = here.some((x) => x.role === "eye");
+    const top = (list) => [...list].sort((a, b) => RANKS[a.role] - RANKS[b.role])[0] ?? null;
+    const judge = (to, from, isNamed, key, list) => {
+      if (to == null) return "tasks";
+      if (from === to) return "same";
+      if (!isNamed || list.some((x) => x.t.labels?.[key] === from)) return "change";
+      return named ? "change" : "named";
+    };
+    const spaceTo = !eye && tasks.length === 1 ? titleOf(tasks[0]) : null;
+    const spaceState = eye ? "same" : judge(spaceTo, s.name, s.named, SPACE_NAME, here);
+    // Herdr's agent list shows "space · tab": where the space doesn't say the task, its lead's tab does.
+    const leadSays = (item) => (tasks.length > 1 || spaceState === "named" ? `lead · ${titleOf(item)}` : "lead");
+    const tabTops = (s.tabs ?? []).map((tb) => {
+      const list = here.filter((x) => x.t.labels?.["herdr.tab"] === localId(tb.id));
+      return { tb, list, top: top(list) };
+    });
+    const shells = tabTops.filter((x) => x.top?.role === "shell").length;
+    const tabs = tabTops.filter((x) => x.top).map(({ tb, list, top: x }) => {
+      const to = x.role === "eye" ? "Eye"
+        : x.role === "lead" ? leadSays(x.item)
+          : x.role === "worker" ? x.t.name || `${x.t.program?.name ?? "agent"} worker`
+            : shells > 1 ? `shell · ${baseName(x.t.cwd)}` : "shell";
+      // What --named gives it: with the space named after the task too, a lead's tab is "lead".
+      const alt = x.role === "lead" && tasks.length === 1 ? "lead" : to;
+      return { id: tb.id, from: tb.name, to, alt, state: judge(to, tb.name, tb.named, TAB_NAME, list), anchor: x.t.address };
+    });
+    out.push({
+      id: s.id, machine: s.machine ?? null, from: s.name, to: spaceTo, tasks: tasks.length, eye,
+      state: spaceState, anchor: top(here).t.address, tabs,
+    });
+  }
+  return out;
+}
+
+// What to do: one entry per name to set, the space's before its tabs'.
+export const nameChanges = (wanted) => wanted.flatMap((s) => [
+  ...(s.state === "change" ? [{ kind: "space", id: s.id, machine: s.machine, to: s.to, anchor: s.anchor }] : []),
+  ...s.tabs.filter((tb) => tb.state === "change").map((tb) => ({ kind: "tab", id: tb.id, machine: s.machine, to: tb.to, anchor: tb.anchor })),
+]);
+
+// tower-names' text: per space, then its tabs; a person's name shows both outcomes side by side.
+export function namesText(wanted, { apply = false, failed = 0 } = {}) {
+  const q = (x) => `"${x}"`;
+  const lines = [];
+  for (const s of wanted) {
+    const head = `${s.id}  ${q(s.from)}`;
+    if (s.state === "change") lines.push(`${head}  →  ${q(s.to)}`);
+    else if (s.state === "named") lines.push(`${head}  kept: ${q(s.from)}  |  with --named: ${q(s.to)}`);
+    else if (s.state === "tasks") lines.push(`${head}  kept: ${s.tasks} tasks live there`);
+    else lines.push(`${head}  already right`);
+    for (const tb of s.tabs) {
+      const th = `  tab ${tb.id}  ${q(tb.from)}`;
+      // A lead's tab that says the task while its space doesn't: what --named makes it, beside it.
+      const alt = s.state === "named" && tb.alt && tb.alt !== tb.to ? `  |  with --named: ${q(tb.alt)}` : "";
+      if (tb.state === "change") lines.push(`${th}  →  ${q(tb.to)}${alt}`);
+      else if (tb.state === "named") lines.push(`${th}  kept: ${q(tb.from)}  |  with --named: ${q(tb.alt ?? tb.to)}`);
+      else lines.push(`${th}  already right${alt}`);
+    }
+  }
+  const all = nameChanges(wanted);
+  const spacesN = all.filter((c) => c.kind === "space").length;
+  const tabsN = all.length - spacesN;
+  const people = wanted.filter((s) => s.state === "named").length + wanted.flatMap((s) => s.tabs).filter((tb) => tb.state === "named").length;
+  const counts = `${spacesN} space${spacesN === 1 ? "" : "s"} and ${tabsN} tab${tabsN === 1 ? "" : "s"}`;
+  const kept = people ? ` ${people} name${people === 1 ? "" : "s"} someone typed stay${people === 1 ? "s" : ""}; --named gives ${people === 1 ? "it" : "them"} the name shown.` : "";
+  if (!wanted.length) lines.push("No space holds a task.");
+  if (apply) lines.push(failed ? `Renamed ${all.length - failed} of ${all.length}; ${failed} could not be labelled.${kept}` : `Renamed ${counts}.${kept}`);
+  else lines.push(`Dry run: nothing changed. tower-names --apply renames ${counts}.${kept}`);
+  return lines.join("\n");
+}
 
 // ── Search: every item, whatever its area, group or fold. ──
 

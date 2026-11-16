@@ -21,7 +21,7 @@ herdr-app check ~/.config/herdr-app/mods/agent-tower
 
 `tower` puts the list in the sidebar and Details in its own column; `tower-solo` lets Files
 and Details take turns; `tower-wide` gives Details 420px. The start script for the Eye,
-`tower-new`, and `tower-adopt` (below) ship inside the mod folder. Bind the window in `keys.json`
+`tower-new`, `tower-adopt`, `tower-names` and `tower-eye` (below) ship inside the mod folder. Bind the window in `keys.json`
 ([keys.json](keys.json)): `{ "global": { "ctrl-s t": "mod.open:agent-tower" } }`.
 
 Optional: the `tower` skill at `~/.agents/skills/tower/SKILL.md` on each machine where
@@ -90,14 +90,15 @@ The Eye on Codex, leads on Opus, workers on Sonnet:
 - **This computer:** `hc machine ls`, `label`, `kill`, `rm`, `ls --all` and `send` (to the
   shown area's Eye, only what you type; never `--force`); `claude -p --model haiku` to name a new task
   (`roles.namer`); `mkdir`, `ls`, `date`, `rm` on `~/.config/agent-tower/inbox` and
-  `outbox`, which `tower-new` and `tower-adopt` write; `grep -qx '## Eye'` on the tower skill before
+  `outbox`, which `tower-new`, `tower-adopt`, `tower-names` and `tower-eye` write; `grep -qx '## Eye'` on the tower skill before
   starting the Eye; Herdr's `knownAgents()` for the picker's icons; `open` or `xdg-open`
   for a pull request link; `sh -c 'mkdir -p … && printf … >> …'` to append a line to
   `~/.config/agent-tower/use.jsonl` when you switch a view, shape or variant; `mkdir` and
   `hc read <agent> --lines 18` for Timeline's record (above). It reads
   `~/.config/agent-tower/config.json` (else `~/.config/agent-tasks/`).
-- **Herdr:** `terminal.pin` (Pin to the top), `terminal.keep`, `space.select` and
-  `space.rename` (Keep), and `hc label <worker> herdr.space=… herdr.tab=…` to give a worker on
+- **Herdr:** `terminal.pin` (Pin to the top), `terminal.keep` and `space.select` (Keep),
+  `space.rename` and `tab.rename` (names, each after an `hc label` of `tower.space-name` or
+  `tower.tab-name` on a terminal in it), and `hc label <worker> herdr.space=… herdr.tab=…` to give a worker on
   another machine a space of its own there.
 - **The machine a task's lead runs on:** before a start, one small script per worker agent,
   `~/.config/agent-tower/bin/worker-<agent id>` (`exec <the agent's argv> "$@"`), which the lead
@@ -129,10 +130,15 @@ The Eye on Codex, leads on Opus, workers on Sonnet:
 - A space made with the list's "New space" is a task from birth: titled with the space's name, in
   the area shown. An agent you open later in one of its tabs joins it as a worker.
 - Earlier lists its tasks A–Z, one line each.
+- Herdr's own screens name a task's space after its title and its tabs lead, a worker's name,
+  shell or Eye. A space still carrying Herdr's own name (its folder's) takes its task's title at
+  once; only a name someone typed is kept. `tower-names` shows what it would rename
+  (`--apply` does it; `--named` also replaces names you typed).
+- `tower-eye status|start|end [--area <id>]` shows, starts or ends an area's Eye without a click.
 
 ## The Eye
 
-One Eye per area, started by hand (nothing starts by itself). The list shows and talks to the
+One Eye per area, started by hand: its icon, or `tower-eye start` (nothing starts by itself). The list shows and talks to the
 shown area's Eye only: its row above the area row, the composer's Eye chip, the start icon and
 End. A waiting Eye counts in its area's red number. It runs on this computer in a space
 "Eye · <area>", labelled `tower.eye=1` and `tower.area=<area id>`, with `TOWER_AREA` in its
@@ -199,11 +205,20 @@ Herdr window was in front).
 
 The list records every change of an agent's state to `~/.config/agent-tower/timeline/` (in the
 whole-window shape, where the list is hidden, the view's own copy does):
-- `events.json`: states, where you looked and gaps, 7 days;
-- `screens.json`: the last 18 lines of an agent's screen when it stopped, asked or finished, 26 hours.
+- `events.json`: states, where you looked and gaps, the last 2 days (7 until the first hourly move);
+- `screens.json`: the last 18 lines of an agent's screen when it stopped, asked or finished, 26 hours;
+- the long past, moved out of `events.json` once an hour:
+  - `tasks/<task>.json`, one file per task, thinned with age. Past 7 days, working stretches
+    under 10 minutes apart merge and messages keep 120 characters; past 30 days, under an hour
+    and 60 characters. Where you looked stays exact for 7 days, then one per agent per hour.
+  - `index.json` names the task files.
+  - `ended.json`: 90 days after a task ended, its file goes and one line stays (title, area,
+    from and to, agents, asks, time working, longest ask), kept a year.
+  - The folder stays under 25 MiB: past it, old looks go first, then ended tasks fold into
+    `ended.json` (oldest first), then live tasks thin a step further (oldest first).
 
-They stay on this computer. `screens.json` holds what your agents printed, so treat it like
-their transcripts. Timeline draws what was not recorded as a grey band, never as a quiet agent:
+They stay on this computer. `screens.json` holds what your agents printed, and the task files
+keep their asks and Done messages cut short, so treat them like their transcripts. Timeline draws what was not recorded as a grey band, never as a quiet agent:
 
 - **Before you installed it**, nothing. An agent already running gets "Before recording" up to
   the moment the list first saw it.

@@ -732,6 +732,7 @@ export default class AgentTasks extends View {
     if (!props()?.overlay) {
       this.watchInbox(cx);
       this.startRecorder(cx);
+      cx.timer.every(2000, (cx) => this.nameTick(cx));
     }
     // Keys: "agent-tower.search" opens the search.
     cx.spawn(async (cx) => {
@@ -1001,10 +1002,12 @@ export default class AgentTasks extends View {
     cx.notify();
   }
 
-  // One label call: a lead's task labels, or an Eye's tower.eye=1 and tower.area (an Eye is not named).
-  labelLead(cx, p, { space, terminal }) {
+  // One label call: a lead's task labels, or an Eye's tower.eye=1 and tower.area (an Eye is not named);
+  // with the name its space.new gave, so that name stays ours to keep in step (model.wantedNames).
+  labelLead(cx, p, { terminal }) {
     cx.spawn(async (cx) => {
-      const r = await hc(["label", terminal.address, ...(p.eye ? ["tower.eye=1", ...(p.eyeArea ? [`tower.area=${p.eyeArea}`] : [])] : model.leadPairs(p))])
+      const pairs = p.eye ? ["tower.eye=1", ...(p.eyeArea ? [`tower.area=${p.eyeArea}`] : [])] : model.leadPairs(p);
+      const r = await hc(["label", terminal.address, ...pairs, `${model.SPACE_NAME}=${p.name}`])
         .catch((e) => ({ code: 1, stderr: String(e) }));
       if (r.code !== 0) {
         this.pending = this.pending.filter((x) => x !== p);
@@ -1021,7 +1024,7 @@ export default class AgentTasks extends View {
         cx.notify();
         return;
       }
-      await this.nameTask(p.id, terminal.address, space.id, p.words);
+      await this.nameTask(p.id, terminal.address, p.words);
     });
   }
 
@@ -1031,8 +1034,8 @@ export default class AgentTasks extends View {
   // agent (the area's own, else roles.eye) and its first message, with TOWER_AREA in its
   // environment; its terminal is then labelled tower.eye=1 tower.area=<area>. Only from Start.
   // The skill form only when the skill on this computer has an Eye part; else the full text.
-  startEye(cx, area = this.shownArea()?.id) {
-    if (!area || this.eyeStarting(area) || model.eyeOff(this.config ?? liveConfig, area)) return;
+  startEye(cx, area = this.shownArea()?.id, reply = null) {
+    if (!area || this.eyeStarting(area) || model.eyeOff(this.config ?? liveConfig, area)) return reply?.({ ok: false, why: "it is starting already, or the area has no Eye" });
     const key = eyeKey(area);
     const own = EYE_PER_AREA ? area : null;
     this.starting.add(`Eye:${key}`);
@@ -1054,7 +1057,7 @@ export default class AgentTasks extends View {
         AGENT_TOWER_DIR: dir === `${home()}/.config/agent-tower` ? null : dir,
         TOWER_AREA: own,
       }, agent.argv);
-      this.pending.push({ id: model.newId(), eye: key, eyeArea: own, name, words: name, machine: null, before: new Set(spaces().map((s) => s.id)), at: Date.now(), found: false });
+      this.pending.push({ id: model.newId(), eye: key, eyeArea: own, name, words: name, machine: null, before: new Set(spaces().map((s) => s.id)), at: Date.now(), found: false, reply });
       run("space.new", { name, folder, machine: "", argv, task: model.eyeMessage(skill ? this.config : { ...this.config, skill: null }, own) });
       this.looker ??= cx.timer.every(1500, (cx) => this.lookForLeads(cx));
       this.starting.delete(`Eye:${key}`);
@@ -1062,13 +1065,15 @@ export default class AgentTasks extends View {
     });
   }
 
-  // Ends the Eye's terminal only; no task is touched.
+  // Ends the Eye's terminal only; no task is touched. Gives whether it ended.
   async endEye(address) {
     await hc(["kill", address]).catch(() => null);
     const r = await hc(["rm", address]).catch(() => null);
     if (r && r.code !== 0 && terminals().some((t) => t.address === address)) {
       notify({ title: "Couldn't end the Eye", body: model.errorWords(r), level: "error" });
+      return false;
     }
+    return true;
   }
 
   // What you typed, to the Eye, with hc send (never --force; "--" so a leading dash is text).
@@ -1214,6 +1219,14 @@ export default class AgentTasks extends View {
         answer(await adopt.runAdopt(req.adopt, this.adoptEnv()));
         continue;
       }
+      if (req?.names) {
+        answer(await this.namesRequest(req.names));
+        continue;
+      }
+      if (req?.eye) {
+        Promise.resolve(this.eyeRequest(cx, req.eye, now - at)).then(answer, (e) => answer({ ok: false, why: String(e?.message ?? e) }));
+        continue;
+      }
       const checked = model.checkRequest(req, this.config, now - at);
       if (!checked.ok) answer({ ok: false, why: checked.why });
       // Answered as soon as the lead's space is asked for (an agent's tool may wait only seconds);
@@ -1231,6 +1244,74 @@ export default class AgentTasks extends View {
     cx.notify();
   }
 
+  // ── Names in Herdr's own screens (model.wantedNames) ──
+
+  // The inbox holder sets the names that are ours to set, every 2 s. A machine whose layout isn't
+  // ready waits; each name is tried once a minute, so a rename Herdr refuses isn't asked again and again.
+  nameTick(cx) {
+    if (!this.configLoaded || !this.items || this.namingNow || !this.inboxKeeper?.held()) return;
+    const off = new Set(machines().filter((m) => m.layout !== "ready").map((m) => m.name));
+    const now = Date.now();
+    this.namesTried ??= new Map();
+    for (const [k, at] of this.namesTried) if (now - at > 60000) this.namesTried.delete(k);
+    const todo = model.nameChanges(model.wantedNames({ terms: terminals(), spaces: spaces(), items: this.items }))
+      .filter((c) => !off.has(c.machine) && !this.namesTried.has(`${c.id}=${c.to}`));
+    if (!todo.length) return;
+    for (const c of todo) this.namesTried.set(`${c.id}=${c.to}`, now);
+    this.namingNow = true;
+    cx.spawn(async () => {
+      try {
+        await this.setNames(todo);
+      } finally {
+        this.namingNow = false;
+      }
+    });
+  }
+
+  // Our label first, then the rename: a name whose label failed is not set (it would read as typed
+  // by a person and never change again). Gives how many failed.
+  async setNames(changes) {
+    let failed = 0;
+    for (const c of changes) {
+      const r = await hc(["label", c.anchor, `${c.kind === "space" ? model.SPACE_NAME : model.TAB_NAME}=${c.to}`]).catch((e) => ({ code: 1, stderr: String(e) }));
+      if (r.code !== 0) failed++;
+      else run(c.kind === "space" ? "space.rename" : "tab.rename", { id: c.id, name: c.to });
+    }
+    return failed;
+  }
+
+  // tower-names: what the names would be (a dry run), or set them; named also takes a person's.
+  async namesRequest(r) {
+    const wanted = model.wantedNames({ terms: terminals(), spaces: spaces(), items: this.items ?? [], named: r.named === true, only: r.space ?? null });
+    if (r.space && !wanted.length) return { ok: false, why: `no space "${r.space}" holds a task` };
+    if (r.apply !== true) return { ok: true, applied: false, text: model.namesText(wanted) };
+    const failed = await this.setNames(model.nameChanges(wanted));
+    return { ok: !failed, applied: true, ...(failed ? { why: `${failed} label call${failed === 1 ? "" : "s"} failed` } : {}),
+      text: model.namesText(wanted, { apply: true, failed }) };
+  }
+
+  // tower-eye: an area's Eye without a click (model.checkEyeRequest). start answers once the Eye is
+  // labelled; an Eye started by hand in its "Eye · <area>" space is labelled instead of a second.
+  eyeRequest(cx, r, age) {
+    const c = model.checkEyeRequest(r, this.config, terminals(), spaces(), age);
+    if (!c.ok) return c;
+    if (c.do === "status") return { ok: true, text: model.eyeStatusText(this.config, terminals(), (a) => this.eyeStarting(a)) };
+    const label = model.areaLabel(this.config, c.area);
+    if (c.do === "end") {
+      if (!c.eye) return { ok: true, text: `${label} has no Eye running.` };
+      return this.endEye(c.eye.address).then((ok) => (ok ? { ok: true, ended: c.eye.address, text: `Ended ${label}'s Eye (${c.eye.address}).` }
+        : { ok: false, why: `couldn't end ${c.eye.address}` }));
+    }
+    if (c.eye) return { ok: true, address: c.eye.address, already: true, text: `${label}'s Eye is running: ${c.eye.address}.` };
+    if (c.byHand) {
+      return hc(["label", c.byHand.address, "tower.eye=1", `tower.area=${c.area}`, `${model.SPACE_NAME}=${c.name}`]).catch((e) => ({ code: 1, stderr: String(e) }))
+        .then((w) => (w.code === 0 ? { ok: true, address: c.byHand.address, adopted: true, text: `${c.byHand.address} in "${c.name}" is ${label}'s Eye now; nothing was started.` }
+          : { ok: false, why: `couldn't label ${c.byHand.address}: ${model.errorWords(w)}` }));
+    }
+    if (this.eyeStarting(c.area)) return { ok: true, starting: true, text: `${label}'s Eye is starting.` };
+    return new Promise((done) => this.startEye(cx, c.area, (a) => done(a.ok ? { ok: true, address: a.lead, text: `Started ${label}'s Eye: ${a.lead}.` } : a)));
+  }
+
   // The answer file, replacing one already there (a second request with the same id).
   async answerRequest(id, a) {
     const path = `${this.outbox}/${id}.json`;
@@ -1243,7 +1324,7 @@ export default class AgentTasks extends View {
 
   // A small model names the task; your words stay when it fails or you renamed it meanwhile.
   // renamedTasks covers a rename terminals() doesn't show yet.
-  async nameTask(taskId, address, spaceId, words) {
+  async nameTask(taskId, address, words) {
     const namer = this.config.roles.namer;
     // stdin closed: a namer that also reads stdin (claude -p) would wait for it, then fail.
     const r = await exec("sh", ["-c", '"$@" </dev/null', "sh", namer[0], ...model.namerArgs(namer, model.namePrompt(words))], { timeout: 60000 })
@@ -1259,10 +1340,7 @@ export default class AgentTasks extends View {
     const by = terminals().find((t) => t.address === address)?.labels?.["task.by"];
     if (by && by !== "raw") return;
     const w = await hc(["label", address, `task.title=${name}`, "task.by=llm"]).catch(() => null);
-    if (w?.code === 0 && !this.renamedTasks.has(taskId)) {
-      this.rememberTitle(taskId, name);
-      run("space.rename", { id: spaceId, name });
-    }
+    if (w?.code === 0 && !this.renamedTasks.has(taskId)) this.rememberTitle(taskId, name);
   }
 
   beginRename(key, cx) {
@@ -1288,7 +1366,7 @@ export default class AgentTasks extends View {
   }
 
   // A labelled lead gets a new title; an unlabelled agent becomes a task's lead, in one label call.
-  // Its space takes the name too when no other item lives there.
+  // Its space follows when its name is ours to set (nameTick).
   saveRename(cx) {
     const item = this.items?.find((i) => i.key === this.renaming);
     const title = model.capTitle(this.renameInput.value().trim());
@@ -1301,8 +1379,6 @@ export default class AgentTasks extends View {
       : [`task.id=${taskId}`, "task.role=lead", `task.title=${title}`, "task.by=you"];
     this.label(cx, item.lead.address, pairs, "Couldn't rename");
     this.rememberTitle(taskId, title);
-    const alone = item.space && !this.items.some((i) => i !== item && i.space?.id === item.space.id);
-    if (alone) run("space.rename", { id: item.space.id, name: title });
   }
 
   rememberTitle(taskId, title) {
@@ -3140,8 +3216,8 @@ export default class AgentTasks extends View {
     this.chosen = "lead";
   }
 
-  // A kept terminal's new space, once Herdr has made it, is named and shown; its tab (its herdr.tab
-  // label) gets the terminal's name. A wish older than a minute is dropped.
+  // A kept terminal's new space is shown once Herdr has made it; the entry stays until its tab (its
+  // herdr.tab label) is there. Names come from nameTick. A wish older than a minute is dropped.
   nameKeptTabs() {
     const kept = shared(KEPT) ?? [];
     if (!kept.length) return;
@@ -3150,15 +3226,12 @@ export default class AgentTasks extends View {
     const left = kept.filter((k) => {
       if (now - (k.at ?? 0) > 60000) return false;
       if (k.space && !k.shown && spaces().some((sp) => sp.id === k.space.id)) {
-        if (k.space.name) run("space.rename", { id: k.space.id, name: k.space.name });
         run("space.select", { id: k.space.id });
         k.shown = changed = true;
       }
       const tab = terminals().find((x) => x.address === k.address)?.labels?.["herdr.tab"];
       const found = tab && spaces().flatMap((sp) => sp.tabs).find((tb) => tb.id === tab || tb.id.endsWith(`/${tab}`));
-      if (!found || (k.space && !k.shown)) return true;
-      if (k.name && !found.named) run("tab.rename", { id: found.id, name: k.name });
-      return false;
+      return !found || Boolean(k.space && !k.shown);
     });
     if (changed || left.length !== kept.length) setShared(KEPT, left);
   }

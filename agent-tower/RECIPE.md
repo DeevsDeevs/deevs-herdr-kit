@@ -346,8 +346,7 @@ come from the app's program table.
   shown space is the task's own on that machine (`terminal.keep`); "Open as a tab on work-vps"
   when the task has a space there (`space.select`, then `terminal.keep`; its name in the tooltip)
   or has none (label the worker with a new `herdr.space`/`herdr.tab` id, Herdr makes that space on
-  its own machine, and the header, kept open until it appears, names it "<task title> · <worker>"
-  and shows it; "Opening it on mac…" meanwhile). A machine that does not answer: no button,
+  its own machine, and the list shows it once it appears (Names names the space and its tab); "Opening it on mac…" meanwhile). A machine that does not answer: no button,
   "mac does not answer; nothing was kept."
 - **Pane header** (`props.paneHead`, for the tower layouts' pane frames in place of Herdr's
   `pane` mod): Herdr's header (icon, folder, status, split/zoom/close on hover) with the
@@ -410,7 +409,7 @@ come from the app's program table.
   that has none of its own and doesn't say `eye: false`, until you end it. No terminal with `tower.eye=1` is ever an item.
   An area with `eye: false` has none: no icon, row, chip or rail cell. An Eye is only ever
   started by your click on the eye icon (the header's, the rail's Eye cell or the whole
-  window's bar), for the shown area: a space "Eye · <area label>" on this computer in the
+  window's bar), for the shown area, or by `tower-eye start` (below): a space "Eye · <area label>" on this computer in the
   area's `eye.folder`, else `<eye.folder>/<area id>`, else `<tower folder>/eye/<area id>`
   (a `/` in the id becomes `-`; made if missing), with the area's `eye.agent`, else
   `roles.eye` (an unknown agent id falls back to it, with a toast once a day), run through
@@ -437,6 +436,17 @@ come from the app's program table.
     `TOWER_AREA` with the request and a recipe of another area is refused. Rules only:
     `hc ls` shows every terminal on every machine and `hc send` reaches any of them; an
     agent that unsets `TOWER_AREA` or writes the request itself gets past the check.
+  - **`tower-eye [status | start | end] [--area <id>]`** (beside `tower-new` in the mod
+    folder) does without a click what the icon and End do, through the inbox; the area
+    defaults to the one with `default: true`. `status` prints one line per area (its Eye's
+    address and state, "none", "starting", or "no Eye (eye: false)"). `start` answers
+    "Started Work's Eye: t5." once the Eye is labelled, says so when one runs, and is refused
+    for `eye: false`. An agent started by hand on this computer in a space named exactly
+    "Eye · <area label>" is labelled `tower.eye=1 tower.area=<id>` instead of starting a
+    second ("t6 in "Eye · Personal" is Personal's Eye now"); it has no `TOWER_AREA`, so
+    `tower-new` doesn't check its area. `end` ends that area's own Eye only; the older Eye for
+    every area is refused ("end it from its menu"). From an Eye (`TOWER_AREA` set, sent as
+    `by`), `start` and `end` act on its own area only; `status` sees all.
 - **The inbox**, how the Eye starts tasks exactly as the composer does: `tower-new`
   writes `<tower dir>/inbox/<id>.json` (`{recipe, words, agent?, area?, at}`, `area` from
   `TOWER_AREA` when set; written aside and moved in) and waits up to 25 seconds for `outbox/<id>.json`, printing it as
@@ -455,6 +465,12 @@ come from the app's program table.
   through the composer's own start (`startTask`: refusals, machine check, pending row,
   label, naming). The answer is `{ok: true, task, lead}` once the lead is labelled, or
   `{ok: false, why}`. Answers nobody fetched are swept from the outbox after ten minutes.
+  Two more request shapes go the same way (same lease, size, age and id checks), each
+  answered with `{ok, why?, text}` that the script prints: `{names: {apply, named, space}}`
+  from `tower-names` (Names, below) and `{eye: {do, area, by}}` from `tower-eye` (`by` is
+  the sender's `TOWER_AREA`). `tower-adopt` sends its own. Like `tower-new`, all of them need
+  Agent Tower showing; in a layout without it nobody reads the inbox, and they say so after
+  their wait.
 - A recipe naming an agent the settings don't have falls back to the role's default, with a
   toast "Recipe <label>: unknown agent"; a recipe with an old `argv` (which wins over its `lead`
   and `roles.lead`) gets "Recipe <label>: argv overrides lead". Each shows once a day, from the
@@ -464,14 +480,38 @@ come from the app's program table.
   not "Delegating three text files"; no verbs like delegate, have workers, ask)
   (by default `claude -p --model haiku --no-session-persistence --tools ""` with your words
   as data, 60 s limit). If the answer is one non-empty line of at most 28 characters and the
-  lead's `task.by` is still `raw`, it writes `task.title` and `task.by=llm` in one call and
-  renames the space to match. If it fails, your words stay.
+  lead's `task.by` is still `raw`, it writes `task.title` and `task.by=llm` in one call; the
+  space follows through Names. If it fails, your words stay.
 - **Rename** (item menu) turns the row's title into an input in place, title selected.
   Enter saves (cut to 80 characters), Escape leaves it. On a task it writes `task.title`
   and `task.by=you`; on an unlabelled agent it writes `task.id=<new id>`,
   `task.role=lead`, `task.title`, `task.by=you` in one call, which makes it a task. The
-  space takes the name too when no other item lives in it. The model never touches a task
-  whose `task.by` is `you`.
+  space follows through Names, unless someone typed its name. The model never touches a
+  task whose `task.by` is `you`.
+- **Names** (`model.wantedNames`), in Herdr's own screens (its spaces, tabs and Agents list):
+  - A space holding one task alone takes the task's title, and follows it (your words, the
+    namer's name, a Rename). A space with several tasks, or none, keeps its name; an Eye's
+    space keeps "Eye · <area label>".
+  - Tabs, by the first terminal in them (Eye, then lead, worker, shell): "Eye"; "lead"; a
+    worker's hc name, else "<program> worker"; "shell", or "shell · <folder>" when the
+    space has two shell tabs. Where the space doesn't say the task (several tasks, or a name
+    someone typed), the lead's tab says "lead · <title>", since the Agents list shows
+    "space · tab".
+  - **Ours or a person's:** Herdr only says `named` (true after any rename). Every name the
+    mod sets is first labelled, `tower.space-name=<name>` on the space's first terminal (Eye,
+    lead, worker, shell) or `tower.tab-name=<name>` on the tab's, then `space.rename` /
+    `tab.rename`; if the label call fails, nothing is renamed. A name is changed only when
+    `named` is false or it equals such a label in that space or tab. Any other name was
+    typed and is never changed. The start and the Eye's start label their `space.new` name in
+    their one label call, so a new space is ours from birth.
+  - **When:** every 2 s in the docked copy that holds the inbox lease (one per computer). A
+    machine whose layout isn't ready waits; each name is tried at most once a minute. This
+    covers the start, Open as a tab, adopt, New space, Rename, the namer and a tab opened by
+    hand; the namer, Rename and Keep rename nothing themselves.
+  - **`tower-names [--apply] [--named] [--space <id or name>]`** (beside `tower-new`): a dry
+    run prints each space, then its tabs, old → new, and a typed name as "kept: <name> | with
+    --named: <title>", counted on the last line. `--apply` sets them; `--named` also
+    replaces typed names. Exit 0 done, 1 not, 2 wrong usage.
 - **Close** (item menu): the question counts what would end: for a task, every terminal
   carrying its `task.id`; for an unlabelled agent, it and the live terminals that belong
   to it (not another task's workers); on a merged row, all of that for every member.
@@ -884,7 +924,7 @@ Top to bottom:
   - The title, once: goes to the lead after 250ms (`pane.focus`; a lead without a pane gets a
     tab first, as a click into the task does).
   - The title, twice: rename. As the sidebar does it, this is one `hc label` with
-    `task.title` and `task.by=you`, and the space takes the name when it is alone.
+    `task.title` and `task.by=you`, and the space follows through Names.
   - The close box: `layout.hide {id: "tower-detail"}`.
   - Rows open on their own, stay open across refreshes, and close when another item is
     selected.

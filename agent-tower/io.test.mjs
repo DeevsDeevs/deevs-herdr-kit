@@ -153,6 +153,28 @@ const answered = (fx, id) => fx.files[`${OUTBOX}/${id}.json`] ?? null;
   assert.ok(leaseWrites <= 9, `lease writes in a minute: ${leaseWrites}`);
   assert.deepEqual(fx.execs.slice(e0), [], "no command at all");
 }
+// The same idle minute with a task whose names are already right: the naming pass (every 2 s)
+// adds no hc call, no redraw and no shared write.
+{
+  const fx = world();
+  fx.fixture.terms = [{ address: "t1", state: "live", status: "idle", program: { agent: true, name: "Claude Code" },
+    labels: { "task.id": "i1", "task.role": "lead", "task.title": "Made-up idle task", "herdr.space": "sp1", "herdr.tab": "tb1",
+      "tower.space-name": "Made-up idle task", "tower.tab-name": "lead" } }];
+  fx.fixture.spaces = [{ id: "sp1", name: "Made-up idle task", named: true, machine: null, active: true, tabs: [{ id: "tb1", name: "lead", named: true }] }];
+  const { v, cx, tick, notified } = await copy();
+  v.render(cx);
+  await tick(30000);
+  const n0 = notified();
+  const shared0 = fx.sharedSet ?? 0;
+  fx.hcCalls = [];
+  fx.log = [];
+  await tick(60000);
+  assert.equal(notified() - n0, 0, "no redraw asked for");
+  assert.equal((fx.sharedSet ?? 0) - shared0, 0, "no shared write");
+  // The machines' refresh (every 30 s, older than names) is the only hc call.
+  assert.deepEqual(fx.hcCalls.filter((a) => a[0] !== "machine"), [], "no hc call from the naming pass");
+  assert.deepEqual(fx.log.filter((x) => /^(run|notify)/.test(x.what)), [], "no command, no notification");
+}
 // The Eye's composer by area: words typed for one area's Eye come back only in that area, after an
 // in-place switch and after a restart (a layout switch), and never go to another area's Eye.
 {
@@ -239,7 +261,7 @@ const answered = (fx, id) => fx.files[`${OUTBOX}/${id}.json`] ?? null;
   fx.fixture.terms = [{ address: "t1", state: "live", status: "working", turn: 1, program: { agent: true, name: "Claude Code" },
     labels: { "task.id": "e1", "task.role": "lead", "task.title": "Made-up task" } }];
   fx.fixture.agents = [{ address: "t1", status: "working", pane: null }];
-  const { v, cx } = await copy();
+  const { v, cx, tick } = await copy();
   const click = async () => {
     fx.shared["agent-tower.act"] = { action: "enter", key: "task:e1", how: "click", at: clock };
     v.render(cx);
@@ -260,12 +282,85 @@ const answered = (fx, id) => fx.files[`${OUTBOX}/${id}.json`] ?? null;
   fx.fixture.spaces = [{ id: sp, name: "1", machine: null, active: false, tabs: [{ id: tb, named: false }] }];
   fx.fixture.agents = [{ address: "t1", status: "working", pane: "p1" }];
   fx.log = [];
+  fx.hcCalls = [];
   v.render(cx);
-  assert.ok(fx.log.some((x) => x.what === "run space.rename") && fx.log.some((x) => x.what === "run space.select"), "the new space is named and shown");
+  assert.ok(fx.log.some((x) => x.what === "run space.select"), "the new space is shown");
+  // The naming pass (every 2 s): the task's title for the space, "lead" for its tab, each label first.
+  await tick(2500);
+  const named = fx.hcCalls.filter((a) => a[0] === "label").map((a) => a.slice(1).join(" "));
+  assert.deepEqual(named, [`t1 tower.space-name=Made-up task`, `t1 tower.tab-name=lead`]);
+  assert.ok(fx.log.some((x) => x.what === "run space.rename") && fx.log.some((x) => x.what === "run tab.rename"), "then renamed");
   fx.log = [];
   fx.hcCalls = [];
   await click();
   assert.ok(fx.log.some((x) => x.what === "run pane.focus"), "second click goes to it");
   assert.ok(!fx.log.some((x) => x.what === "openOverlay") && !fx.hcCalls.some((a) => a[0] === "label"), "no peek, no new tab");
+}
+// Names in Herdr's own screens: the inbox holder sets the names that are ours, each label first;
+// a name someone typed afterwards is never set again; while the name is ours, it follows the title.
+// tower-names' dry run changes nothing.
+{
+  const fx = world();
+  const t1 = { address: "t1", state: "live", status: "idle", program: { agent: true, name: "Claude Code" },
+    labels: { "task.id": "n1", "task.role": "lead", "task.title": "Made-up plan", "herdr.space": "sp1", "herdr.tab": "tb1" } };
+  fx.fixture.terms = [t1];
+  fx.fixture.spaces = [{ id: "sp1", name: "~", named: false, machine: null, active: true, tabs: [{ id: "tb1", name: "1", named: false }] }];
+  const { v, cx, tick, batch } = await copy();
+  const labelled = () => fx.hcCalls.filter((a) => a[0] === "label").map((a) => a.slice(1).join(" "));
+  fx.hcCalls = [];
+  fx.log = [];
+  await tick(2500);
+  assert.deepEqual(labelled(), ["t1 tower.space-name=Made-up plan", "t1 tower.tab-name=lead"]);
+  assert.deepEqual(fx.log.filter((x) => x.what.startsWith("run ")).map((x) => x.what), ["run space.rename", "run tab.rename"]);
+  // Herdr has them; then someone renames the space: it stays theirs.
+  t1.labels = { ...t1.labels, "tower.space-name": "Made-up plan", "tower.tab-name": "lead" };
+  fx.fixture.spaces = [{ id: "sp1", name: "My plan", named: true, machine: null, active: true, tabs: [{ id: "tb1", name: "lead", named: true }] }];
+  fx.hcCalls = [];
+  v.render(cx);
+  await tick(2500);
+  // The space no longer says the task, so its lead's tab (still ours) does; the space is left alone.
+  assert.deepEqual(labelled(), ["t1 tower.tab-name=lead · Made-up plan"]);
+  t1.labels = { ...t1.labels, "tower.tab-name": "lead · Made-up plan" };
+  fx.fixture.spaces[0].tabs[0].name = "lead · Made-up plan";
+  fx.hcCalls = [];
+  v.render(cx);
+  await tick(70000);
+  assert.deepEqual(labelled(), [], "a typed name is never set again");
+  // A space whose name is still ours follows a new title.
+  t1.labels = { ...t1.labels, "tower.tab-name": "lead" };
+  fx.fixture.spaces = [{ id: "sp1", name: "Made-up plan", named: true, machine: null, active: true, tabs: [{ id: "tb1", name: "lead", named: true }] }];
+  t1.labels = { ...t1.labels, "task.title": "Better made-up plan" };
+  v.render(cx);
+  await tick(2500);
+  assert.deepEqual(labelled(), ["t1 tower.space-name=Better made-up plan"]);
+  // tower-names: a dry run answers with the mapping and changes nothing.
+  fx.fixture.spaces = [{ id: "sp1", name: "My plan", named: true, machine: null, active: true, tabs: [{ id: "tb1", name: "Mine", named: true }] }];
+  v.render(cx);
+  fx.hcCalls = [];
+  fx.files[`${INBOX}/req-names.json`] = JSON.stringify({ names: { apply: false, named: false }, at: clock });
+  await batch([`${INBOX}/req-names.json`]);
+  const a = JSON.parse(answered(fx, "req-names"));
+  assert.ok(a.ok && a.text.includes('sp1  "My plan"  kept: "My plan"  |  with --named: "Better made-up plan"\n  tab tb1  "Mine"  kept: "Mine"  |  with --named: "lead"'), a.text);
+  assert.deepEqual(labelled(), [], "a dry run labels nothing");
+}
+// tower-eye: start answers with the Eye's address once it is labelled; status lists each area.
+{
+  const fx = world();
+  const { tick, batch } = await copy();
+  fx.hcCalls = [];
+  fx.files[`${INBOX}/req-eye.json`] = JSON.stringify({ eye: { do: "start", area: "personal" }, at: clock });
+  await batch([`${INBOX}/req-eye.json`]);
+  await settle();
+  assert.equal(answered(fx, "req-eye"), null, "not before the Eye shows");
+  fx.fixture.spaces = [{ id: "spE", name: "Eye · Personal", named: true, machine: null, active: true, tabs: [{ id: "tbE", name: "1", named: false }] }];
+  fx.fixture.terms = [{ address: "t4", state: "live", status: "idle", program: { agent: true, name: "Claude Code" }, labels: { "herdr.space": "spE", "herdr.tab": "tbE" } }];
+  await tick(2000);
+  const a = JSON.parse(answered(fx, "req-eye"));
+  assert.deepEqual([a.ok, a.address], [true, "t4"], JSON.stringify(a));
+  assert.deepEqual(fx.hcCalls.find((x) => x[0] === "label"), ["label", "t4", "tower.eye=1", "tower.area=personal", "tower.space-name=Eye · Personal"]);
+  fx.fixture.terms[0].labels = { ...fx.fixture.terms[0].labels, "tower.eye": "1", "tower.area": "personal" };
+  fx.files[`${INBOX}/req-st.json`] = JSON.stringify({ eye: { do: "status" }, at: clock });
+  await batch([`${INBOX}/req-st.json`]);
+  assert.equal(JSON.parse(answered(fx, "req-st")).text, "Work: none\nPersonal: t4, idle");
 }
 console.log("io ok");
