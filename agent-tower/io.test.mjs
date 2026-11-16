@@ -175,23 +175,97 @@ const answered = (fx, id) => fx.files[`${OUTBOX}/${id}.json`] ?? null;
   const draft = fx.shared["agent-tower.draft"];
   assert.deepEqual([draft.area, draft.eyeText], ["Personal", "for personal"]);
 }
-// Earlier is open: by default, once for folds kept from before (a one-time opening), and a close
-// after that is kept.
+// Earlier is open by default and opened once for folds kept from before; its fold is the shown
+// area's own (closing Work's leaves Personal's open), and a close is kept.
 {
-  const fresh = world();
+  const config = JSON.stringify({ areas: [{ id: "Work", label: "Work" }, { id: "Personal", label: "Personal", default: true }] });
+  world({ [`${TOWER}/config.json`]: config });
   const one = await copy();
-  assert.ok(!one.v.folded.has("earlier"), "open by default");
+  assert.ok(![...one.v.folded].some((f) => f.startsWith("earlier")), "open by default");
   assert.ok(one.v.folded.has("spaces"), "the other folds as before");
-  const fx = world();
+  const fx = world({ [`${TOWER}/config.json`]: config });
+  fx.shared["agent-tower.area"] = "Work";
   fx.shared["agent-tower.folds"] = { folded: ["spaces", "earlier", "done-more", "leftover"], opened: [] };
   const two = await copy();
-  assert.ok(!two.v.folded.has("earlier"), "folded from before: opened once");
-  assert.equal(fx.shared["agent-tower.folds"].earlierShown, true, "and the opening is kept");
-  assert.ok(!fx.shared["agent-tower.folds"].folded.includes("earlier"));
-  two.v.folded.add("earlier");
+  assert.ok(![...two.v.folded].some((f) => f.startsWith("earlier")), "folded from before: opened once");
+  two.v.folded.add(two.v.foldId("earlier"));
   two.v.render(two.cx);
+  assert.ok(fx.shared["agent-tower.folds"].folded.includes("earlier:Work"), "closed in Work, kept as Work's");
+  two.v.switchArea("Personal");
+  assert.equal(two.v.foldId("earlier"), "earlier:Personal");
+  assert.ok(!two.v.folded.has(two.v.foldId("earlier")), "Personal's Earlier stays open");
   const three = await copy();
-  assert.ok(three.v.folded.has("earlier"), "closed after that: stays closed");
-  void fresh;
+  assert.ok(three.v.folded.has("earlier:Work"), "a close is kept in the next copy");
+}
+// Earlier with old quiet tasks: its own scroll area under a fixed header while open; every row on
+// another machine shows the machine glyph, whatever its title's length; tooltips stay quiet while
+// the list scrolls and while a row's menu is open.
+{
+  const fx = world();
+  const old = clock - 5 * 86400e3;
+  const lead = (address, id, title) => ({ address, state: "live", status: "idle", turn: 0, program: { agent: true, name: "Claude Code" },
+    labels: { "task.id": id, "task.role": "lead", "task.title": title } });
+  fx.fixture.terms = [lead("vps/t1", "e1", "A short one"), lead("vps/t2", "e2", "A much longer title that the row has to cut somewhere"), lead("t3", "e3", "Here")];
+  fx.fixture.agents = [];
+  fx.shared["agent-tower.changes"] = Object.fromEntries(fx.fixture.terms.map((t) => [t.address, { word: "idle", turn: 0, at: old, had: true }]));
+  const { v, cx } = await copy();
+  fx.ids = new Set();
+  fx.tips = [];
+  v.render(cx);
+  assert.ok(fx.ids.has("at-earlier"), "an open Earlier scrolls in its own area");
+  assert.ok(fx.ids.has("at-mg-task:e1") && fx.ids.has("at-mg-task:e2") && !fx.ids.has("at-mg-task:e3"), "the glyph on every row on another machine, none here");
+  assert.ok(fx.tips.some(([id]) => id === "at-mg-task:e1"), "with the machine in its tooltip");
+  v.folded.add(v.foldId("earlier"));
+  fx.ids = new Set();
+  v.render(cx);
+  assert.ok(!fx.ids.has("at-earlier"), "folded: one list as before");
+  v.folded.delete(v.foldId("earlier"));
+  v.quietTips(cx);
+  fx.tips = [];
+  v.render(cx);
+  assert.deepEqual(fx.tips.filter(([id]) => /^at-(title|mg)-/.test(id ?? "")), [], "no row tooltip while the list scrolls");
+  v.tipsQuiet = false;
+  v.menuFor = "task:e2";
+  v.menuAt = Date.now();
+  assert.equal(v.tipFor("task:e2"), false, "nor on the row whose menu is open");
+  clock += 11000;
+  assert.equal(v.tipFor("task:e2"), true, "back after ten seconds at most");
+}
+// A task whose lead has no pane: the first click gives the lead a real tab (a new space on its
+// machine, named after the task, then shown), not a peek; a click while it comes asks nothing more;
+// once it has its pane, a click goes there.
+{
+  const fx = world();
+  fx.fixture.terms = [{ address: "t1", state: "live", status: "working", turn: 1, program: { agent: true, name: "Claude Code" },
+    labels: { "task.id": "e1", "task.role": "lead", "task.title": "Made-up task" } }];
+  fx.fixture.agents = [{ address: "t1", status: "working", pane: null }];
+  const { v, cx } = await copy();
+  const click = async () => {
+    fx.shared["agent-tower.act"] = { action: "enter", key: "task:e1", how: "click", at: clock };
+    v.render(cx);
+    await settle();
+  };
+  fx.log = [];
+  fx.hcCalls = [];
+  await click();
+  const label = fx.hcCalls.find((a) => a[0] === "label" && a[1] === "t1");
+  assert.ok(label?.some((x) => /^herdr\.space=sp/.test(x)) && label.some((x) => /^herdr\.tab=tb/.test(x)), "first click: a new space and tab for the lead");
+  assert.ok(!fx.log.some((x) => x.what === "openOverlay"), "no peek");
+  await click();
+  assert.equal(fx.hcCalls.filter((a) => a[0] === "label").length, 1, "a click while the tab comes asks nothing more");
+  // Herdr adopts it: the new space with the lead's tab and pane.
+  const sp = label.find((x) => x.startsWith("herdr.space=")).split("=")[1];
+  const tb = label.find((x) => x.startsWith("herdr.tab=")).split("=")[1];
+  fx.fixture.terms[0].labels = { ...fx.fixture.terms[0].labels, "herdr.space": sp, "herdr.tab": tb };
+  fx.fixture.spaces = [{ id: sp, name: "1", machine: null, active: false, tabs: [{ id: tb, named: false }] }];
+  fx.fixture.agents = [{ address: "t1", status: "working", pane: "p1" }];
+  fx.log = [];
+  v.render(cx);
+  assert.ok(fx.log.some((x) => x.what === "run space.rename") && fx.log.some((x) => x.what === "run space.select"), "the new space is named and shown");
+  fx.log = [];
+  fx.hcCalls = [];
+  await click();
+  assert.ok(fx.log.some((x) => x.what === "run pane.focus"), "second click goes to it");
+  assert.ok(!fx.log.some((x) => x.what === "openOverlay") && !fx.hcCalls.some((a) => a[0] === "label"), "no peek, no new tab");
 }
 console.log("io ok");

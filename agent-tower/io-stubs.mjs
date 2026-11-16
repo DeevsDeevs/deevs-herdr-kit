@@ -29,4 +29,29 @@ export const exec = (cmd, args = []) => {
   if (cmd === "rm") for (const p of args.filter((a) => !a.startsWith("-"))) delete files[p];
   return Promise.resolve({ code: 0, stdout: "", stderr: "" });
 };
-export const hc = () => Promise.resolve({ code: 0, stdout: JSON.stringify({ machines: [] }) });
+export const hc = (args) => {
+  fx().hcCalls?.push(args);
+  return Promise.resolve({ code: 0, stdout: JSON.stringify({ machines: [] }) });
+};
+// Elements that remember their ids and tooltips (fx().ids, fx().tips), for checks on what a render built.
+const recording = () => {
+  fx().elements++;
+  let myId = null;
+  const self = new Proxy({}, {
+    get(_, k) {
+      if (k === "then") return undefined;
+      return (...a) => {
+        fx().calls++;
+        if (k === "id") {
+          myId = a[0];
+          (fx().ids ??= new Set()).add(a[0]);
+        }
+        if (k === "tooltip") (fx().tips ??= []).push([myId, a[0]]);
+        if (k === "when") return a[0] ? a[1](self) : self;
+        return self;
+      };
+    },
+  });
+  return self;
+};
+export const div = recording, svg = recording, image = recording, h_flex = recording, v_flex = recording;
