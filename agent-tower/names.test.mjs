@@ -234,6 +234,7 @@ for (const [name, args] of [["tower-names", ["--nope"]], ["tower-eye", ["stop"]]
   assert.ok(full.startsWith("You are the new lead of task g1") && full.includes("You lead task g1.") && full.endsWith("Task: make a planting calendar"));
   const w = model.joinMessage(recipe, config, item, "worker", "water the beans", true);
   assert.ok(w.startsWith('You are a worker on task g1, "Garden plan"; use the tower skill if you have it.') && w.includes("--label task.role=lead | jq -r '.terminals[].address'") && w.endsWith("Task: water the beans"), w);
+  for (const words of ["Do exactly the task below", "Start no other agents unless it says so", "--label task.id=g1 --label task.role=worker", "Put long answers in a result file", "report to your parent"]) assert.ok(w.includes(words), words);
   // findJoined: the live terminal in a new tab of that space, not one the task had.
   const join = { space: "sp1", machine: null, tabsBefore: new Set(["tb1"]), members: new Set(["t1", "t2"]) };
   const sps = [space("sp1", "Garden plan", true, [["tb1", "lead", true], ["tb2", "lead", true]])];
