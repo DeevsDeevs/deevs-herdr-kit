@@ -20,7 +20,10 @@ herdr-app check ~/.config/herdr-app/mods/agent-tower
 ```
 
 `tower` puts the list in the sidebar and Details in its own column; `tower-solo` lets Files
-and Details take turns; `tower-wide` gives Details 420px. The start script for the Eye,
+and Details take turns; `tower-wide` gives Details 420px; `tower-stack` puts Details under the
+list. `tower-work`, `tower-personal` and `tower-investing` are areas' own windows (an area's
+`layout`; see [examples/investing](examples/investing)); `tower-window` is the old whole-window
+layout, still understood but no longer switched to. The start script for the Eye,
 `tower-new`, `tower-adopt`, `tower-names` and `tower-eye` (below) ship inside the mod folder. Bind the window in `keys.json`
 ([keys.json](keys.json)): `{ "global": { "ctrl-s t": "mod.open:agent-tower" } }`.
 

@@ -449,7 +449,8 @@ assert.equal(model.eyeMessage(eyeCfg, "work"), "Speak English.\nYou are the Eye 
 const eyeLong = model.eyeMessage({ ...eyeCfg, skill: null }, "work");
 assert.ok(!/above all/.test(eyeLong) && eyeLong.includes("$TOWER_AREA") && eyeLong.includes("which area's Eye to ask"), "one area, not all work");
 assert.ok(!/\/(Users|home)\//.test(eyeLong), "no paths on your screen");
-for (const words of ["hc ls --json", "task.role=lead", "task.ask", "$TOWER_NEW", "$TOWER_CONFIG", "hc send <lead address>", "never from memory", "Never do task work yourself", "Never end or close anything unless they ask", "ask them", "one or two plain sentences"]) {
+for (const words of ["hc ls --json", "task.role=lead", "task.ask", "$TOWER_NEW", "$TOWER_CONFIG", "hc send <lead address>", "never from memory", "Never do task work yourself", "Never end, close, kill or rename anything unless they ask", "ask them, never guess", "one or two plain sentences",
+  "Needs you", "Keep no state", "whole and unchanged", "\"starting\": true", "never promise to report later", "--as worker", "never --force", "tell them instead of sending", "hc label $HC_TERMINAL_ID \"task.ask="]) {
   assert.ok(eyeLong.includes(words), words);
 }
 assert.ok(eyeLong.startsWith("Speak English.\n"));
