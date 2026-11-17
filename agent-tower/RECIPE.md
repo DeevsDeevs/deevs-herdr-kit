@@ -27,25 +27,45 @@ Two ways to show it, same content:
 One column on `chrome`, 13px text, in the vocabulary of Herdr's shipped `agents` and
 `spaces` mods (numbers below are theirs unless said otherwise). Top to bottom:
 
-- **Area header**, Herdr's flat header: 31px, 16px left and 10px right padding, 12px gaps.
+- **Area header**, Herdr's flat header: 31px, 16px left and 10px right padding; the area
+  words 6px apart, the icons 2px apart.
   The areas from the settings (default "Work" and "Personal") as plain words, 11.5px
   medium, shown when there are two or more: the shown one in `foreground`, the others in
   `dim` (hover `foreground`). An area you are not looking at shows Herdr's tinted badge
   (14px, 4px corners, `blocked` at 15% under `blocked` 10.5px bold) with the number of its
   items under Needs you, tooltip "2 need you in Work". On the right, while the shown area has no running Eye (and
   its `eye` is not `false`), a 26px eye icon button "Start the Eye" (it starts that area's) (dimmed, "Starting the Eye…", while it starts),
-  a 26px `search` icon button "Search (Ctrl-S /)" (below), then a 26px `plus` icon button, "Tell the Eye or start a task" while an Eye runs, else
-  "New task" (`dim`, hover `hover` + `foreground`, shown pressed while the composer is
+  then, with Views switch "One icon in the list's header" (and not in the window), a 26px
+  button with the shown view's icon, "Views", opening a 240px menu: the area's views with
+  their keys (the shown one checked), "New: <recipe>" for each of the area's `buttons`, and
+  "Take the whole window" / "Show the list beside it" while a view other than List is up;
+  a 26px `search` icon button "Search tasks, agents and machines in every area (Ctrl-S /)"
+  (below), then a 26px `plus` icon button, "Tell the Eye, start a task or a space" while an
+  Eye runs, else "New task or space" (`dim`, hover `hover` + `foreground`, shown pressed while the composer is
   open); in the window also a 26px `x` button, "Close (Esc)". No title: Herdr's brand row
   sits above it.
-- **Switches** (a right-click on the header): a 240px popup with one section per variant you
-  can flip, each choice checked when current, remembered in shared state, and every flip
-  appended to `<tower folder>/use.jsonl` as `{at, what, from, to}` so unused variants can go:
-  "Done in another area" (below) and "Left of a task" ("Its state", "How many agents run";
-  `shared("agent-tower.rowMark")`, default Its state).
+- **The area's menu** (a right-click on the header, 240px): "New task", the area's views
+  with their keys, then "Settings…", which opens Switches. With "Right-click on the area
+  row" set to "These settings", the right-click opens Switches directly.
+- **Switches**: a 260px popup with eight sections, each choice checked when current and
+  remembered in shared state: "Done in another area" (below); "Left of a task" ("Its
+  state", "How many agents work"; `shared("agent-tower.rowMark")`, default Its state);
+  "Views switch" ("One icon in the list's header", "A bar above the centre", "A row at the
+  foot of the list"; `agent-tower.viewSwitch`, default the bar, the header icon in a layout
+  without `tower-viewbar`); "A list row while a view is up" ("Goes into the task" / "Peeks,
+  the view stays") and "An agent clicked in a view" ("Goes into its task" / "Peeks, the
+  view stays"); "A task in another area" ("Brings
+  its area's window" / "Shows it here"); "Right-click on the area row" ("The area's menu" /
+  "These settings"); "Double-click on a task" ("Same as a click" / "Renames it"), the last
+  five each kept in `agent-tower.choice.<name>`. Every flip and view switch is appended to
+  `<tower folder>/use.jsonl` as `{at, what, from, to, how}` (`how`: click, key, menu or
+  back) so unused variants can go; `use.md` beside it sums up what was switched to, how
+  often and about how long each view was on screen, rewritten at most every 10 minutes and
+  when the list closes.
 - **Search**: the magnifier or `agent-tower.search` (`ctrl-s /` in keys.json) opens a 28px
   field under the header (`accent` border, `search` glyph, an `x` that closes it; Esc closes
-  it too). While it holds words, the list is one "Found N" group of every item in every area,
+  it too). While it holds words, the list is one group headed "N tasks" ("1 task"; "Nothing
+  found" when empty) of every item in every area,
   group and fold (Earlier, Done, left-overs too) holding every word, matched in the title,
   space, task ids, machines ("this computer" for here), what it asks, and each live member's
   name, title and last sentence (`model.searchItems`). A result is its row and acts like it;
@@ -85,8 +105,9 @@ One column on `chrome`, 13px text, in the vocabulary of Herdr's shipped `agents`
   its status sentence in the tooltip. Waiting: Herdr's full "Needs you" pill (18px, `blocked`
   at 15%, 10.5px semibold) in place of age and mark, and the waits line as in Needs you
   (kind in `blocked`, its `task.ask` label, else its sentence, in `muted`, two lines at
-  most, the whole text in the tooltip). A click goes to it; a right-click asks straight away
-  "End the Eye?" with "Keep the Eye" / "End the Eye". Its first 20 s
+  most, the whole text in the tooltip). A click goes to it; a right-click opens its menu,
+  "Open" and "End the Eye…"; "End the Eye…" asks "End the Eye?" with "Keep the Eye" / "End
+  the Eye". Its first 20 s
   without an agent: "Starting the Eye…" in place of age and mark. After that, still no
   agent (its program ended and a shell took its place): "Eye · no agent running" in
   `muted`, tooltip "Its program ended. Open it or end it.", and nothing is ever sent to it.
@@ -105,11 +126,16 @@ One column on `chrome`, 13px text, in the vocabulary of Herdr's shipped `agents`
     with the composer open redraws its chips and target for the new area: text never goes
     to another area's Eye. Each area keeps its own words for its Eye: they come back when you
     return to the area, and across a restart of the list (a layout switch) through the draft,
-    which carries their area.
+    which carries their area. After the Eye and recipe chips (and a short divider when there
+    are any), the row ends with Herdr's own "New space" chip (10px `plus`, then the word),
+    left out while "in <title>" is on; with other connected machines a chevron beside it
+    opens "New space on <machine>". It runs `space.new` (a task from birth, adopt.js) and
+    closes the composer.
   - While a task is selected, an "in <title>" chip (off by default, the title cut to fit);
     on, it shows "lead | worker" beside it, and Enter starts that agent inside the task (New
     lead, below) instead of a new task. The row menu's New lead opens the composer with it on,
-    "lead" picked and the task's own recipe chosen when it is in the shown area.
+    "lead" picked and the task's own recipe chosen when it is in the shown area. With
+    "worker" picked, the hint line names the worker agent in `dim`.
   - One send or start at a time: while one is in flight Enter does nothing, the input is at
     60% opacity and the plus does not close the composer; the input clears when it
     succeeds. Text from the input has every run of whitespace with a line break in it
@@ -143,19 +169,20 @@ One column on `chrome`, 13px text, in the vocabulary of Herdr's shipped `agents`
   **Done** (`done`), **Working** (`working`), **Idle** (`dim`), **Earlier** (`dim`),
   **Spaces** (`dim`), then **Left over** (`dim`). A group label: 24px, 11px medium, the
   count after it in `dim`, 10px above it (none above the first); a click folds the group
-  (a `chevron-right` shows while folded). Earlier, Spaces and Left over start folded; folds
-  live in memory. Done shows at most 5 rows, then a 26px "N more" row in `dim` at the
+  (a `chevron-right` shows while folded). Spaces and Left over start folded; Earlier starts
+  open (one fold per area). Folds and opens are kept in shared state, so an area switch keeps
+  them. Earlier is a directory: one 24px line per task, A to Z, nothing under it. Done shows at most 5 rows, then a 26px "N more" row in `dim` at the
   sub-row inset that shows the rest ("Show fewer" folds them again).
 - **An item row**, Herdr's agent row: 8px side and 5px vertical padding, 8px corners,
-  hover `hover`, `selected` when it is the selected item (below), a tooltip with the title,
-  space and machine (left out while that row's menu is open, until the pointer leaves the
-  row, so it never covers the menu). A 20px line with 9px gaps:
+  hover `hover`, `selected` when it is the selected item (below), no tooltip on the row (it
+  covered the next row's wait line); the title has one, the whole title, only when it is too
+  long to show whole (not while the row's menu is open). A 20px line with 9px gaps:
   - what stands at the left says something about the task (the space's letter said
     nothing): by the "Left of a task" switch, **its state**, the row's status mark (below)
     in an 18px cell, and then the mark column at the right stays empty; or **how many agents
-    run** in it (lead and live members running an agent), 10.5px bold on an 18px tile with
-    5px corners, tinted by its state (`blocked`, `working`, `done` or `dim` at 15% under the
-    same colour), with the mark at the right as before;
+    work** in it (its live terminals whose status is working), 10.5px bold in `working` on
+    an 18px tile with 5px corners, `working` at 15%, with the mark at the right as before; a
+    task that needs you, or has none working, shows its state mark there instead;
   - the title: `task.title` for a task; else the agent's own title, cleaned the way Herdr's
     agents list cleans it (no status glyph, not the program's name, not a path, no program
     glyph in front: "π - shad" reads "shad"); else the space name. `muted` when the item is
@@ -163,18 +190,21 @@ One column on `chrome`, 13px text, in the vocabulary of Herdr's shipped `agents`
   - " · <note>" in `dim`, at most 90px, giving way twenty times faster than the title: the
     space name when the title does not already contain it; when the same title still shows
     twice in the area, the lead's name, else its address without the machine ("t41");
-  - the machines, 10px `dim`, at most 62px, right-aligned against the columns after it,
-    only those that are not the area's home machine ("mac", or "mac +1" for more; all of
-    them in the tooltip): the home machine is the first machine the area's settings
-    list, else this computer (never a majority of its rows). A row on this computer in an
-    area that lives on another machine says "this Mac" ("this computer" off macOS);
+  - the machines, when any is not the area's home machine: the 11px `server` glyph in
+    `dim`, every machine in its tooltip (an item row never prints the name); merged,
+    left-over and space rows print the name instead (10px `dim`, at most 56px,
+    right-aligned) and fall back to the glyph when the title needs the room. The home
+    machine is the first machine the area's settings list, else this computer (never a
+    majority of its rows). A row on this computer in an area that lives on another machine
+    says "this Mac" ("this computer" off macOS);
   - the fold chip column, 18px, present only when some row in the area has a chip (below
-    300px only on rows that have one): when the item has workers, `chevron-down`; folded,
-    `chevron-right` and the count in the most urgent worker's colour;
+    300px only on rows that have one): when the item has workers, `chevron-down` in `dim`;
+    folded, `chevron-right` in the most urgent worker's colour, no count;
   - the age, 11px `dim`, at least 28px wide from 300px of list up, right-aligned, Herdr's
     compact form ("<1m", "13m", "18h", "3d"): the newest change among the item's
-    terminals. "quiet 25m" in `working` when the item is working and nothing in it changed
-    for 20 minutes; "lead gone" in `blocked` for a task whose lead ended;
+    terminals. The age ("25m") in `working` when the item is working and nothing in it
+    changed for 20 minutes (the still clock says quiet); "lead gone" in `blocked` for a task
+    whose lead ended;
   - the status mark in a 14px column: a 12px spinning `spinner` in `working`, a still 12px
     `clock` in `working` for a quiet working item, a `blocked` "!" tile (14px), a 7px `done`
     dot, a 7px `idle` ring (a done lead outside Done shows the ring); nothing for a terminal
@@ -189,25 +219,28 @@ One column on `chrome`, 13px text, in the vocabulary of Herdr's shipped `agents`
   the kind's left edge and ends in "…" when cut. The Eye's waits line is the same. In Done
   the second line is the lead's own last sentence, one line in `muted`, when it gave one.
   A task's lead that runs no agent 20 seconds after it was made (its program ended and a
-  shell took its place), or whose terminal ended, reads "lead ended" in `blocked` under its
-  row; its item menu offers New lead.
+  shell took its place) reads "lead ended" in `blocked` under its row, unless the task waits
+  on you; a lead whose terminal ended reads "lead gone" in the age column instead. Either
+  way its item menu offers New lead.
 - **The title wins.** When the list is narrower than 300px (the sidebar's width from
   `layout()`; the window counts as 320px) no row prints a machine; it stays in the
-  tooltip. At any width the extras give way before the title, in this order: the machine,
-  the fold chip's count (the chevron stays), the space note, until the title has room for
-  16 characters or all of itself (`model.fitRow`, which estimates 7px a character at 13px
-  and 6px at 10-11px). Space, left-over and merged rows drop their machine the same way.
+  tooltip. At any width the space note gives way before the title (the machine glyph on an
+  item row stays), until the title has room for 16 characters or all of itself
+  (`model.fitRow`, which estimates 7px a character at 13px and 6px at 10-11px); space,
+  left-over and merged rows turn their machine name into the glyph, or drop it when the
+  title then fits whole.
 - **Rows that read alike** (same title, space and machine, no workers, same group) are
   one row: the title, a `dim` "×6", the newest age, the most urgent member's mark, a
-  chevron in the chip column. A click opens it: one 26px row per member at the sub-row
-  inset, named by the lead's `name` else its address without the machine, with its own age
-  and mark; a click there goes to that agent.
+  chevron in the chip column. A click goes into its newest member; the chevron opens one
+  26px row per member at the sub-row inset, named by the lead's `name` else its address
+  without the machine, with its own age and mark; a click there goes to that agent.
 - **Under a task**, Herdr's sub-rows: 26px, 39px left padding, 12.5px, 8px corners; the
   tree lines (9×17px boxes with a 1.5px `input` left and bottom border, 6px corner on a
   branch), the program icon (14px), the name in `muted`, the status mark. The shown or
   focused one sits on `raised`. In order:
-  - **the lead**: "Lead · home-server" ("Lead · this computer" here): it says it is the lead
-    and where it runs; none when the lead has ended;
+  - **the lead**: "Lead", with its machine in 10.5px `dim` (at most 72px) before the mark,
+    always shown ("this Mac" here on macOS, "this computer" elsewhere): it says it is the
+    lead and where it runs; none when the lead has ended;
   - **the workers that work or wait**, and the rows above them (a sub-lead stays while its
     workers run), each named by `name` (else template, program or address) with its machine
     in 10.5px `dim` before the mark when that is not the area's home;
@@ -238,9 +271,9 @@ One column on `chrome`, 13px text, in the vocabulary of Herdr's shipped `agents`
   Herdr's spaces list. A machine is this area's when the area lists it or an item or space
   of the area is on it. Its rows show at 60% opacity with "as of 11:46" in place of the age.
 - **Rail**: the shown area's Eye is the first cell (none with `eye: false`), its icon in an 18px box so its badge sits where the
-  tiles' do: running, a click goes to it and a right-click asks the End question; not
-  running, `dim`, "Eye: not running. Click to start", and a click starts it (dimmed while it
-  starts). When the sidebar is narrower than 160px
+  tiles' do: running, tooltip "Eye", a click goes to it and a right-click opens its menu
+  ("Open", "End the Eye…"); not running, `dim`, tooltip "Start the Eye" ("Starting the Eye…"
+  while it starts, dimmed), and a click starts it. When the sidebar is narrower than 160px
   (Herdr's rule, read from `layout()`),
   no header, composer or group labels: each item is a 32×26px cell holding its tile or
   program icon (a task that needs you keeps its tile, with a `blocked` badge like the Eye's)
@@ -250,19 +283,22 @@ One column on `chrome`, 13px text, in the vocabulary of Herdr's shipped `agents`
 - **Empty area**: "No tasks" in 12px `dim`.
 - **The item menu** (right-click on an item), Herdr's menu: a `popover` popup 250px wide,
   5px padding, 12.8px; 31px items with a 14px `muted` icon: "Details" (`panel-right`, one
-  item only), "Peek" (`monitor`, one item with a lead), "New lead" (`plus`, one task, not in
-  the rail), "Rename" (`square-pen`, not in the rail, which has no row to rename in),
+  item only), "Peek" (`monitor`, one item with a lead), "Pin to the top" / "Unpin" (`pin` /
+  `pin-off`, one item whose lead has not ended), "Rename" (`square-pen`, not in the rail,
+  which has no row to rename in), "New lead" (`plus`, one task, not in the rail), "Make a
+  task" (`plus`, for an agent that is not a task or a space of only shells),
   "End task…", "End agent…" for an unlabelled agent, "End all 6…" on a merged row (Herdr's
   word for a terminal and what it started; "Close" is for spaces and panes),
   "End 8 agents left over…" when it has left-over agents
   (`x`), then a divider and "Space menu" (`layers`). ↑/↓ move, Enter runs, Esc closes.
-  "Close…" turns the popup into the question, on one line, in lead and worker words: "End
-  the lead and its N workers?" with "Keep running" (`raised`) and "End all N+1" (`solid`,
-  `solid_foreground`; every button has a 1px border, `accent` on the chosen one); "End its N
-  workers?" for a task whose lead is gone; "End this agent?" / "End it" for one terminal;
-  "End these 6 agents?" / "End all 6" on a merged row; "End these 3 agents? Their starter
-  has ended." with "Keep them" / "End 3 agents" for left-overs ("End this agent? Its starter
-  has ended." with "Keep it" / "End it" for one; it may wrap). Keep running is
+  "End…" turns the popup into the question, on one line, in lead and worker words: "End
+  <task title>?" (the title cut to 29 characters and "…") with "Keep running" (`raised`)
+  and "End all N+1" ("End it" when it is one terminal; `solid`, `solid_foreground`; every
+  button has a 1px border, `accent` on the chosen one); "End <title>'s N workers?" for a
+  task whose lead is gone; "End the lead and its N workers?" only for an item without a
+  task title; "End this agent?" / "End it" for one terminal; "End these 6 agents?" / "End
+  all 6" on a merged row; "End these 3 agents?" with "Keep them" / "End 3 agents" for
+  left-overs ("End this agent?" with "Keep it" / "End it" for one). Keep running is
   chosen first, ←/→ move. When a machine of those terminals does not answer, the popup says
   "work-vps does not answer; nothing was ended." with only "Close".
 
@@ -314,27 +350,38 @@ come from the app's program table.
   its address and that change in `shared("agent-tower.seen")` (pruned like the change
   times, below); a later change makes it Done again. It then falls to Idle or Earlier.
 - **Earlier**: an item that would be idle, quiet for 24 hours or more.
-- **Order**: inside a group, most recently changed first; in Working a quiet item first.
+- **Order**: inside a group, most recently changed first; in Working an item quiet for 20
+  minutes goes first; Earlier is A-Z by title (case and accents ignored, numbers by value).
 - **Age** is the time since the mod saw a terminal's status word or turn change, on this
   computer's clock, first seen at the core's `status_ms` when there is one, else at that
-  moment. The times are kept in `shared("agent-tower.changes")` so the docked list and the
-  window agree and they survive a restart. A terminal no longer in `terminals()` is
-  forgotten at once (`model.forgettable`), but only on a machine that answered and showed
-  terminals in that read: a quiet machine, or the empty read right after a start, loses
-  nothing; anything unseen for 30 days goes anyway. Ages redraw once a minute.
+  moment. A `done` that comes without `working` before it (Herdr reports an old agent done
+  again when it is opened or peeked at) is no new finish; its time stays. The times are kept
+  in `shared("agent-tower.changes")` so the docked list and the
+  window agree and they survive a restart. A terminal no longer in `terminals()` is marked
+  gone and forgotten a day later (`model.forgettable` picks which may be marked), but only
+  on a machine that answered and showed terminals in that read: a quiet machine, or the
+  empty read right after a start, loses nothing; one that comes back with the same word and
+  turn drops the mark and keeps its time; anything unseen for 30 days goes anyway. Ages
+  redraw once a minute.
 - **Area** of an item or a space: `task.area` when set, else the first area whose
   `machines` list holds its machine, else the area marked `default`.
 - **Spaces**: the spaces of the shown area with no live agent and no live task
   terminal inside (a terminal without a `herdr.space` label counts for the space of
   whatever started it). A click runs `space.select {id}`; a right-click opens Herdr's own
   space menu, the way the shipped `spaces` mod opens it.
+- **Views**: List, Board, Timeline, Radar and Watchlist. An area offers List, Board,
+  Timeline and Radar unless its `views` setting lists others; the first listed is where it
+  opens. A view other than List shows either in the centre beside the list or over the
+  whole window (the sidebar hidden); `ctrl-s m` flips that. Each area comes back to the
+  view, shape and task it was left on.
 - **A click on a task row selects the task and opens its lead**, also
   when you come back to it from one of its workers; folding is the chevron's alone. A task
   clicked in Board, Radar or Timeline goes into it: the list's screen comes back (the sidebar
   shown in either shape) with its lead open, and "‹ Board" (the view's icon and name, where
   the views switch sits: the list's first line, the bar, or the foot row) goes back one step,
   shape included. Any other view switch forgets it. Views call `ui.select` for this; `ui.pick`
-  selects without leaving the view. A click on its lead or worker row opens that terminal: `pane.focus
+  selects without leaving the view. A click on a row or a merged row's member also runs
+  `layout.show {id: "tower-detail"}` when the layout has that column hidden. A click on its lead or worker row opens that terminal: `pane.focus
   {terminal}` when it has a pane. A lead without a pane (started with `hc run`) gets a real
   tab the first time the task is clicked into (a row, a search hit, a rail dot, Details, a
   toast, an arrival from another area's window), where Keep below puts one: here, its task's
@@ -373,7 +420,10 @@ come from the app's program table.
   machine's home). If the folder can't be made the start is refused, "its folder could not be
   made in <dir>"; a task never gets the shown space's folder. argv the lead agent's run through
   `env TOWER_TASK=<id> TOWER_WORKER=<workers' agent command>`, so the message you read holds
-  no ids, paths or usage text; task: the first message below),
+  no ids, paths or usage text; task: the first message below). `TOWER_WORKER` is the path of
+  a small script, `worker-<agent id>`, that runs exactly the worker agent's argv; it is
+  written on the lead's machine (`<tower folder>/bin/` here, `~/.config/agent-tower/bin/`
+  elsewhere), and if it can't be written `TOWER_WORKER` is the argv, shell-quoted. The start
   closes the composer, then watches for the space with that name on that machine, finds
   its terminal and labels it in one `hc label` call (`task.id`, `task.role=lead`,
   `task.title=<your words>`, `task.by=raw`, `task.recipe`, `task.area=<the recipe's
@@ -405,18 +455,21 @@ come from the app's program table.
     not a plain skill name counts as missing), once per machine, kept for the session (a
     check that could not run is asked again). Missing: the full contract.
   - The full contract (`DEFAULTS.contract`) says what the tower skill's Lead part says, in
-    its order, in plain lines: plan and delegate; the task's terminals (`hc ls --json --label
-    task.id=<id> | jq -r '.terminals[].address'`, `--all` for ended ones) and one terminal's
-    labels (`hc get <address> | jq .labels`); start workers with the agent command named
-    below, brief on the run line, `--cwd <dir>` (the task's own folder), a remote worker by
-    `<machine>/<id>-<role>`; what a brief gives and how it ends (report to the parent with
-    the result path); after starting workers `hc read` each once (a folder-trust or sign-in
-    prompt stalls a new worker without telling you), routine prompts
-    with `hc keys`, permissions, sign-ins, deleting or sending to the person;
-    `hc wait --children any --timeout 100`, never poll, and what to do on a report or a
-    stop; `task.ask` before waiting on you and cleared next turn; the last message opens
-    with one or two plain sentences; a chain link at milestones; done is said, ending the
-    workers left to you. The test checks the order against the installed skill.
+    its order, in plain lines: plan and delegate; `task.ask` before waiting on you and
+    cleared next turn, asked only when a decision needs you; the task's terminals (`hc ls
+    --json --label task.id=<id> | jq -r '.terminals[].address'`, `--all` for ended ones) and
+    one terminal's labels (`hc get <address> | jq .labels`); start workers with the agent
+    command named below, brief on the run line, `--cwd <dir>` (the task's own folder), a
+    remote worker by `<machine>/<id>-<role>`; reuse an idle worker when its context fits, a
+    fresh one for a cold look; a sub-lead starts with the same `task.id` and
+    `task.role=worker`; what a brief gives and how it ends (report to the parent with the
+    result path); after starting workers `hc read` each once (a folder-trust or sign-in
+    prompt stalls a new worker without telling you), routine prompts with `hc keys`,
+    permissions, sign-ins, deleting or sending to the person; `hc wait --children any
+    --timeout 100`, never poll, what to do on a report or a stop, and `hc file read --on
+    <machine>` for a remote worker's file; the last message opens with one or two plain
+    sentences; a chain link at milestones; done is said, ending the workers left to you.
+    The test checks the order against the installed skill.
 - **The Eye**, one per area. An area's Eye is the newest live terminal labelled
   `tower.eye=1` and `tower.area=<area id>` (`model.findEye(terms, area)`); an older Eye with
   `tower.eye=1` and no `tower.area` (from before Eyes were per area) stands in for every area
@@ -454,8 +507,8 @@ come from the app's program table.
     `hc ls` shows every terminal on every machine and `hc send` reaches any of them; an
     agent that unsets `TOWER_AREA` or writes the request itself gets past the check.
   - **`tower-eye [status | start | end] [--area <id>]`** (beside `tower-new` in the mod
-    folder) does without a click what the icon and End do, through the inbox; the area
-    defaults to the one with `default: true`. `status` prints one line per area (its Eye's
+    folder) does without a click what the icon and End do, through the inbox; no word means
+    `status`, and the area defaults to the one with `default: true`. `status` prints one line per area (its Eye's
     address and state, "none", "starting", or "no Eye (eye: false)"). `start` answers
     "Started Work's Eye: t5." once the Eye is labelled, says so when one runs, and is refused
     for `eye: false`. An agent started by hand on this computer in a space named exactly
@@ -467,10 +520,18 @@ come from the app's program table.
 - **The inbox**, how the Eye starts tasks exactly as the composer does: `tower-new`
   writes `<tower dir>/inbox/<id>.json` (`{recipe, words, agent?, area?, task?, as?, at}`,
   `area` from `TOWER_AREA` when set, `task` and `as` from `--task <id>` and `--as lead|worker`; written aside and moved in) and waits up to 25 seconds for `outbox/<id>.json`, printing it as
-  one line of JSON (exit 0 when it started). The docked copy (never a window) watches the
-  inbox with `watchFolder`, scans it at start and on its 30 s tick, and acts only while it
-  holds `shared("agent-tower.inboxLease")` (renewed every 30 s, free after 75 s, released
-  when the copy closes). The inbox and outbox are created 0700, and narrowed to 0700 when
+  one line of JSON. `tower-new [--task <id> [--as lead|worker]] <recipe id> "<words>"
+  [agent id]` (`--as` without `--task` is wrong usage) exits 0 when started, 1 when not, 2
+  on wrong usage. The docked copy (never a window) watches the inbox with `watchFolder`,
+  scans it at start and on a 5 s tick, and acts only while it holds the lease file
+  `<tower dir>/inbox.lease` (`model.leaseKeeper`; renewed every 10 s, free 20 s after the
+  last renewal, a copy without it tries every 10 s, released when the copy closes). The
+  tower dir holds `config.json`, `inbox/`, `outbox/`, `inbox.lease`, `recorder.lease`,
+  `bin/` (workers' scripts), `eye/<area id>/`, `use.jsonl`, `use.md`, `perf.jsonl`,
+  `timeline/` (`events.json`, `screens.json`, `beat.json`, `index.json`, `ended.json`,
+  `backfill.json`, `tasks/`: Timeline's history, trimmed under Herdr's 1 MiB file limit),
+  and for Watchlist `watchlist.json` and the notes file it names (default
+  `investing-notes.md`). The inbox and outbox are created 0700, and narrowed to 0700 when
   wider. Only regular files are acted on (`find -type f`: a link or a folder is never
   read). One read at a time; each request is deleted, then checked: over 64 KB is "too
   big"; an id already handled this session is "already handled";
@@ -480,8 +541,9 @@ come from the app's program table.
   naming a recipe of another area is refused ("the recipe X is in Personal; this is Work's
   Eye"). A request without `area` (by hand, or from an older Eye) is not area-checked. Then it goes
   through the composer's own start (`startTask`: refusals, machine check, pending row,
-  label, naming). The answer is `{ok: true, task, lead}` once the lead is labelled, or
-  `{ok: false, why}`. Answers nobody fetched are swept from the outbox after ten minutes.
+  label, naming). The answer is `{ok: true, task, starting: true}` as soon as the lead's
+  space is asked for, or `{ok: false, why}`; a later failure only shows in the list. Answers
+  nobody fetched are swept from the outbox after ten minutes.
   A request with `task` goes to New lead (below) instead (`model.checkJoin`): `as` left out is
   lead; refused with "there is no task "x"", "task x is in Personal; this is Work's Eye" or
   ""boss" is not lead or worker"; answered `{ok: true, task, as, starting: true}` once the tab
@@ -489,7 +551,12 @@ come from the app's program table.
   Two more request shapes go the same way (same lease, size, age and id checks), each
   answered with `{ok, why?, text}` that the script prints: `{names: {apply, named, space}}`
   from `tower-names` (Names, below) and `{eye: {do, area, by}}` from `tower-eye` (`by` is
-  the sender's `TOWER_AREA`). `tower-adopt` sends its own. Like `tower-new`, all of them need
+  the sender's `TOWER_AREA`). `tower-adopt [--apply] [--space <id or name> [--title <words>]
+  [--lead <address>] [--area <id>]]` sends `{adopt: {apply, space?, area?, title?, lead?},
+  at}`: it makes spaces made before Tower into tasks by labels only (one space, one task,
+  named after the space, in its machine's area). Without `--apply` it is a dry run printing
+  each space's title, area, lead and workers, its machine and how long it has been quiet.
+  It waits up to 60 seconds; exit 0 done, 1 not, 2 wrong usage. Like `tower-new`, all of them need
   Agent Tower showing; in a layout without it nobody reads the inbox, and they say so after
   their wait.
 - A recipe naming an agent the settings don't have falls back to the role's default, with a
@@ -500,8 +567,9 @@ come from the app's program table.
   four words, under 26 characters", not who does it or how ("Tea, coffee and water notes",
   not "Delegating three text files"; no verbs like delegate, have workers, ask)
   (by default `claude -p --model haiku --no-session-persistence --tools ""` with your words
-  as data, 60 s limit). If the answer is one non-empty line of at most 28 characters and the
-  lead's `task.by` is still `raw`, it writes `task.title` and `task.by=llm` in one call; the
+  as data, 60 s limit). If the answer is one non-empty line of at most 40 characters and the
+  lead's `task.by` is still `raw` (and you have not renamed it meanwhile), it writes
+  `task.title` and `task.by=llm` in one call; the
   space follows through Names. If it fails, your words stay.
 - **Rename** (item menu) turns the row's title into an input in place, title selected.
   Enter saves (cut to 80 characters), Escape leaves it. On a task it writes `task.title`
@@ -553,10 +621,11 @@ come from the app's program table.
     and `Lead task <id> with the tower skill (questions to me go through task.ask): <words>`.
     Without the skill: the recipe's rules, that same "You are the new lead…" line, then the
     full contract and "Task: <words>".
-  - A worker added from the list gets:
-    `You are a worker on task <id>, "<title>"; use the tower skill if you have it.`, then
-    `When done or blocked, hc send one plain sentence and the result path to the task's lead (<lead address, or: hc ls --json --label task.id=<id> --label task.role=lead | jq -r '.terminals[].address'>), then finish your turn.`,
-    then `Task: <words>`.
+  - A worker added from the list gets four lines:
+    `You are a worker on task <id>, "<title>"; use the tower skill if you have it.`;
+    `Do exactly the task below. Start no other agents unless it says so; if it does, start them with --label task.id=<id> --label task.role=worker, and they report to you.`;
+    `Put long answers in a result file. When done or blocked, report to your parent, the task's lead (<lead address, or: hc ls --json --label task.id=<id> --label task.role=lead | jq -r '.terminals[].address'>): hc send it one plain sentence and the result path, then finish your turn.`;
+    `Task: <words>`. The lead's address is given only while the lead runs an agent.
 - **Close** (item menu): the question counts what would end: for a task, every terminal
   carrying its `task.id`; for an unlabelled agent, it and the live terminals that belong
   to it (not another task's workers); on a merged row, all of that for every member.
@@ -574,7 +643,9 @@ come from the app's program table.
   every machine answered and the read is not empty), so a task
   whose lead's record is gone still shows its title, not its id.
 - **Selection**, for the panel mod: `shared("agent-tower.selected")` is
-  `{ key, lead: <live lead address or null>, members: [live addresses], title }` or null.
+  `{ key, lead: <live lead address or null>, members: [live addresses], title, ids, area,
+  status, need }` or null (`ids`: the task ids folded in; `area`: the area the list shows it
+  in; `status`: the row's word; `need`: `{by, kind, text}` while it needs you, else null).
   Focus moving to a terminal of an item selects that item (null for a terminal that is no
   item's). A click on an item, a member or a worker row selects its item and pins it
   (`shared("agent-tower.pin")`, `{key, space}`): it stays selected through focus changes,
@@ -588,7 +659,8 @@ come from the app's program table.
   command).
 - **Space menu** (item menu) closes the popup and opens Herdr's space menu for the item's
   space.
-- **Machines**: every 30 seconds the mod runs `hc machine ls --json`; a machine that is not
+- **Machines**: every 30 seconds while Herdr's window is active (every 2 minutes otherwise)
+  the mod runs `hc machine ls --json`; a machine that is not
   connected, or whose layout is `unavailable` in `machines()`, is unreachable from the
   moment this copy of the mod first saw that. "needs login" is hc's `needs_login`;
   "rebuilt" is Herdr's test (unreachable because a different core answers there). Connect
@@ -597,12 +669,23 @@ come from the app's program table.
 
 ## Built from
 
-- One mod, `mods/agent-tower/` (`main.js`, `model.js`, `mod.json` with `place: "none"` and
-  the window overlay, `NOTICE`, `eye.svg`, `tower-new`), one layout, `layouts/tower.json`
-  (Herdr's `main` layout
-  with the `sidebar-lists` column holding a single block
-  `{ "id": "tower", "content": { "mod": "agent-tower" } }`), `keys.json`
-  (`ctrl-s t` → `mod.open:agent-tower`), and `model.test.mjs`.
+- `mods/agent-tower/`: `main.js`, `model.js`, the views `board.js`, `timeline.js`,
+  `radar.js`, `watchlist.js`, and `adopt.js`, `marks.js` (shared marks), `perf.js`,
+  `mod.json` with `place: "none"` and the window overlay, `NOTICE`, `eye.svg`, the
+  `view-*.svg` icons, and the scripts `tower-new`, `tower-adopt`, `tower-names`, `tower-eye`.
+- Layouts `layouts/tower*.json`: `tower` (Herdr's `main` layout with the `sidebar-lists`
+  column holding a single block `{ "id": "tower", "content": { "mod": "agent-tower" } }`),
+  `tower-solo`, `tower-wide`, `tower-stack` (see the panel), `tower-work`, `tower-personal`,
+  `tower-investing` (areas' own windows, named by an area's `layout`), and `tower-window`,
+  the old whole-window layout: still understood, never switched to (the whole-window shape
+  now hides the sidebar column). Every one but `tower-window` has the stack `work-view` with
+  `tower-stage` and a `tower-viewbar` block, shown only when Views switch is "A bar above
+  the centre".
+- `keys.json`: `ctrl-s t` opens the window (`mod.open:agent-tower`), `ctrl-s /` searches,
+  `ctrl-s s` List, `ctrl-s o` Board, `ctrl-s g` Timeline, `ctrl-s r` Radar, `ctrl-s v`
+  Watchlist, `ctrl-s a` the next area, `ctrl-s m` flips the shown view between beside the
+  list and the whole window.
+- Tests: the `*.test.mjs` files in the item folder, run one at a time by `node test.mjs`.
 - `model.js` holds the pure functions (work items, groups, merging alike rows, repeat notes,
   the home machine, spaces, the close set, ages, machines, start bookkeeping);
   `node agent-tower/model.test.mjs` checks that every agent shows exactly once, every
@@ -621,24 +704,29 @@ come from the app's program table.
 - Live data: `terminals()` (labels, status word, report kind and msg, turn, status_ms,
   title, name, template, parent, state, program), `agents()` (status as shown, panes,
   focus), `focused()`, `spaces()`, `machines()`, `theme()`, `layout()` (the sidebar's
-  width), `window().platform`, `shared("space.colors")`.
-- Commands: `space.new`, `space.rename`, `space.select`, `pane.focus`, `terminal.peek`;
+  width), `window().platform`, `panes()`, `home()`, `appHome()`, `layouts()` and
+  `knownAgents()`.
+- Commands: `space.new`, `space.rename`, `space.select`, `tab.new`, `tab.rename`,
+  `pane.focus`, `terminal.keep`, `terminal.pin`, `layout.switch`, `layout.show`,
+  `layout.hide`, `layout.select`, and for the pane header `pane.split`, `pane.zoom`,
+  `pane.close`; the peek is the mod's own `dialog` overlay, not `terminal.peek`;
   `closeOverlay(props().overlay)`; `openOverlay` of Herdr's `menu` mod for a space, with
   the props the shipped `spaces` mod passes.
 - The item menu is a `popup` overlay of this same mod (`props: { menu, from, keys, space }`,
   as Herdr's agents mod opens its sort menu; `keys` holds every member of a merged row). It
-  asks the copy that opened it to rename or close through
-  `setShared("agent-tower.request", { from, keys, action, addresses? })`; only
+  asks the copy that opened it to rename, close, start a new lead (`newLead`) or make a task
+  (`adopt`, with `space`) through
+  `setShared("agent-tower.request", { from, keys, action, addresses?, space? })`; only
   the copy whose random id is `from` acts on it, and clears it.
 - `hc(["label", address, "k=v", …])`, `hc(["kill", address])`, `hc(["rm", address])`,
   `hc(["machine", "ls", "--json"])`, and for Connect `hc(["machine", "rm", …])` and
   `hc(["machine", "add", …])`; `cx.write_to_clipboard` for Copy. Remote terminals are
   addressed `machine/tN`.
-- `exec(namer[0], namerArgs(namer, prompt), { timeout: 60000 })` on this computer for the
-  name. Arguments are lists, never a
-  shell line.
-- Text inputs: `InputState` + `Input` from `gpui-base`, one for the composer and one for
-  rename, both made in `init`.
+- `exec("sh", ["-c", '"$@" </dev/null', "sh", namer[0], ...namerArgs(namer, prompt)], {
+  timeout: 60000 })` on this computer for the name: stdin is closed so `claude -p` does not
+  wait for it; the arguments are still a list, never a built shell line.
+- Text inputs: `InputState` + `Input` from `gpui-base`, four of them made in `init`: search,
+  the composer, the Eye's composer and rename.
 - The tower dir is `~/.config/agent-tower` for the Herdr app itself; a Herdr with its own
   app home (a sandbox) uses `<app home>/agent-tower` for its inbox, outbox and settings,
   so two apps on one machine never take each other's requests or settings. The Eye's start
@@ -648,13 +736,18 @@ come from the app's program table.
   gives null for a missing file); when neither exists the mod uses its built-in defaults (it
   does not write the file). A file that is not valid JSON gets a toast naming it, and the
   defaults: `{ areas: [{ id, label, machines?: [name], default?: true,
-              eye?: { agent?: id, folder?: path, rules?: [text] } | false, taskRoot?: path }],
+              eye?: { agent?: id, folder?: path, rules?: [text] } | false, taskRoot?: path,
+              layout?: name, views?: [view id], buttons?: [recipe id] }],
      agents: [{ id, label, argv: [..] }],
      roles: { eye?: id, lead?: id, worker?: id, namer?: [argv] },
      recipes: [{ id, label, area, machine?: name, folder?: path, rules?: [text],
                  lead?: id, worker?: id, argv?: [..] (old files) }],
      skill: name | null, contract: text with {id}, taskRoot?: path (default "~/tasks"),
-     doneSignal?: "dot" | "pulse" | "line" | "off" }`.
+     doneSignal?: "dot" | "pulse" | "line" | "off",
+     eye?: { folder?: path | null, rules?: [text] }, perf?: boolean }`.
+  An area's `layout` is its own window, `views` the views it offers (the first is where it
+  opens), `buttons` the recipes shown as buttons. The top-level `eye` defaults to no folder
+  (`<tower folder>/eye/<area id>`) and no rules; `perf` defaults to false.
   Parsed by `model.parseConfig`: a part in the wrong shape falls back to its default and is
   named in a toast; `roles` fill in per role. Old files keep loading: `activities` and a
   recipe `activity` (the new names win when both are there), recipes with `argv` and no
@@ -662,8 +755,14 @@ come from the app's program table.
   Opus and Sonnet (`claude --model <m> --permission-mode auto`), pi, Codex
   (`codex --no-daemon`); lead and eye Claude · Fable, worker Claude · Opus, namer haiku; one recipe per area, "A
   lead here", no machine, no rules; skill "tower".
-- `cx.timer.every(60000)` for ages, `cx.timer.every(30000)` for machines,
-  `cx.timer.every(1500)` only while a started task is still looking for its terminal.
+- `cx.timer.every(60000)` for ages, `cx.timer.every(30000)` for settings and machines
+  (machines every 2 minutes while Herdr is in the background), `cx.timer.every(5000)` for the
+  inbox, `cx.timer.every(2000)` for names, `cx.timer.every(1500)` only while a started task
+  is still looking for its terminal.
+- With `"perf": true` in the settings the mod appends one line per render (`{at, view, ms,
+  elements}`) and per command (`{at, what, ms}`) to `<tower folder>/perf.jsonl`, never
+  terminal text; past 1 MiB the file moves to `perf.jsonl.1`. Herdr cuts a mod's render off
+  at 50 ms; `perf.test.mjs` fails a view projected over 25 ms on the Mac.
 - The row, group label, tree lines, status marks, fold chip, rail test, repeat notes,
   avatar colours, machine line (Copy, Connect) and menu are adapted from Herdr's `agents`,
   `spaces` and `menu` mods (Apache-2.0, see `NOTICE`).
@@ -671,12 +770,15 @@ come from the app's program table.
 ## Watch out
 
 - `run()` returns nothing, so a new lead is found by its space's name and machine among
-  spaces that were not there before the start. Two starts with the same words within a
-  minute would confuse it: a second start with a pending name is refused.
+  spaces that were not there before the start. Two starts on one machine are told apart by
+  their placeholder name ("New task", "New task 2", …); a second start with the same words
+  while the first is still starting is refused.
 - A remote space's id is `machine/<id>`; the `herdr.space` label on its terminals holds the
   id without the machine prefix.
-- An empty label value deletes the label; a title is never written empty, and the mod
-  writes only `task.*` keys.
+- An empty label value deletes the label; a title is never written empty. Besides `task.*`
+  keys the mod writes `tower.eye` and `tower.area` on an Eye, `tower.space-name` and
+  `tower.tab-name` for names, and `herdr.space` and `herdr.tab` only to keep a terminal in a
+  tab.
 - The app's `terminals()` may carry no `status_ms`; ages then start when the mod first sees
   a terminal. Each copy of a mod gets its own `localStorage`, which is why the times live
   in `shared`.
@@ -684,18 +786,29 @@ come from the app's program table.
   by what hc and `machines()` say.
 - hc removes an ended terminal's record after 24 hours, labels included. A lead must stay
   alive until its task is closed; the mod never treats an ended lead as a finished task.
-- The docked list publishes the area it shows in `shared("agent-tower.area")` (on load and
-  on every switch; the window does not), so the panel can clear a selection from another
-  area.
-- Shared state lives under `agent-tower.*` (changes, seen, titles, selected, pin, area, request,
-  areaLeft, doneSignal, leadPick, inboxLease).
+- `shared("agent-tower.area")` is the shown area. The docked list publishes it on load
+  (once the settings are read) and when its area changes, and follows it when another copy
+  moves it. Any copy that switches area through `goArea` publishes it too, the window
+  included: an area word in the header, a Line for several finishes, the whole window's area
+  chips, `ctrl-s a` (taken by the docked list, or by the stage while the list is hidden).
+  So does the copy that carries out a view's request (the docked list while it shows, else
+  the stage) when a task of another area is gone into or picked. The window starts on the
+  shared area and does not follow it later. The panel does not read it: it shows whatever
+  is selected.
+- Shared state lives under `agent-tower.*`: changes, changesV, seen, titles, selected, pin,
+  area, request, areaLeft, doneSignal, rowMark, viewSwitch, `choice.<name>`, hideText,
+  leadPick, warned, view (`{view, shape, back}`), areaMemory, arrive, baseLayout,
+  eyeStarting, compose, draft, folds, kept, moment, recorded, peeked, act, actor and a few
+  more `main.js` names. The inbox and recorder leases are the files `inbox.lease` and
+  `recorder.lease` in the tower dir, not shared keys.
 - A fast namer can answer before `terminals()` shows the `task.by=raw` just written: the
   name is dropped only when `task.by` is there and not `raw`.
-- `tower-new` is run with `sh`, so it needs no exec bit; it uses only `awk`, `date`, `mv`.
-- A copy that reloads hands the inbox over through the lease: released on close, otherwise
-  free 75 s after its last renewal.
-  Until a new key is written, `changes`, `seen` and `titles` are read from the old
-  `agent-tasks.*` keys, so ages and seen marks carry over the rename.
+- `tower-new` is run directly as `"$TOWER_NEW"`, so it must stay executable; it is plain `sh`
+  and uses only `awk`, `date`, `mv`, `mkdir`, `tr`, `sleep` and `rm`.
+- A copy that reloads hands the inbox over through the lease file: released on close,
+  otherwise free 20 s after its last renewal (renewed every 10 s).
+  Until a new key is written, `changes`, `seen`, `titles` and `areaLeft` are read from the
+  old `agent-tasks.*` keys, so ages and seen marks carry over the rename.
 - Labels are not protected: only this mod writes `task.title`, `task.by`,
   `task.recipe` and `task.area`; leads write `task.id` and `task.role` on their workers.
 - The mod kills terminals only on "End all"/"End it", only those of the items the menu was
@@ -741,7 +854,7 @@ come from the app's program table.
 - A space row selects its space on click and opens Herdr's space menu on right-click;
   "Space menu" in the item menu does the same for the item's space.
 - With a worker on a machine that does not answer, "End task…" says so and ends nothing;
-  a task whose lead's record is gone keeps its title and asks "End its N workers?"; a start
+  a task whose lead's record is gone keeps its title and asks "End <title>'s N workers?"; a start
   on a silent machine starts nothing.
 - Clicking an item sets `agent-tower.selected`; closing a peek leaves it there; "Details"
   sets it and shows `tower-detail`.
@@ -753,7 +866,7 @@ come from the app's program table.
   its red count.
 - With Work shown and ten background runs finishing in Personal, Dot shows one still dot
   after "Personal", Pulse breathes and goes still 5 to 6 minutes after the newest finish,
-  Line shows "Personal · 10 finished", and Off shows nothing; switching into Personal and
+  Line shows "Personal · 10 done", and Off shows nothing; switching into Personal and
   back clears each.
 - Picking another agent in the composer starts that agent (`hc get` shows its argv), with
   the skill form of the first message naming the workers' agent and `task.lead` set; with
@@ -772,20 +885,22 @@ come from the app's program table.
 ## The panel
 
 A second mod, `agent-tower-panel`, shows the selected work item in its own column at the
-right edge: where the lead stands and what it last said, what needs you, and three rows that
-open in place (Workers, Code, Saved progress). This section describes what
+right edge: where the lead stands and what it last said, what needs you, its workers, and
+two rows that open in place (Code, Saved progress). This section describes what
 is built.
 
 ### What you see
 
-The column `tower-detail`, 340px (260–560), hidden until "Details" shows it. One card:
+The column `tower-detail`, 340px (260–560), starts shown; the close box hides it and
+"Details" shows it again. One card:
 `background`, 10px corners, a 1px `border`, 13px text.
 
 - **Rules and surfaces:** its only two inner rules are the header's bottom border and the
   footer's top border; nothing inside the body draws a line. Space separates groups, and
-  only three things are filled: a Needs you block, the Asks you card, and the hover on a
-  closed row.
-- **One radius:** rows, worker lines, "+N more", the card and the blocks all use 8px.
+  only four things are filled: the Then card, a Needs you block, the Asks you card, and the
+  hover on a closed row.
+- **One radius:** rows, worker lines, "+N more" and the blocks use 8px; the card itself is
+  10px.
 - **One fade:** 0.7 (200ms), for what a machine that doesn't answer last said and for
   ended workers.
 - **Text edge:** text starts 14px in from the card's edge everywhere (header and footer
@@ -794,12 +909,13 @@ The column `tower-detail`, 340px (260–560), hidden until "Details" shows it. O
   (the close box has `mr(-6)` so its ink lines up).
 
 Spacing uses 2, 4, 8, 12 and 16. 12 is the optical step: the body's top and bottom, the gap
-above the rows, and the space under an opened row.
+after the Needs you blocks and the Asks you card, and the space under an opened row. 16
+follows the message and the Workers section, so it usually sits above the rows.
 
 Type uses three sizes:
 - 13: the title (semibold), the state word (medium), the ask question (13/19);
 - 12: body and rows (12/18);
-- 11: meta, labels, the footer and the space tile's letter.
+- 11: meta, labels and the footer.
 
 Weight never marks a kind or a repo name; colour does. Each colour has one meaning:
 
@@ -819,101 +935,125 @@ Every "·" in the body is the same dot with 4px either side.
 Top to bottom:
 
 - **Header**, 42px:
-  - the space tile (18px); an item with no space gets its program icon (16px) centred in
-    an 18px box, so the title starts at the same x either way;
-  - the title (the lead's `task.title`, else its hc title, else the sidebar's), cut with
-    an ellipsis, full text in the tooltip;
+  - the task's mark (18px, as its list row shows it: its status mark, or under the list's
+    "agents" mark the number of agents working);
+  - the title (the lead's `task.title`, else the sidebar's title, else its hc title), cut
+    with an ellipsis, tooltip "<title> · Task <id> · <recipe> · <folder>";
+  - the machines it runs on other than this one, 12, `dim`;
   - the 24px close box "Close the panel".
 
-  No status mark. With nothing selected: "Details" and the close box.
-- **Needs you blocks**, one per blocked member, on `blocked` at 8%, 8px apart, 16px above
+  With nothing selected: "Details" and the close box.
+- **Needs you blocks**, one per blocked member, on `blocked` at 8%, 8px apart, 12px above
   what follows.
   - Line 1 (22px):
-    - the kind, in regular weight and `blocked`: hc's status kind ("question",
-      "sign-in", "permission", "error"), else "needs you";
-    - then the agent's name in `muted`, plus its age when it is the lead;
+    - the kind, in regular weight and `blocked`: "Asks you", "Needs sign-in", "Needs
+      permission", "Stopped with an error", else "Waiting on you";
     - "Go to it" on `background`, hover `hover`, 22px, 6px corners.
-  - Line 2: the agent's `status.msg`, whole, wrapped by whole words; left out when there
+  - Line 2, `muted`, one line: "lead" or the agent's name · its machine · "waiting for 2m".
+  - Line 3: the agent's `status.msg`, whole, wrapped by whole words; left out when there
     is none.
 - **State line** (20px), always about the lead (a lone agent is its own lead):
 
   | Lead | State line |
   | --- | --- |
-  | done | "Done 2m" (`done`) |
-  | idle | "Idle 3h" (`muted`) |
-  | working | "Working 12m" (`working`); nothing more while its transcript was written in the last 10 minutes |
+  | done | "Done 2m ago" ("Done just now" under a minute; `done`) |
+  | idle | "Idle for 3h" (`muted`) |
+  | working | "Working for 12m" (`working`); nothing more while its transcript was written in the last 10 minutes |
   | working, quiet 10 minutes or more | "· quiet 31m", or "· quiet since it started" when quiet as long as the state; `ansi1` when nothing else in the item moved and no tool call is open, else `dim` |
   | working, compacted after its last message | "· compacted 20m ago" |
   | ended (workers still live) | "Ended" |
-  | blocked | no state line: the block says it, with the age in line 1 |
+  | blocked | no state line: its block's second line says how long it has waited |
   | its machine doesn't answer | "Was working" / "Was done" / "Was idle" / "Was waiting on you" (`muted`), then "· work-vps doesn't answer" (12, `ansi1`); no age, no second line |
 
-  A click goes to the lead. While the Asks you card is drawn there is no state line: the
-  card carries the state.
-- **Asks you card**, on `raised`, first in the body (12px from the header rule).
-  - It shows the lead's `task.ask` label while the lead is done or idle. With no label, and
-    only while those leads remain, it shows the closing question of the lead's last message
-    under the label "Ended with a question".
-  - The label carries the state: "Asks you · idle 2m" (11, regular, `muted`).
-  - The question is 13/19, wrapped by whole words.
-  - A click goes to the lead. When the message ends with the same sentence, the message
-    drops it, and is not drawn when nothing is left.
-- **Message**, 12/18, 4px under the state line, 8px under the card:
+  After the word the line says "· lead · <machine>", then the notes, e.g. "Was working ·
+  lead · work-vps · work-vps doesn't answer".
+
+  A click goes to the lead.
+- **Then card**, only while Timeline is the view and a stretch of this task was clicked
+  there (`shared("agent-tower.moment")`): first in the body, on `raised`, 8px padding and
+  corners, 12px above what follows.
+  - Line 1 (20px, 11, `dim`): "Then", and at the right "Back to now" (20px, 6px corners, on
+    `background`, hover `hover`), which clears the moment.
+  - Line 2: the state word, 13 medium ("Working" in `working`, "Waiting on you" in
+    `blocked`, "Done" in `done`, else `muted`), then in `dim` "· 05:36–08:26 · 2h" ("since
+    05:36 · 2h" for a stretch still going), "· lead" or the agent's name, "· <machine>".
+  - What it said then: a wait whole, wrapped by whole words, in `foreground`; anything else
+    as "Said: …" in `muted`. Left out with Hide text, and for a wait still open (its own
+    Needs you block says it).
+  - "You looked after 19m" ("Not looked at yet" for a wait nobody looked at), 11, `dim`.
+  - A stretch that ended: the last 16 lines of the screen kept where it ended, masked, in
+    JetBrains Mono 10.5/14 `muted` on `background` (8px padding, 6px corners, scrolling
+    sideways); "Reading…" while the file is read, "No screen kept", or "Text hidden". A
+    stretch still going shows no screen: the agent's own is live in the centre.
+  - The moment goes when Timeline is left, another task is selected, or "Back to now".
+- **Asks you card**, on `raised`, after the Then card and any Needs you blocks (else first in
+  the body, 12px from the header rule).
+  - It shows the question the list shows for the task (a lead's or sub-lead's `task.ask`)
+    when that agent is not blocked.
+  - Label: "Asks you · lead · <machine>" (or the asker's name), 11, regular, `muted`.
+  - The question is 13/19, wrapped by whole words, at most 300 characters.
+  - A click goes to the asking agent. When the lead itself asks, its message under the card
+    is `muted` and folded to two lines, and is not drawn when it ends with a question.
+- **Message**, 12/18, 4px under the state line, 12px under the card or a Needs you block:
   - **Done or idle lead:** its last message in `foreground`. Under the Asks you card it is
     context: `muted`, folded to two lines.
-  - **Working lead:** its words from this turn in `muted`. With none yet, "Last said 12m
-    ago: …" in `dim`. A blocked lead's message uses that form too.
-  - **Live `status.msg`:** replaces the transcript text, in `foreground`.
-  - **Compacted after its last message:** "Compacted 20m ago. No message since."
+  - **Working lead:** the prompt it is working on ("Asked 5m ago: …", `muted`), else what
+    it said this turn ("Said 3m ago, still working: …", `muted`), else "Last said 12m ago:
+    …" in `dim`. A blocked lead's message uses that last form.
+  - **Activity:** while the lead works, hc's short activity line ("Running a command", else
+    its first 60 characters) sits `dim` under the state line, never in place of the message.
+  - **Compacted after its last message:** "· compacted 20m ago" on the state line only.
   - **Over 4,000 characters:** cut at a word, ending "…cut, go to the agent for the rest".
   - **Folding:** when rows follow and the text is over 135 characters or has more than two
     line breaks, it is folded to three lines ending in "…". A click on the message unfolds
     it in place, and another click folds it. There is no "Show all" line: the "…" is the cue.
-  - **Empty states,** in `dim`: "No messages to show for this agent.", "Nothing yet.
-    Messages appear here when it finishes a turn.", "The lead has ended.", "Reading
-    <machine>…", "Couldn't read <machine>: <last stderr line>", "Can't read messages on
-    <machine>: python3 isn't installed."
-- **Rows**, 12px below, 28px each, 8px corners, chevron 11px at the right. A closed row's
-  hover fills it with `hover`; an open row has no surface, and hovering it only turns its
-  chevron `foreground`. The summary never wraps: whole segments drop from the end past 48
-  characters, and the first segment always stays.
-  - **Workers:** "2 workers · 1 working", "· idle", "· ended", or just "2 workers" when
-    their machine doesn't answer. A worker with its own Needs you block is not counted
-    again. Opened: one block per worker (needs you, working, idle, then ended), at most 6
-    and then "+8 more".
-    - Line 1: icon, name, the duration ("2m", 11, `dim`) and the compact status mark, as
-      Herdr's sidebar does it. A quiet worker gets "· quiet 14m" in `ansi1`.
-    - An ended worker reads "failed" (tooltip "exit code 1") or "ended", with no mark, at
-      0.7, and does nothing on click.
-    - Line 2: its newest `<hc from>` report in the lead's transcript, as one run: the first
-      sentence, paths as file names, cut at a word to about two lines (84 characters), then
-      "· 9m ago". A click shows all of it.
-  - **Code**, when a member's folder (or a folder one level under the lead's) is a git repo.
+  - **Empty states,** in `dim`: "No <program> conversation found on <machine>", "Two
+    <program> agents share this folder on <machine>", "No message yet", "Lead ended",
+    "Reading <machine>…", "Couldn't read <machine>: <last stderr line>" (two lines at most),
+    "No python3 on <machine>".
+- **Workers**, 16px below the message: a "Workers" label (11, `dim`), then the workers that
+  are not done, idle or ended (a blocked one too, though it has its Needs you block; an idle
+  sub-lead whose own workers are busy stays), three at most, then "+N more". Done, idle and
+  ended workers are one `dim` line, "2 done · 10 idle · 1 ended" ("N failed" for an exit
+  code), that opens them and then reads "Hide …".
+  - Line 1: icon, name, its machine (`dim`), then how long in its state ("working for 2m",
+    "done 2m ago", 11, `dim`; the bare "2m" under 300px) and the status mark. A working
+    worker quiet 10 minutes or more with no tool open gets "· quiet 14m" in `ansi1`.
+  - An ended worker reads "failed" (tooltip "exit code 1") or "ended", with no mark, at
+    0.7, and does nothing on click.
+  - Line 2: its newest `<hc from>` report in the lead's transcript, as one run: the first
+    sentence, paths as file names, cut at a word to about two lines (84 characters), then
+    "· 9m ago". A click shows all of it. With no report, line 2 is the worker's own title
+    when it differs from its name.
+- **Rows**, 16px below the message or the Workers section, 28px each, 8px corners, chevron
+  11px at the right. A closed row's hover fills it with `hover`; an open row has no surface,
+  and hovering it only turns its chevron `foreground`. The summary never wraps: whole
+  segments drop from the end past 48 characters, and the first segment always stays.
+  - **Code**, when a member's folder is a git repo, or holds repos one level down with
+    changes or unpushed commits (at most 10 repos).
     - Summary: "2 checks failing · PR #412 · 19 changed", "3 commits unpushed · …",
       "19 changed · never pushed", "PR #412 · all committed", or "3 repos · 2 checks failing
       · 2 commits unpushed · …". There is no "pushed" segment.
     - Opened, one repo: one line, "rate-limiter · feature/rate-limiter · last commit 5h
       ago". The branch is the part that truncates, full in its tooltip.
-    - Two or more (at most 3): each repo's name line, then "7 changed · 1 commit unpushed ·
-      last commit 2h ago".
+    - Two or more: each repo's name line, then "7 changed · 1 commit unpushed · last commit
+      2h ago". Three are shown; past that a 22px `dim` "+N more" line (hover `hover` and
+      `foreground`) shows the rest, and stays open for that task (kept with the open rows).
     - A PR line, when there is one, opens it.
-  - **Saved progress**, when the lead's folder has a chain link: "Saved progress 1h ago",
+  - **Saved progress**, when the task has a chain link (see Reads): "Saved progress 1h ago",
     plus "· newer work unsaved" (`dim`) when the lead changed more than 10 minutes after the
     link. Opened: the link's title, then "Next: <first sentence of the next step>" as one
     wrapping run in `muted`, two lines; a click shows all of it.
-- **Footer**, 32px, 11px `dim`, pinned, the parts 4px apart with plain "·" between them:
-  - **Machine:** "this Mac", "this computer" or the hc name; the task id, recipe and rules
-    are in its tooltip.
+- **Footer**, 32px, 11px `dim`, pinned (the task id, recipe and folder are in the header
+  title's tooltip):
   - **Check:** "checking…", "checked just now", "checked 6m ago" or "couldn't check". A
-    click checks again. It turns `ansi1` past 3 minutes or after a failed check. While the
-    lead's machine doesn't answer it stays `dim`: the state line already says so in red.
-  - **Folder:** its last path segment only ("rate-limiter"), cut with an ellipsis, the full
-    path in its tooltip. It is left out when it equals the title, ignoring case.
+    click checks again, tooltip "Read again now". It turns `ansi1` past 3 minutes or after a
+    failed check. While the lead's machine doesn't answer it stays `dim`: the state line
+    already says so in red.
   - **"Hide text" / "Show text"** at the right.
-- **Nothing selected:** "Select something on the left to see where it stands." No footer,
+- **Nothing selected:** the header "Details" and the close box, an empty body, no footer,
   no reads.
-- **Everything ended:** the title stays, and the body reads "Everything in this item has
-  ended."
+- **Everything ended:** the title stays, and the body reads "Ended".
 
 ### How it behaves
 
@@ -934,7 +1074,9 @@ Top to bottom:
   - `gh pr view`, reduced to counts and the URL. It runs only on a non-default branch with
     an upstream, at most every 5 minutes per repo, and only where gh exists. It goes
     through the login shell.
-  - The newest chain link in the lead's folder.
+  - The task's chain link: the newest link on `main` of a chain named by one of the task's
+    ids, found from the lead's folder; read at most every 5 minutes and again when the lead
+    stops.
 - **When**:
   - On selecting an item, and when a member's status word or turn changes.
   - Every 60s while a member works, else every 5 minutes. After three failures in a row,
@@ -962,34 +1104,50 @@ Top to bottom:
     mixed-case base64 runs become "•••";
   - URL queries and fragments are dropped.
 
-  "Hide text" (in `localStorage` as `hideText`) also replaces the message, ask, Needs you
-  sentences, reports, saved title and Next, branch names and folder with "Text hidden" /
-  "branch hidden", and drops the tooltips except the title's.
+  "Hide text" (shared `agent-tower.hideText`, one switch for the whole Tower) also replaces
+  the title, message, ask, Needs you sentences and saved progress with "Text hidden" and
+  branch names with "branch hidden", leaves out reports and the activity line, and drops
+  those tooltips, the title's included.
 - **Clicks**:
-  - The title, once: goes to the lead after 250ms (`pane.focus`; a lead without a pane gets a
-    tab first, as a click into the task does).
-  - The title, twice: rename. As the sidebar does it, this is one `hc label` with
-    `task.title` and `task.by=you`, and the space follows through Names.
+  - The title: a click goes into the task at once (as a click on its row does). There is no
+    rename in the panel: Rename is the list's item-menu entry.
   - The close box: `layout.hide {id: "tower-detail"}`.
-  - Rows open on their own, stay open across refreshes, and close when another item is
-    selected.
+  - Rows open on their own and stay open across refreshes; what is open (rows, unfolded
+    texts, "+N more") is kept per task, the newest 30, in shared `agent-tower-panel.view`,
+    and comes back when the task is selected again.
   - A worker's line goes to it.
   - A PR line runs `open` (macOS) or `xdg-open`, only for an `https://github.com/` URL.
-- **Area**: the sidebar publishes its active area tab as `shared("agent-tower.area")`; an
-  item of another area shows the nothing-selected state until something there is picked.
+  - A right-click opens the same menu as on the item's row: the task's menu on the header,
+    body and footer; the agent's menu on its Needs you block, the Asks you card, the state
+    line and a worker line.
+- **Area**: the panel shows whatever `shared("agent-tower.selected")` holds, in any area; it
+  never reads the area.
 
-### The four layouts
+### The layouts
 
-Three put the panel in the column `tower-detail`, after Herdr's `panel` in the `work-body`
-row:
+Every `tower*.json` holds the panel. Seven put it in the column `tower-detail` at the end of
+the `work-body` row (after Herdr's `panel` where there is one); `tower-stack` puts it in the
+sidebar:
 
 ```json
-{"id": "tower-detail", "type": "column", "hidden": true, "size": {"px": 340}, "min": 260, "max": 560,
+{"id": "tower-detail", "type": "column", "hidden": false, "size": {"px": 340}, "min": 260, "max": 560,
  "children": [{"id": "tower-panel", "type": "block", "content": {"mod": "agent-tower-panel"}}]}
 ```
 
 Herdr's `panel-body` stack keeps only `files` and `changes`. The sidebar's "Details" runs
 `layout.show {id: "tower-detail"}` in each, `tower-stack` included.
+
+- `tower.json` and `tower-work.json` (Work's own window) are the same: the column beside
+  Herdr's `panel`.
+- `tower-personal.json`, Personal's window: no tab bar and no Herdr `panel`; the column
+  follows `work-view`.
+- `tower-investing.json`, the investing area's window: no Herdr `panel`; the centre is a
+  column with the Watchlist stage (`props: {stage: true, view: "watchlist"}`, 45%) above
+  `work-view` (55%), and the column is 320px.
+- `tower-window.json`, the old whole-window layout: the sidebar is hidden and holds only the
+  list; the centre is `tower-stage-column` (the 36px `tower-stage-bar` above `tower-stage`),
+  with the column beside it.
+- The four below differ as the table says.
 
 | Layout | Difference | Terminal card at a 1280px window |
 | --- | --- | --- |
@@ -1014,25 +1172,20 @@ closes Details. Showing Details then stores "no panel" for that space.
 `sidebar-lists`, it adds:
 
 ```json
-{"id": "tower-detail", "type": "column", "hidden": false, "size": {"px": 380}, "min": 220, "max": 640, "padding": 8,
+{"id": "tower-detail", "type": "column", "hidden": false, "size": {"px": 380}, "min": 120, "max": 640, "padding": 8,
  "children": [{"id": "tower-panel", "type": "block", "content": {"mod": "agent-tower-panel", "props": {"stack": true}}}]}
 ```
 
-The list keeps the top part and Details the lower 380px, as a card 252px wide at the
-sidebar's default 268px.
+The list keeps the top part and Details the lower part, as a card 252px wide at the
+sidebar's default 268px. The panel sizes the column to what it holds, between 120 and 260px
+(`layout.resize`), so the list above keeps its Needs you group in sight.
 
 How it opens and closes:
 
-- A 1s timer, only with `props.stack`, opens Details while the panel has something to show
-  and hides it otherwise (nothing selected, or an item of another area). It decides with the
-  same `selected()` the render uses.
-- Its × keeps it closed for that item; the next selection opens it again.
+- It never opens or hides itself: × hides it and the list's "Details" shows it again.
 - The column starts visible, because a mod whose column has been hidden since the layout
-  loaded is never created, so no timer of its own could open it. Once created, the view and
-  its timer live on while the column is hidden.
+  loaded is never created, so it could not open itself.
 - If Herdr restores the layout with the column hidden, the first "Details" brings it back.
-
-The cost is height: with Details open, the list keeps about 250px at an 820px window.
 
 ### Narrower than 340px
 
@@ -1044,9 +1197,6 @@ described above. The budgets are:
 - a Code detail line, 52;
 - a worker's report, 84;
 - the message fold, 135 for three lines.
-
-Below 300px the footer leaves out the folder, and the machine name is the part that
-truncates, so "Hide text" always fits.
 
 ### Built from
 
@@ -1076,7 +1226,7 @@ truncates, so "Hide text" always fits.
 - **No pid or argv in `hc ls --json`.** The app's `terminals()` has them, because its
   records come from the full event snapshot.
 - **pi in a shared folder.** A pi lead that shares its folder with another pi can't be told
-  apart: "No messages to show for this agent."
+  apart: "Two pi agents share this folder on <machine>".
 - **Name length.** hc terminal names are at most 32 characters, so a worker name never
   reaches 40.
 - **Chain titles.** chain.mjs titles a link by its body's first `# ` heading, else by its
@@ -1112,6 +1262,7 @@ truncates, so "Hide text" always fits.
   - a worker with a long last sentence.
 - In `tower-solo`, Files closes Details and Details closes Files, in either order.
 - In `tower-stack`, with the stress fixture at the sidebar's default width:
-  - Details opens on a selection and hides with nothing selected;
+  - with nothing selected the column shrinks to 120px (the header and an empty body); a
+    selection grows it to fit, at most 260px;
   - nothing clips;
   - the same item at 340px in `tower.json` is unchanged.
