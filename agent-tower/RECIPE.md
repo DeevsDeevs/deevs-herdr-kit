@@ -246,7 +246,7 @@ One column on `chrome`, 13px text, in the vocabulary of Herdr's shipped `agents`
     in 10.5px `dim` before the mark when that is not the area's home;
   - **one line for the rest**: "2 done · 10 idle" with a chevron, 12px `dim`; a click opens
     their rows under it. A worker's Done stays Done (it finished and reported; agreed with
-    the panel), but only the lead's Done makes the task Done.
+    the panel), but only the lead's Done makes the task Done, and only once nothing in it works.
   The tree is open while the task is selected or something in it works or waits, folded
   otherwise; a click on the chip opens or folds it and that choice wins.
 - **A starting task**: a 30px row in Working with the working mark, your words in `muted`,
@@ -340,9 +340,11 @@ come from the app's program table.
   plain worker's `task.ask` doesn't count. A question in an agent's text is never a wait. Such an item
   shows "Asks you · <the ask>" and the "!" mark, counts in the area's number, and leaves
   when the label is cleared. (The status bar's "needs you" is Herdr's own count of blocked
-  agents; a mod can't add to it.) Else it is finished
-  when its lead is done (it finished and nobody has looked since), else working when
-  anything in it works, else idle (see Done and Earlier below). An area's pill counts its
+  agents; a mod can't add to it.) Else it is working when anything in it works, whatever
+  its lead's word (a done lead whose workers still work: Working); else finished when its
+  lead is done (it finished and nobody has looked since); else idle (see Done and Earlier
+  below). Every view (Board's columns, Radar, Watchlist, Timeline's line and its "now", the
+  rail, the panel's header mark) shows that same word. An area's pill counts its
   Needs you only.
 - **Done**: a lead with a pane is Done while Herdr says "done" (Herdr clears it when
   someone looks). A lead without a pane (an `hc run` lead, which `agents()` never lists) is
@@ -352,7 +354,9 @@ come from the app's program table.
   `shared("agent-tower.seen")` (pruned like the change times, below); a stored time at or
   after the lead's finish counts as seen (older versions stored the task's newest time). Only
   a new change of the lead makes it Done again; a worker's change neither brings it back nor restarts its 12
-  hours. It then falls to Idle or Earlier.
+  hours. It then falls to Idle or Earlier. A done lead whose workers still work shows in
+  Working; when the last one stops it is Done, unless it was seen meanwhile (in its pane, by
+  `herdr.seen`, or by a click on its row in Working, which stores the same time).
 - **Earlier**: an item that would be idle, quiet for 24 hours or more.
 - **Order**: inside a group, Earlier too, most recently changed first; in Working an item quiet
   for 20 minutes goes first; the same time goes A-Z by title (case and accents ignored, numbers
@@ -667,8 +671,9 @@ come from the app's program table.
   whose lead's record is gone still shows its title, not its id.
 - **Selection**, for the panel mod: `shared("agent-tower.selected")` is
   `{ key, lead: <live lead address or null>, members: [live addresses], title, ids, area,
-  status, need }` or null (`ids`: the task ids folded in; `area`: the area the list shows it
-  in; `status`: the row's word; `need`: `{by, kind, text}` while it needs you, else null).
+  status, leadWord, need }` or null (`ids`: the task ids folded in; `area`: the area the list
+  shows it in; `status`: the row's word; `leadWord`: the lead's own word, as on Board's Lead
+  chip; `need`: `{by, kind, text}` while it needs you, else null).
   Focus moving to a terminal of an item selects that item (null for a terminal that is no
   item's). A click on an item, a member or a worker row selects its item and pins it
   (`shared("agent-tower.pin")`, `{key, space}`): it stays selected through focus changes,
@@ -864,7 +869,8 @@ come from the app's program table.
   composer.
 - A blocked agent, anywhere in an item's tree, puts the item under Needs you with its kind
   and sentence, and a click goes to that agent; a lead that finishes unseen moves its item
-  to Done, not Needs you, and out of the pill's count. A paneless Done row leaves Done when
+  to Done, not Needs you, and out of the pill's count, once none of its workers works (till
+  then it stays in Working). A paneless Done row leaves Done when
   clicked, or after 12 hours; anything quiet for a day is under Earlier.
 - Three alike headless runs show as one "×3" row; "End all 3" ends exactly those three.
 - Narrowing the sidebar below 160px shows the rail; a machine that needs a login shows its
@@ -975,7 +981,10 @@ Top to bottom:
   - Line 2, `muted`, one line: "lead" or the agent's name · its machine · "waiting for 2m".
   - Line 3: the agent's `status.msg`, whole, wrapped by whole words; left out when there
     is none.
-- **State line** (20px), always about the lead (a lone agent is its own lead):
+- **State line** (20px), always about the lead (a lone agent is its own lead), in its own
+  word: a Done the list shows as seen reads idle; under a task Working by its workers the
+  lead's unseen Done stays "Done 2m ago" (the list's `leadWord`), while the header's mark says
+  Working:
 
   | Lead | State line |
   | --- | --- |

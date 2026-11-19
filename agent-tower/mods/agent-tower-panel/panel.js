@@ -112,8 +112,9 @@ export function detailOf(selection, terms, listed, spaceList, changes) {
   const row = (t, isLead) => ({ t, isLead, status: statusOf(t, listed), at: changedAt(t, changes) });
   const workers = members.map((t) => row(t, false));
   const leadRow = lead ? row(lead, true) : null;
-  // The list's seen/12 h rule: a done lead the row no longer shows as Done reads idle here too.
-  if (leadRow?.status === "done" && selection.status && selection.status !== "done") leadRow.status = "idle";
+  // The list's seen/12 h rule: a done lead the list no longer shows as Done reads idle here too.
+  // A task Working by its workers keeps its lead's unseen Done (the list's leadWord).
+  if (leadRow?.status === "done" && selection.status && selection.status !== "done" && selection.leadWord !== "done") leadRow.status = "idle";
   const blocked = [...(leadRow ? [leadRow] : []), ...workers].filter((a) => a.status === "blocked");
   // The ask the list shows (a lead's or a sub-lead's task.ask), when no blocked agent comes first.
   const need = selection.need ?? null;

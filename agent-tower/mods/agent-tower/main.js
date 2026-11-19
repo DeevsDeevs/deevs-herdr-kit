@@ -2170,9 +2170,10 @@ export default class AgentTasks extends View {
     return model.rowWord(item, { listed: view.listed, seen: view.seen, now: view.now, changes: this.changes });
   }
 
-  // A click on a Done row counts as seeing it: a lead without a pane leaves Done.
+  // A click on a Done row counts as seeing it: a lead without a pane leaves Done. So does a click
+  // on a task Working by its workers whose lead is done: its Done stays seen when they stop.
   see(item, groupId) {
-    if (groupId !== "done" || !item.lead) return;
+    if (!item.lead || (groupId !== "done" && !(groupId === "working" && item.status === "done"))) return;
     setShared(SEEN, { ...(sharedOr(SEEN) ?? {}), [item.lead.address]: this.changes.get(item.lead.address)?.at ?? 0 });
   }
 
@@ -2281,7 +2282,7 @@ export default class AgentTasks extends View {
     const drawn = model.displayRows(item, (k) => this.opened.has(k) || Boolean(this.matchedIn?.has(item.key)));
     return [
       row,
-      ...(item.leadGone ? [] : [this.subRow(t, { t: item.lead, lines: [drawn.length ? "├" : "└"], status: item.status }, view, item, "Lead")]),
+      ...(item.leadGone ? [] : [this.subRow(t, { t: item.lead, lines: [drawn.length ? "├" : "└"], status: item.leadWord ?? item.status }, view, item, "Lead")]),
       ...drawn.map((r) => (r.fold ? this.foldRow(t, item, r) : this.subRow(t, r, view, item))),
       // Agents whose starter is gone, that name this item's space: one folded line after its
       // real workers; open, their rows.

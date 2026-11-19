@@ -57,6 +57,9 @@ assert.equal(panel.detailOf({ ...selection, need: { by: "vps/t3", kind: "Needs s
 assert.equal(panel.detailOf({ ...selection, need: null }, terms, new Map(), spaces, changes).ask, null, "the list says nothing waits");
 assert.equal(sub.leadRow.status, "idle", "done, but the row no longer shows it as Done");
 assert.equal(panel.detailOf({ ...selection, status: "done" }, terms, new Map(), spaces, changes).leadRow.status, "done");
+// working-wins: a task Working by its workers keeps its lead's unseen Done on the lead's line.
+assert.equal(panel.detailOf({ ...selection, status: "working", leadWord: "done" }, terms, new Map(), spaces, changes).leadRow.status, "done", "the lead's unseen Done under a Working task");
+assert.equal(panel.detailOf({ ...selection, status: "working", leadWord: "idle" }, terms, new Map(), spaces, changes).leadRow.status, "idle", "seen: idle");
 assert.equal(panel.detailOf({ key: "agent:t6", lead: "t6", members: ["t6"], title: "shad" }, [term("t6", { title: "π - shad" })], new Map(), spaces, {}).title, "shad", "the list's title, not the terminal's");
 // A done worker stays done (it finished and reported), as in the list.
 assert.equal(panel.statusOf(term("w", { status: "done" }), new Map()), "done");

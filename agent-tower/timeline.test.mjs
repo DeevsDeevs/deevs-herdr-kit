@@ -276,6 +276,12 @@ const recorded = {
     ["working", 90, 60, "rebuilt", "R", false],
     ["working", 60, 40, "", "L", false], ["blocked", 40, 30, "", "W", false], ["working", 30, 0, "", "L", true],
   ], "a worker's Done does not outrank the lead's Working");
+  // working-wins: the lead's Done does not outrank a worker's Working; once the worker stops, Done.
+  const ww = { lanes: [{ a: "L", role: "lead", stretches: [st("working", 60, 30), st("done", 30, 0)] },
+    { a: "W", role: "worker", stretches: [st("working", 50, 10), st("idle", 10, 0)] }], folded: [] };
+  assert.deepEqual(T.summaryOf(ww).map((x) => [x.s, (now - x.from) / MIN, (now - x.to) / MIN, x.lane.a]), [
+    ["working", 60, 10, "L"], ["done", 10, 0, "L"],
+  ], "a worker's Working outranks the lead's Done");
   const quiet = { item: { group: "idle" }, lanes: [{ live: "idle", stretches: [st("working", 600, 500), st("idle", 500, 0)] }], folded: [] };
   assert.equal(T.isQuiet(quiet, ago(480)), true);
   assert.equal(T.isQuiet({ ...quiet, lanes: [{ live: "blocked", stretches: [] }] }, ago(480)), false);
