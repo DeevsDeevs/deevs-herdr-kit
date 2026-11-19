@@ -711,6 +711,10 @@ export default class AgentTasks extends View {
       cx.notify();
     });
     cx.timer.every(60000, (cx) => cx.notify());
+    // Changes get their time every second, drawn or not: Herdr draws no covered, minimized or
+    // hidden window, but runs its timers.
+    this.trackTick(cx, false);
+    cx.timer.every(1000, (cx) => this.trackTick(cx));
     this.refreshMachines(cx);
     cx.timer.every(30000, (cx) => {
       perfLog.flush();
@@ -2169,7 +2173,7 @@ export default class AgentTasks extends View {
   // A click on a Done row counts as seeing it: a lead without a pane leaves Done.
   see(item, groupId) {
     if (groupId !== "done" || !item.lead) return;
-    setShared(SEEN, { ...(sharedOr(SEEN) ?? {}), [item.lead.address]: model.changedAt(item, this.changes) });
+    setShared(SEEN, { ...(sharedOr(SEEN) ?? {}), [item.lead.address]: this.changes.get(item.lead.address)?.at ?? 0 });
   }
 
   // The selected item, for the panel mod (see model.nextSelection). Shared, so the docked list
@@ -2693,19 +2697,9 @@ export default class AgentTasks extends View {
       if (b || now - this.born.at >= 60000) this.born = null;
       if (b) this.label(cx, b.address, adopt.birthLabels(b.space, this.shownArea().id), "The new space could not become a task");
     }
-    // Which machines answer, first: per-terminal memory is only dropped for those.
-    this.reach = model.reachability(this.reach, this.listedMachines, machines(), now);
-    // This copy keeps its own map (read from the shared one once), so a render doesn't convert and
-    // rebuild it; what it learns it shares, and its version tells the model's cache.
-    if (!this.changes) {
-      this.changes = new Map(Object.entries(sharedOr(CHANGES) ?? {}));
-      this.changesVersion = 0;
-    }
-    if (model.trackChanges(this.changes, terms, now, this.reach)) {
-      this.changesVersion++;
-      setShared(CHANGES, Object.fromEntries(this.changes));
-      setShared(CHANGES_V, `${this.id}:${this.changesVersion}`);
-    }
+    // Changes tracked now too (the tick's notify is not allowed here); this copy's recorder takes
+    // them from the model below.
+    this.track(terms, now, null);
     const seen = sharedOr(SEEN) ?? {};
     const unseen = new Set(model.forgettable(Object.keys(seen), terms, this.reach));
     if (unseen.size) setShared(SEEN, Object.fromEntries(Object.entries(seen).filter(([a]) => !unseen.has(a))));
@@ -2940,8 +2934,8 @@ export default class AgentTasks extends View {
   // ── The recorder (needs-timeline.md): the files under <tower folder>/timeline. ──
 
   // The recorder's lease: model.leaseKeeper on <tower folder>/recorder.lease (no redraw), renewed
-  // every 20 s and free after 45 s, looked at every 20 s by each copy that can record (the docked
-  // list, the stage). A copy that takes it reads the record again first (another copy wrote it
+  // every 20 s and free after 45 s, looked at every 20 s by each docked list (the only copies that
+  // record: see recordNow). A copy that takes it reads the record again first (another copy wrote it
   // meanwhile), then starts with the old holder's last renewal as its sign of life: a takeover after
   // a reload leaves at most about a minute unrecorded and draws no false "Herdr was closed" band.
   startRecorder(cx) {
@@ -2960,6 +2954,8 @@ export default class AgentTasks extends View {
       }
       this.recKeeper.take().then(async (ok) => {
         if (!ok) return;
+        // Taken back: nothing goes into the old record while the files are read again.
+        this.recReady = false;
         await this.loadRecord();
         this.recReady = true;
         cx.notify();
@@ -3132,6 +3128,68 @@ export default class AgentTasks extends View {
   // Whether this copy writes the record: it holds the lease and has read the record since taking it.
   holdsRecorder() {
     return Boolean(this.recKeeper?.held() && this.recReady && this.rec);
+  }
+
+  // Every second in each list copy, drawn or not: changes get their time, then the recorder's
+  // holder records.
+  trackTick(cx, redraw = true) {
+    const now = Date.now();
+    const terms = terminals();
+    this.recordNow(terms, now, this.track(terms, now, redraw ? cx : null), cx);
+  }
+
+  // Changes get their time here, from the tick and at the start of each draw (so a draw never shows
+  // a word a second old). Copies share one map: another copy's writing is folded in first
+  // (model.mergeChanges: the earlier time for the same word and turn wins), so every copy ends with
+  // the same times. Whether this map moved; cx: ask for a redraw when it did (never in a draw).
+  track(terms, now, cx) {
+    // Which machines answer, first: per-terminal memory is only dropped for those.
+    this.reach = model.reachability(this.reach, this.listedMachines, machines(), now);
+    if (!this.changes) {
+      this.changes = new Map(Object.entries(sharedOr(CHANGES) ?? {}));
+      this.changesVersion = 0;
+    }
+    let tell = false;
+    let changed = false;
+    const v = shared(CHANGES_V) ?? null;
+    if (v != null && v !== this.changesSeenV && !String(v).startsWith(`${this.id}:`)) ({ changed, tell } = model.mergeChanges(this.changes, sharedOr(CHANGES)));
+    this.changesSeenV = v;
+    const tracked = model.trackChanges(this.changes, terms, now, this.reach);
+    // A new version for every writing, a correction too: readers convert the map only when it moves.
+    if (tracked || changed || tell) this.changesVersion++;
+    if (tracked || tell) {
+      setShared(CHANGES, Object.fromEntries(this.changes));
+      setShared(CHANGES_V, (this.changesSeenV = `${this.id}:${this.changesVersion}`));
+    }
+    // A change another copy saw first is still news to this copy's recorder.
+    const moved = tracked || changed;
+    if (moved && cx) cx.notify();
+    return moved;
+  }
+
+  // The holder records from the tick, drawn or not: on a change, a new look, a terminal ending, and
+  // every 30 s (a label, a title). A tick over REC_GAP_MS after the last one (the computer slept)
+  // marks the time between as not recorded.
+  recordNow(terms, now, tracked, cx) {
+    if (!this.holdsRecorder()) return;
+    if (this.started && this.recTickAt && now - this.recTickAt > model.REC_GAP_MS) {
+      model.recordStart(this.rec, now, this.recTickAt);
+      this.recDirty = true;
+    }
+    this.recTickAt = now;
+    const agentList = agents();
+    const focus = agentList.find((a) => a.focused)?.address ?? focused()?.terminal ?? null;
+    const look = window()?.active ? focus : undefined;
+    let live = 0;
+    for (const t of terms) if (t.state === "live") live++;
+    if (this.started && !tracked && look === this.recordedLook && live === this.recLive && now - this.recModelAt < 30000) return;
+    this.recLive = live;
+    this.recModelAt = now;
+    const listed = new Map(agentList.map((a) => [a.address, a.status]));
+    const eye = model.findEye(terms, EYE_PER_AREA ? this.shownArea()?.id : null, this.config);
+    const m = model.taskModelOnce({ terms, listed, spaces: spaces(), config: this.config, changes: this.changes, changesVersion: this.changesVersion,
+      seen: sharedOr(SEEN) ?? {}, now, titles: sharedOr(TITLES) ?? {}, reach: this.reach, eye }, (this.modelMemo ??= {}));
+    this.recordTick(terms, m.all, now, this.reach, focus, cx);
   }
 
   recordTick(terms, all, now, reach, focus, cx) {
@@ -3547,9 +3605,9 @@ export default class AgentTasks extends View {
       this.dirty = false;
       cx.notify();
     });
-    // Hidden in the whole-window shape, the list's copy may stop drawing: the stage can record too.
     this.id = model.newId();
-    this.startRecorder(cx);
+    // No recorder here: every layout with a stage has the docked list, which records from its
+    // timer even while hidden, with the machines' reach the stage doesn't keep.
     // In the whole-window shape the list's copy is hidden: the stage takes the view keys.
     cx.spawn(async (cx) => {
       for (;;) {
@@ -3594,7 +3652,6 @@ export default class AgentTasks extends View {
     const m = model.taskModelOnce({ terms, listed, spaces: spaces(), config, changes, changesVersion: changesV ?? undefined, seen, now,
       titles: sharedOr(TITLES) ?? {}, eye: model.findEye(terms) }, (this.modelMemo ??= {}));
     this.wordCtx = { listed, seen, now, changes };
-    this.recordTick(terms, m.all, now, [], focused()?.agent ?? focused()?.terminal ?? null, cx);
     if (sidebarHidden()) this.arrive(m.all);
     this.takeAct(m.all, cx);
     this.takeRequest(cx);

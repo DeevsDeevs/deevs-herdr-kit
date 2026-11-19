@@ -346,18 +346,31 @@ come from the app's program table.
   Needs you only.
 - **Done**: a lead with a pane is Done while Herdr says "done" (Herdr clears it when
   someone looks). A lead without a pane (an `hc run` lead, which `agents()` never lists) is
-  Done for 12 hours after its last change, or until it is clicked here: the click stores
-  its address and that change in `shared("agent-tower.seen")` (pruned like the change
-  times, below); a later change makes it Done again. It then falls to Idle or Earlier.
+  Done for 12 hours after the lead's own last change, until Herdr's `herdr.seen` label on it
+  reaches its turn (someone looked at it in Herdr or another client), or until it is clicked
+  here: the click stores its address and the lead's own change time in
+  `shared("agent-tower.seen")` (pruned like the change times, below); a stored time at or
+  after the lead's finish counts as seen (older versions stored the task's newest time). Only
+  a new change of the lead makes it Done again; a worker's change neither brings it back nor restarts its 12
+  hours. It then falls to Idle or Earlier.
 - **Earlier**: an item that would be idle, quiet for 24 hours or more.
 - **Order**: inside a group, most recently changed first; in Working an item quiet for 20
   minutes goes first; Earlier is A-Z by title (case and accents ignored, numbers by value).
 - **Age** is the time since the mod saw a terminal's status word or turn change, on this
   computer's clock, first seen at the core's `status_ms` when there is one, else at that
-  moment. A `done` that comes without `working` before it (Herdr reports an old agent done
-  again when it is opened or peeked at) is no new finish; its time stays. The times are kept
-  in `shared("agent-tower.changes")` so the docked list and the
-  window agree and they survive a restart. A terminal no longer in `terminals()` is marked
+  moment. Each list copy (the docked list, the window) looks every second from a timer,
+  drawn or not (Herdr draws no covered, minimized or hidden window but runs its timers), so a
+  change gets its time within a second; each draw of a list copy looks first too, so it never
+  shows a word a second old. A `done` that comes
+  without `working` before it at the same turn (Herdr reports an old agent done again when
+  it is opened or peeked at) is no new finish; its time stays. A higher turn is a new finish
+  even when its `working` fell between two looks; without a turn the word alone decides. The
+  times are kept in `shared("agent-tower.changes")` so the copies agree and they survive a
+  restart: before it looks, a copy folds in another copy's writing (`model.mergeChanges`: for
+  the same word and turn the earlier time wins, for another state the later sighting, on the
+  same time the higher turn, then the word), so every copy ends with the same times; only the
+  copy whose entry won writes back, under a new `changesV`. A change another copy saw first
+  is still news to the recorder's holder. A terminal no longer in `terminals()` is marked
   gone and forgotten a day later (`model.forgettable` picks which may be marked), but only
   on a machine that answered and showed terminals in that read: a quiet machine, or the
   empty read right after a start, loses nothing; one that comes back with the same word and
@@ -369,6 +382,9 @@ come from the app's program table.
   terminal inside (a terminal without a `herdr.space` label counts for the space of
   whatever started it). A click runs `space.select {id}`; a right-click opens Herdr's own
   space menu, the way the shipped `spaces` mod opens it.
+- **Board's Lead chip** (on the selected card) shows the lead's own word (`leadWord`:
+  blocked when the ask is the lead's own, a seen Done idle), not the task's, so an idle lead
+  whose worker asks or works is no blocked or busy lead.
 - **Views**: List, Board, Timeline, Radar and Watchlist. An area offers List, Board,
   Timeline and Radar unless its `views` setting lists others; the first listed is where it
   opens. A view other than List shows either in the centre beside the list or over the
@@ -525,7 +541,13 @@ come from the app's program table.
   on wrong usage. The docked copy (never a window) watches the inbox with `watchFolder`,
   scans it at start and on a 5 s tick, and acts only while it holds the lease file
   `<tower dir>/inbox.lease` (`model.leaseKeeper`; renewed every 10 s, free 20 s after the
-  last renewal, a copy without it tries every 10 s, released when the copy closes). The
+  last renewal, a copy without it tries every 10 s, released when the copy closes). Timeline's
+  recorder works the same way on `recorder.lease` (renewed every 20 s, free 45 s after), held
+  only by a docked list (every layout with a view has one; a view's own copy never takes it;
+  a copy that takes it back records nothing until it has read the record again):
+  the holder records from its one-second look, drawn or not, on a change, a new look, an
+  ended terminal and every 30 s, and a look that comes over 2 minutes after the last (the
+  computer slept) marks the time between as not recorded. The
   tower dir holds `config.json`, `inbox/`, `outbox/`, `inbox.lease`, `recorder.lease`,
   `bin/` (workers' scripts), `eye/<area id>/`, `use.jsonl`, `use.md`, `perf.jsonl`,
   `timeline/` (`events.json`, `screens.json`, `beat.json`, `index.json`, `ended.json`,

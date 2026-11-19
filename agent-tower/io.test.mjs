@@ -26,7 +26,7 @@ function world(files = {}) {
   return globalThis.__fx;
 }
 
-async function copy() {
+async function copy({ draw = true } = {}) {
   const { default: AgentTasks } = await import("./mods/agent-tower/main.js");
   const timers = [];
   let notified = 0;
@@ -36,7 +36,7 @@ async function copy() {
   const v = new AgentTasks();
   v.init({}, cx);
   await settle();
-  v.render(cx);
+  if (draw) v.render(cx);
   await settle();
   // The clock moves on; the leases' and the recorder's timers run when due, as Herdr would run them.
   const tick = async (ms = 5000) => {
@@ -60,6 +60,8 @@ async function copy() {
   };
   return { v, cx, tick, batch, notified: () => notified };
 }
+const agentTerm = (address, status, turn, labels = {}) => ({ address, state: "live", status, turn, program: { agent: true, name: "Claude Code" },
+  labels: { "task.id": `k-${address}`, "task.role": "lead", "task.title": `Made-up task ${address}`, ...labels } });
 const request = (fx, id) => {
   fx.files[`${INBOX}/${id}.json`] = JSON.stringify({ recipe: "no-such-recipe", words: "made-up words", at: clock });
   return `${INBOX}/${id}.json`;
@@ -471,5 +473,154 @@ const answered = (fx, id) => fx.files[`${OUTBOX}/${id}.json`] ?? null;
   fx.shared["agent-tower.request"] = { from: v.id, keys: ["task:g1"], action: "rename" };
   v.render({ ...cx, notify() { throw new Error("cx.notify in a render"); } });
   assert.equal(v.renaming, "task:g1");
+}
+
+// track-fix 1: a change tracked with no draw. The list is never drawn after its first frame (a
+// covered window), yet a flip gets its time within the second, and the list is asked to redraw.
+{
+  const fx = world();
+  fx.fixture.terms = [agentTerm("p1", "working", 0)];
+  const { tick, notified } = await copy();
+  await tick(3000);
+  const n0 = notified();
+  const flipped = clock;
+  fx.fixture.terms = [agentTerm("p1", "done", 1)];
+  await tick(1000);
+  const c = fx.shared["agent-tower.changes"].p1;
+  assert.deepEqual([c.word, c.turn], ["done", 1], "tracked without a draw");
+  assert.ok(c.at - flipped <= 1000, `its time is the flip's, within a second: ${c.at - flipped} ms`);
+  assert.ok(notified() > n0, "and a redraw is asked for");
+}
+
+// track-fix 2: the recorder's holder records though it is never drawn (the hidden child of a stack).
+{
+  const fx = world();
+  fx.fixture.terms = [agentTerm("p2", "working", 0)];
+  const { v, cx, tick } = await copy({ draw: false });
+  await tick(2000);
+  assert.equal(v.holdsRecorder(), true, "holds the recorder");
+  const flipped = clock;
+  fx.fixture.terms = [agentTerm("p2", "done", 1)];
+  await tick(6000);
+  const rec = JSON.parse(fx.files[`${TOWER}/timeline/events.json`]);
+  const done = rec.events.find((e) => e.a === "p2" && e.s === "done");
+  assert.ok(done && done.at - flipped <= 1000, "the finish is in events.json with its time");
+  assert.ok(rec.events.some((e) => e.a === "p2" && e.s === "working"), "and the working before it");
+  assert.deepEqual(rec.gaps, [], "a holder starting with the copy draws no gap");
+  // A tick that comes five minutes late (the computer slept) marks that time as not recorded.
+  const before = clock;
+  clock += 300e3;
+  v.trackTick(cx);
+  assert.deepEqual(v.rec.gaps.map((g) => [g.from, g.to]), [[before, clock]], "a late tick's time is a gap");
+}
+
+// track-fix 5: two list copies (the docked list and the window) end with the same time: the later
+// one folds in the earlier's map before it tracks, and never stamps the flip with its own clock.
+{
+  const fx = world();
+  fx.fixture.terms = [agentTerm("p3", "working", 0)];
+  const a = await copy();
+  const b = await copy();
+  const flipped = clock;
+  fx.fixture.terms = [agentTerm("p3", "done", 1)];
+  clock = flipped + 300;
+  b.v.trackTick(b.cx);
+  clock = flipped + 900;
+  a.v.trackTick(a.cx);
+  const at = (x) => x.v.changes.get("p3").at;
+  assert.deepEqual([at(a), at(b), fx.shared["agent-tower.changes"].p3.at], [flipped + 300, flipped + 300, flipped + 300], "one time in both copies and the shared map");
+  // Each had stamped it alone (neither saw the other): the earlier wins in both.
+  fx.fixture.terms = [agentTerm("p3", "working", 1)];
+  clock += 1000;
+  const t0 = clock;
+  a.v.changes.set("p3", { word: "working", turn: 1, at: t0, had: true });
+  b.v.changes.set("p3", { word: "working", turn: 1, at: t0 + 700, had: true });
+  fx.shared["agent-tower.changes"] = { p3: b.v.changes.get("p3") };
+  fx.shared["agent-tower.changesV"] = `${b.v.id}:99`;
+  a.v.trackTick(a.cx);
+  b.v.trackTick(b.cx);
+  assert.deepEqual([at(a), at(b), fx.shared["agent-tower.changes"].p3.at], [t0, t0, t0], "the earlier time for the same word and turn wins");
+}
+// track-fix R1 1: a change another list copy saw first (the window ticks first and writes the map)
+// is recorded by the holder at its next tick, not up to 30 s later.
+{
+  const fx = world();
+  fx.fixture.terms = [agentTerm("p4", "working", 0)];
+  const a = await copy({ draw: false });
+  await a.tick(2000);
+  const b = await copy({ draw: false });
+  assert.ok(a.v.holdsRecorder() && !b.v.holdsRecorder());
+  const flipped = clock;
+  fx.fixture.terms = [agentTerm("p4", "done", 1)];
+  clock = flipped + 300;
+  b.v.trackTick(b.cx);
+  clock = flipped + 600;
+  a.v.trackTick(a.cx);
+  assert.ok(a.v.rec.events.some((e) => e.a === "p4" && e.s === "done"), "recorded at the holder's next tick");
+}
+
+// track-fix R1 5: a copy that takes the recorder back records nothing into its old record while it
+// reads the files again.
+{
+  const fx = world();
+  fx.fixture.terms = [agentTerm("p5", "working", 0)];
+  const { v, cx, tick } = await copy({ draw: false });
+  await tick(2000);
+  assert.ok(v.holdsRecorder());
+  const LEASE = `${TOWER}/recorder.lease`;
+  // Another copy takes the lease (this one was asleep): the next renewal finds it lost.
+  fx.files[LEASE] = JSON.stringify({ id: "other", at: clock + 20000 });
+  await tick(20000);
+  assert.equal(v.holdsRecorder(), false, "lost");
+  // It is free again; the record's read is slow.
+  fx.files[LEASE] = "null";
+  let release;
+  fx.hold = { [`${TOWER}/timeline/events.json`]: new Promise((r) => (release = r)) };
+  const old = v.rec;
+  const n0 = old.events.length;
+  await tick(20000);
+  assert.equal(v.recKeeper.held(), true, "taken back");
+  fx.fixture.terms = [agentTerm("p5", "done", 1)];
+  clock += 1000;
+  v.trackTick(cx);
+  assert.equal(v.holdsRecorder(), false, "not ready while the record is read again");
+  assert.equal(old.events.length, n0, "nothing went into the old record");
+  release();
+  await tick(1000);
+  assert.ok(v.holdsRecorder() && v.rec !== old, "ready on the record just read");
+  fx.hold = null;
+}
+
+// track-fix R1 6: a copy that only corrects the shared map (an earlier time) writes a new version,
+// so readers that saw its last one convert the map again.
+{
+  const fx = world();
+  fx.fixture.terms = [agentTerm("p6", "working", 0)];
+  const { v, cx } = await copy({ draw: false });
+  fx.fixture.terms = [agentTerm("p6", "done", 1)];
+  clock += 1000;
+  v.trackTick(cx);
+  const first = fx.shared["agent-tower.changesV"];
+  const mine = v.changes.get("p6");
+  fx.shared["agent-tower.changes"] = { p6: { ...mine, at: mine.at + 500 } };
+  fx.shared["agent-tower.changesV"] = "other:1";
+  clock += 1000;
+  v.trackTick(cx);
+  assert.equal(fx.shared["agent-tower.changes"].p6.at, mine.at, "the earlier time written back");
+  assert.notEqual(fx.shared["agent-tower.changesV"], first, "under a new version");
+}
+
+// track-fix R1 7: a draw right after a flip shows the new word with its time, before any tick, and
+// asks for no redraw while drawing.
+{
+  const fx = world();
+  fx.fixture.terms = [agentTerm("p7", "working", 0)];
+  const { v, cx, notified } = await copy();
+  fx.fixture.terms = [agentTerm("p7", "done", 1)];
+  clock += 300;
+  const n0 = notified();
+  v.render(cx);
+  assert.deepEqual([v.changes.get("p7").word, v.changes.get("p7").at], ["done", clock], "tracked by the draw");
+  assert.equal(notified(), n0, "no redraw asked for inside the draw");
 }
 console.log("io ok");

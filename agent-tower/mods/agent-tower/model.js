@@ -596,13 +596,17 @@ function needOfFresh(item) {
 }
 
 // A lead that finished and nobody has looked at since (Herdr's "done"). With a pane, Herdr clears it
-// on look. Without one (an hc run lead) only a click here clears it (seen: address -> the change
-// it was seen at), and it ages out after DONE_MS.
+// on look. Without one (an hc run lead) Herdr's herdr.seen label at its turn clears it, or a click
+// here (seen: address -> the lead's own change it was seen at), and it ages out DONE_MS after the
+// lead's own finish: a worker's later change neither brings it back nor restarts the clock.
 export function finishedUnseen(item, listed, seen, now, changes) {
   if (item.leadGone || item.status !== "done") return false;
   if (listed.has(item.lead.address)) return true;
-  const at = changedAt(item, changes);
-  return now - at < DONE_MS && seen[item.lead.address] !== at;
+  if (Number.parseInt(item.lead.labels?.["herdr.seen"], 10) >= item.lead.turn) return false;
+  const at = changes.get(item.lead.address)?.at ?? 0;
+  // A click stored at or after this finish saw it (before the update it stored the item's newest time).
+  const clicked = seen[item.lead.address];
+  return now - at < DONE_MS && (clicked == null || clicked < at);
 }
 
 export const isStale = (item, changes, now) => {
@@ -814,9 +818,10 @@ export function trackChanges(changes, terms, now, reach = []) {
       }
       continue;
     }
-    // A done that comes without working before it (Herdr reports an old agent done again when it
-    // is opened or peeked at) is no new finish: its time stays.
-    const again = prev && t.status === "done" && prev.word !== "working";
+    // A done that comes without working before it, at the same turn (Herdr reports an old agent
+    // done again when it is opened or peeked at), is no new finish: its time stays. A higher turn
+    // is a new finish whose working was missed between two reads. Without turns, the word decides.
+    const again = prev && t.status === "done" && prev.word !== "working" && (t.turn == null || prev.turn == null || t.turn === prev.turn);
     // had: it reported a state once (so a state gone null later means its agent left).
     changes.set(t.address, { word: t.status ?? null, turn: t.turn, at: !prev ? t.status_ms ?? now : again ? prev.at : now,
       had: Boolean(prev?.had || t.status != null) });
@@ -837,6 +842,27 @@ export function trackChanges(changes, terms, now, reach = []) {
     }
   }
   return dirty;
+}
+
+// Another copy's map (theirs, as shared) folded into this copy's: for the same word and turn the
+// earlier time wins; for another word or turn the later sighting does (every copy reads the same
+// live snapshot each second, so the older one is behind), and on the same time the higher turn,
+// then the word: both sides pick the same winner, so two copies never write back and forth.
+// Returns {changed: this map changed, tell: this map's entry won somewhere (theirs should hear it)}.
+const later = (x, y) => (x.at !== y.at ? x.at > y.at : (x.turn ?? -1) !== (y.turn ?? -1) ? (x.turn ?? -1) > (y.turn ?? -1) : String(x.word) > String(y.word));
+export function mergeChanges(changes, theirs) {
+  let changed = false;
+  let tell = false;
+  for (const [address, c] of Object.entries(theirs ?? {})) {
+    const mine = changes.get(address);
+    const same = mine && mine.word === c.word && mine.turn === c.turn;
+    if (same && mine.at === c.at) continue;
+    if (!mine || (same ? c.at < mine.at : later(c, mine))) {
+      changes.set(address, same ? { ...mine, at: c.at } : c);
+      changed = true;
+    } else tell = true;
+  }
+  return { changed, tell };
 }
 
 // Herdr's compact age.
@@ -1496,6 +1522,9 @@ function taskModelPass({ terms, listed, spaceList, config, changes, seen, now, t
       area: itemArea(config, i),
       state: stateOf(i, ctx),
       word: rowWord(i, ctx),
+      // The lead's own word (the Board's Lead chip): blocked when the ask is its own, a seen Done
+      // idle as on its row; a worker's ask is not the lead's.
+      leadWord: i.leadGone ? null : need?.t === i.lead ? "blocked" : i.status === "done" && !finishedUnseen(i, listed, seen, now, changes) ? "idle" : i.status,
       need: need ? { by: need.t.address, kind: need.kind, text: need.msg } : null,
       changed: changedAt(i, changes),
       stale: isStale(i, changes, now),

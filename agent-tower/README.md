@@ -218,8 +218,9 @@ Herdr window was in front).
 
 ### Timeline: what it keeps, and what it cannot know
 
-The list records every change of an agent's state to `~/.config/agent-tower/timeline/` (in the
-whole-window shape, where the list is hidden, the view's own copy does):
+The list records every change of an agent's state to `~/.config/agent-tower/timeline/`, once a
+second from a timer, so it records while its window is covered or minimized and while the list
+itself is hidden (the whole-window shape):
 - `events.json`: states, where you looked and gaps, the last 2 days (7 until the first hourly move);
 - `screens.json`: the last 18 lines of an agent's screen when it stopped, asked or finished, 26 hours;
 - the long past, moved out of `events.json` once an hour:
@@ -244,7 +245,7 @@ keep their asks and Done messages cut short, so treat them like their transcript
   there is when Herdr saw it.
 - **A layout without agent-tower** records nothing, because Herdr has no background mod. Every
   agent-tower layout has it.
-- **Faster than a redraw:** an agent that asks and is answered within a second or two may not show.
+- **Faster than a second:** an agent that asks and is answered within a second or two may not show.
   Its screen is read just after the change, not at it.
 - **Where you looked** is focus inside Herdr with its window in front. Reading an agent elsewhere
   doesn't count, and what you typed is never recorded.
