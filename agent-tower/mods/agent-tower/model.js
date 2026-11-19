@@ -170,7 +170,8 @@ export const STALE_MS = 20 * 60 * 1000;
 export const DONE_MS = 12 * 3600 * 1000;
 // Quiet for this long, an idle item goes to Earlier.
 export const EARLIER_MS = 24 * 3600 * 1000;
-const RANK = { blocked: 4, done: 3, working: 2, idle: 1 };
+// Working outranks the lead's Done: a task stays Working while any member works.
+const RANK = { blocked: 4, working: 3, done: 2, idle: 1 };
 
 export const machineOf = (address) => {
   const slash = address.indexOf("/");
@@ -323,7 +324,8 @@ export function workItems(terms, listed, spaceList) {
     const quiet = tree.filter((r) => !keep.has(r.t.address));
     const quietSet = new Set(quiet.map((r) => r.t));
     const status = leadGone ? null : leadStatus(lead, listed);
-    // Only the lead's Done makes the task Done: a done worker counts as idle here.
+    // Only the lead's Done makes the task Done (a done worker counts as idle here), and only once
+    // no member works.
     const top = tree.map((r) => (r.status === "done" ? "idle" : r.status))
       .reduce((m, s) => ((RANK[s] ?? 0) > (RANK[m] ?? 0) ? s : m), status);
     const anchor = leadGone ? live[0] ?? lead : lead;
@@ -516,6 +518,8 @@ export function selectionOf(item, ctx = null) {
     // The area the list shows it in (taskModel's), so the card never decides it again.
     area: item.area ?? null,
     status: ctx ? rowWord(item, ctx) : null,
+    // The lead's own word (taskModel's leadWord): a task Working by its workers keeps its lead's Done.
+    leadWord: item.leadWord ?? null,
     need: need ? { by: need.t.address, kind: need.kind, text: need.msg } : null,
   };
 }
@@ -629,10 +633,10 @@ export function changedAt(item, changes) {
 // Which state group an item is in, ignoring the pin: needs, done, working, idle or earlier.
 export function stateOf(item, { listed, seen, now, changes }) {
   if (needOf(item)) return "needs";
+  if (item.top === "working") return "working";
   const quietFor = now - changedAt(item, changes);
   // A finish nobody looked at is Done for a day; older, it is one of the quiet ones in Earlier.
   if (finishedUnseen(item, listed, seen, now, changes) && quietFor < EARLIER_MS) return "done";
-  if (item.top === "working") return "working";
   return quietFor >= EARLIER_MS ? "earlier" : "idle";
 }
 
@@ -718,7 +722,7 @@ export function areaNews(items, { shown, areaOfItem, left, listed, seen, now, ch
   const news = new Map();
   for (const i of items) {
     const ar = areaOfItem(i);
-    if (ar === shown || i.leftOver || needOf(i) || !finishedUnseen(i, listed, seen, now, changes)
+    if (ar === shown || i.leftOver || needOf(i) || i.top === "working" || !finishedUnseen(i, listed, seen, now, changes)
       || changedAt(i, changes) <= (left[ar] ?? 0)) continue;
     if (!news.has(ar)) news.set(ar, []);
     news.get(ar).push(i);
@@ -994,7 +998,7 @@ export function eyeMessage(config, area) {
     ? [`You are the Eye of ${of}: follow the ${config.skill} skill's Eye part.`]
     : [
       `You are the Eye of ${of} ($TOWER_AREA): the person tells you what they want done there; you start leads for new work, pass messages to leads that exist, and say what is stuck or waiting. Never do task work yourself. Keep no state: labels and chains are the state.`,
-      "Your first answer, before anything is asked: where your area stands now, a few short lines from hc ls --json and the labels: what Needs you (each with its question), then Working, then Done. No greeting, no list of what you can do.",
+      "Your first answer, before anything is asked: where your area stands now, a few short lines from hc ls --json and the labels: what Needs you (each with its question), then Working (any of its agents working, whatever its lead says), then Done. No greeting, no list of what you can do.",
       "You see every hc terminal on every machine with hc ls --json. A task is the terminals sharing a task.id label; its lead has task.role=lead, its title is in task.title, and task.ask is set when it waits on them.",
       "A task's terminals: hc ls --json --label task.id=<id> | jq -r '.terminals[].address' (add --all for ended ones); one terminal's labels: hc get <address> | jq .labels. hc ls --json carries no labels; use hc get.",
       "Your tasks are those whose lead has task.area=$TOWER_AREA; a lead without task.area is the area's whose machines (in the settings file \"$TOWER_CONFIG\") hold its machine, else the area with default: true.",

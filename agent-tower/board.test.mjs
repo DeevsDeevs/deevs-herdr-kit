@@ -152,4 +152,20 @@ assert.ok(text(board.render(t, real, { ...ui, selectedKey: null })).includes("Fi
   assert.equal(find(board.render(t, am, { ...ui, selectedKey: "task:y1" }), "chip-q1").color, "#blocked");
 }
 
+// working-wins: a done lead whose worker still works is a Working card; Done once the worker stops.
+{
+  const cfg = model.parseConfig({}).config ?? model.DEFAULTS;
+  const ww = (wStatus) => [live("p1", "done", { "task.id": "z1", "task.role": "lead", "task.title": "Made-up release notes", "task.area": "work" }),
+    live("p2", wStatus, { "task.id": "z1", "task.role": "worker" }, "p1")];
+  const col = (terms, seen = {}) => {
+    const lanes = board.lanes(model.taskModel({ terms, listed: new Map(), spaces: [], config: cfg, changes: new Map([["p1", { at: 5 }], ["p2", { at: 6 }]]), seen, now: 10 }));
+    return Object.entries(lanes[0].columns).filter(([, items]) => items.some((i) => i.taskId === "z1")).map(([id]) => id);
+  };
+  assert.deepEqual(col(ww("working")), ["working"], "lead done + worker working: the Working column");
+  assert.deepEqual(col(ww("idle")), ["done"], "the worker stopped, the lead unseen: Done");
+  assert.deepEqual(col(ww("idle"), { p1: 5 }), ["idle"], "seen while the worker worked: Idle");
+  const wm = model.taskModel({ terms: ww("working"), listed: new Map(), spaces: [], config: cfg, changes: new Map([["p1", { at: 5 }], ["p2", { at: 6 }]]), now: 10 });
+  assert.equal(find(board.render(t, wm, { ...ui, selectedKey: "task:z1" }), "chip-p1").color, "#done", "the Lead chip keeps the lead's own Done");
+}
+
 console.log("ok");

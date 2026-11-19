@@ -558,9 +558,9 @@ const waitOf = (t) => model.waitWords(t);
 
 const machineOf = (address) => (address.includes("/") ? address.split("/")[0] : null);
 
-// A task's one line: at each moment the most urgent thing any of its agents did (Needs you, the
-// lead's Done, Working, Idle; a worker's Done counts as Idle, as in the list). Recorded beats rebuilt.
-const RANK_OF = { blocked: 4, done: 3, working: 2, idle: 1 };
+// A task's one line: at each moment the most urgent thing any of its agents did (Needs you, Working,
+// the lead's Done, Idle; a worker's Done counts as Idle, as in the list). Recorded beats rebuilt.
+const RANK_OF = { blocked: 4, working: 3, done: 2, idle: 1 };
 export function summaryOf(task, from = -Infinity, to = Infinity) {
   // Only what the span shows, in one sweep over the cuts: at each, the most urgent piece active (the
   // first, among equals). A day of rebuilt past is hundreds of pieces; never compare all with all.

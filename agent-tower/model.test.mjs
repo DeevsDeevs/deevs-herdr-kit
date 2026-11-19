@@ -85,19 +85,25 @@ assert.ok(items.some((i) => i.key === "agent:t8"), "an agent a shell started is 
 assert.ok(!items.some((i) => i.key.includes("t10")), "an ended unlabelled agent is gone");
 
 const groups = model.groupItems(items, changes, NOW);
-assert.deepEqual(groups.map((g) => g.id), ["needs", "done", "idle"]);
+// t5 is done but its t6 works: Working (working-wins).
+assert.deepEqual(groups.map((g) => g.id), ["needs", "working", "idle"]);
 assert.deepEqual(groups[0].items.map((i) => i.key), ["task:x1"], "Needs you holds only blocked items");
 assert.deepEqual(groups[1].items.map((i) => i.key), ["agent:t5"]);
-assert.equal(groups[1].label, "Done");
 assert.equal(groups.flatMap((g) => g.items).length, items.length, "every item in one group");
+// The same with t6 stopped: Done.
+const quietTerms = terms.map((t) => (t.address === "t6" ? { ...t, status: "idle" } : t));
+const quietGroups = model.groupItems(model.workItems(quietTerms, new Map(), spaces), changes, NOW);
+assert.deepEqual(quietGroups.map((g) => g.id), ["needs", "done", "idle"]);
+assert.deepEqual(quietGroups[1].items.map((i) => i.key), ["agent:t5"]);
+assert.equal(quietGroups[1].label, "Done");
 // Done: most recent first.
 const done2 = term("t20", "s3", { status: "done" });
-const both = model.workItems([...terms, done2], new Map(), spaces);
+const both = model.workItems([...quietTerms, done2], new Map(), spaces);
 const order = model.groupItems(both, new Map([...changes, ["t5", { at: NOW - 2 * H }], ["t6", { at: NOW - 2 * H }], ["t9", { at: NOW - 2 * H }], ["t20", { at: NOW - H }]]), NOW).find((g) => g.id === "done");
 assert.deepEqual(order.items.map((i) => i.key), ["agent:t20", "agent:t5"]);
 // Earlier: idle for a day or more, and a Done that aged out lands there too.
 const old2 = new Map([...changes, ["t8", { at: NOW - 25 * H }], ["t5", { at: NOW - 30 * H }], ["t6", { at: NOW - 30 * H }], ["t9", { at: NOW - 30 * H }]]);
-const g2 = model.groupItems(items, old2, NOW);
+const g2 = model.groupItems(model.workItems(quietTerms, new Map(), spaces), old2, NOW);
 assert.deepEqual(g2.map((g) => g.id), ["needs", "idle", "earlier"]);
 assert.deepEqual(g2.find((g) => g.id === "earlier").items.map((i) => i.key), ["agent:t8", "agent:t5"], "Earlier: newest first");
 // A stale Working item sorts first in Working.
@@ -179,7 +185,7 @@ assert.equal(model.areaOf(config, started.machine, started.taskArea), "work", "a
 
 // The panel mod's selection: key, live lead, live members, title; an item found by any member.
 assert.deepEqual(model.selectionOf(task), { key: "task:x1", lead: "t1", members: ["t1", "t2", "t3", "t4"], title: "Ship it", ids: ["x1"], area: null,
-  status: null, need: { by: "t2", kind: "Asks you", text: "Which branch?" } });
+  status: null, leadWord: null, need: { by: "t2", kind: "Asks you", text: "Which branch?" } });
 assert.equal(model.selectionOf(task, { listed: new Map(), seen: {}, now: NOW, changes: new Map() }).status, "blocked", "the row's word");
 assert.equal(model.selectionOf(null), null);
 // Details' Workers leave out the task's plain shells (an old lead whose agent ended, adopt's shells);
@@ -1095,6 +1101,45 @@ assert.equal(model.eyeWaiting({ ...askingEye, status: "working" }, new Map()), f
     ...["m4", "m5", "m6"].map((a) => term(a, undefined, { parent: "m1", status: "idle", labels: { "task.id": "mx", "task.role": "worker" } }))];
   const rows = model.displayRows(model.workItems(mix, new Map(), spaces)[0]);
   assert.deepEqual(rows.map((r) => (r.fold ? `${r.rows.length} ${model.quietWords(r.rows)}` : r.t.address)), ["2 2 done", "3 3 idle"]);
+}
+
+// working-wins: a task stays Working while any of its agents works, whatever its lead's word.
+{
+  const cfg = model.parseConfig({}).config ?? model.DEFAULTS;
+  const lead = (status, extra = {}) => term("ww1", "s1", { status, turn: 2, ...extra, labels: { "task.id": "ww", "task.role": "lead", "task.title": "Made-up report", ...extra.labels } });
+  const worker = (status, extra = {}) => term("ww2", undefined, { parent: "ww1", status, ...extra, labels: { "task.id": "ww", "task.role": "worker" } });
+  const at = new Map([["ww1", { at: NOW - 5 * 60e3 }], ["ww2", { at: NOW - 2 * 60e3 }]]);
+  const one = (terms, seen = {}, listed = new Map()) => model.taskModel({ terms, listed, spaces, config: cfg, changes: at, seen, now: NOW }).items[0];
+  const view = (i) => [i.word, i.state, i.group];
+
+  const both = one([lead("done"), worker("working")]);
+  assert.deepEqual(view(both), ["working", "working", "working"], "lead done unseen + worker working: Working");
+  assert.equal(both.leadWord, "done", "its lead's own word stays Done");
+  assert.equal(both.changed, NOW - 2 * 60e3, "its age is the newest member's change (the worker's here)");
+  assert.equal(model.selectionOf(both, { listed: new Map(), seen: {}, now: NOW, changes: at }).leadWord, "done", "the panel is told the lead's word");
+  assert.deepEqual(view(one([lead("done"), worker("working")], {}, new Map([["ww1", "done"]]))), ["working", "working", "working"], "with a pane too");
+  assert.deepEqual(view(one([lead("idle"), worker("working")])), ["working", "working", "working"], "lead idle + worker working: Working, as before");
+
+  const unseen = one([lead("done"), worker("idle")]);
+  assert.deepEqual(view(unseen), ["done", "done", "done"], "the worker stops, the lead's finish unseen: Done");
+  const seenWhileWorking = { ww1: at.get("ww1").at };
+  assert.deepEqual(view(one([lead("done"), worker("idle")], seenWhileWorking)), ["idle", "idle", "idle"], "the worker stops, the lead's finish seen: Idle");
+  assert.deepEqual(view(one([lead("done", { labels: { "herdr.seen": "2" } }), worker("idle")])), ["idle", "idle", "idle"], "seen in Herdr: Idle");
+
+  const asks = one([lead("done"), worker("blocked", { report: { kind: "question", msg: "Made-up question?" } })]);
+  assert.deepEqual(view(asks), ["blocked", "needs", "needs"], "a blocked worker still makes it Needs you");
+  assert.deepEqual(view(one([lead("working"), worker("done")])), ["working", "working", "working"], "a done worker never makes the task Done");
+  assert.deepEqual(view(one([lead("idle"), worker("done")])), ["idle", "idle", "idle"], "a done worker under an idle lead: Idle");
+
+  // Stale goes by the same rule: Working 20 min after the newest change.
+  const old = new Map([["ww1", { at: NOW - 40 * 60e3 }], ["ww2", { at: NOW - 30 * 60e3 }]]);
+  const stale = model.taskModel({ terms: [lead("done"), worker("working")], listed: new Map(), spaces, config: cfg, changes: old, seen: {}, now: NOW }).items[0];
+  assert.deepEqual([stale.word, stale.group, stale.stale], ["stale", "working", true], "a quiet Working task by its worker goes stale");
+
+  // Another area's news: a task Working by its workers is no news yet; once they stop it is.
+  const news = (terms) => model.areaNews(model.workItems(terms, new Map(), spaces), { shown: "a", areaOfItem: () => "b", left: {}, listed: new Map(), seen: {}, now: NOW, changes: at });
+  assert.equal(news([lead("done"), worker("working")]).size, 0, "no news while a worker works");
+  assert.equal(news([lead("done"), worker("idle")]).get("b").length, 1, "news once it stops");
 }
 
 console.log("model ok");
