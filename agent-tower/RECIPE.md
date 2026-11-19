@@ -610,10 +610,23 @@ come from the app's program table.
 - **Name**: a start without a title asks the namer before anything is made, in the person's
   style (`model.namePrompt`): one to four words, the object first and the kind of work last
   ("Parser fuzz review", "Invoice export fix", "Cache to Redis", "Bird song guide"), a verb
-  only when it is the work ("Fix login redirect"), no filler, pronouns, articles, ids, dates,
-  numbers or words for the process, a misheard word not copied when the right one is plain
-  (by default `claude -p --model haiku --no-session-persistence --tools ""` with your words
-  as data, 60 s limit). An answer is one non-empty line of at most 40 characters. In the 8 s
+  only when it is the work ("Fix login redirect"), no filler, pronouns, articles or words for
+  the process, a misheard word not copied when the right one is plain. No digits except inside
+  a product or protocol name (S3, IPv6, H264): amounts, prices, sizes, counts, dates, years,
+  times, versions, ids and issue numbers are left out with the words that lead to them, shown
+  by four examples ("buy a kettle under 80 €" → "Kettle pick", "fix bug #317 in the signup
+  form" → "Signup form fix", "move the wiki from v2 to v3" → "Wiki upgrade", "label the 500
+  scans from 2019" → "Scan labelling"), and said again after your words: "The name, without
+  numbers:" (by default `claude -p --model haiku --no-session-persistence --tools ""` with
+  your words as data, 60 s limit). An answer is one non-empty line. Then, whatever the model
+  said (`model.acceptName`): a token that is only a number, an amount, a time or a date
+  (digits with currency signs, separators, %, units stuck to them, `#482`, `v22.4`,
+  `ABC-1234`) goes, with the words it leaves dangling before it ("under", "for", "about",
+  "to", "from", "at", "in", "issue", "PR" and the like) and a unit standing after it ("300
+  euros", "16 GB"); a word left dangling at the end goes too ("Tax summary with 1099s" → "Tax
+  summary"), and a name that lost its first word starts with a capital. A token that starts
+  with a letter (S3, IPv6, H264, Q3), or is no amount (3D, 2FA), stays. Nothing left, or only
+  filler words, is no name; otherwise it must be at most 40 characters. In the 8 s
   wait it names the space and the folder; later, it reads the lead's labels again with
   `hc get` right before writing (the list may not show a label written a moment ago) and
   writes `task.title` and `task.by=llm` in one call only if `task.by` is still `raw` (nobody,
