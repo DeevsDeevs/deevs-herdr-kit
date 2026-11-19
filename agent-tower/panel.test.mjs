@@ -45,7 +45,12 @@ assert.deepEqual(d.workers.map((w) => [w.t.address, w.status, w.at]), [["t2", "w
 assert.deepEqual(d.needs.map((n) => [n.t.address, n.kind, n.sentence]), [["vps/t3", "Needs sign-in", "Sign in to GitHub again."]]);
 assert.deepEqual([d.ask.t.address, d.ask.text], ["t1", "Merge the PR now?"], "no need published (an older list): the lead's own task.ask");
 assert.equal(d.space.name, "herdr");
-assert.equal(d.cwd, "/repo", "the lead's folder now, not where it started");
+// The tooltip's folder: the lead's launch folder while it exists (a cd, in or out of the task, moves
+// nothing); where it runs now once the lead's read found the launch folder gone (moved by hand).
+assert.deepEqual([d.cwd, d.liveCwd], ["/start", "/repo"]);
+assert.equal(panel.shownFolder(d, null), "/start", "not read yet: the launch folder");
+assert.equal(panel.shownFolder(d, { launch_gone: false }), "/start", "a cd out of the task: still its folder");
+assert.equal(panel.shownFolder(d, { launch_gone: true }), "/repo", "the launch folder gone: where it runs now");
 // A blocked agent without a kind or a sentence: the list's "Waiting on you", no sentence.
 const lone = panel.detailOf({ key: "agent:t8", lead: "t8", members: ["t8"] }, terms, new Map(), spaces, {});
 assert.deepEqual(lone.needs.map((n) => [n.kind, n.sentence, n.isLead]), [["Waiting on you", null, true]]);
@@ -440,6 +445,10 @@ jsonl(join(me, ".claude/projects/-home-me-work/lead.jsonl"), [
 ]);
 const readAs = (req) => JSON.parse(execFileSync("python3", ["-c", script, JSON.stringify(req)], { encoding: "utf8", env: { ...process.env, HOME: me } }));
 
+// read.py: launch_gone says whether the lead's launch folder is there on that machine.
+assert.equal(readAs({ launch: me }).launch_gone, false);
+assert.equal(readAs({ launch: join(me, "moved-away") }).launch_gone, true);
+assert.equal("launch_gone" in readAs({}), false, "not asked: not said");
 // (e) An ended agent has no pid: its transcript is found by program, folder and [created, finished].
 const ended = (program, created_s, finished_s, argv = [program], folder = cwd) => readAs({ turns: { since_s: 86400, terminals: [{ key: "x", pid: null, argv, cwd: folder, created_s, finished_s }] } }).turns.terminals.x;
 assert.equal(ended("claude", 7205, 3690, ["claude", briefA])?.path, join(ledger, "aaaa.jsonl"), "two fit the window: the brief on the argv tells them apart");

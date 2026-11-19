@@ -260,9 +260,24 @@ for (const [name, args] of [["tower-names", ["--nope"]], ["tower-eye", ["stop"]]
   assert.match(model.checkJoin({ task: "g1", as: "boss" }, items, config).why, /not lead or worker/);
   assert.match(model.checkJoin({ task: "nope" }, items, config).why, /no task "nope"/);
   assert.match(model.checkJoin({ task: "g1", area: "work" }, items, config).why, /in Personal; this is Work's Eye/);
-  // Its folder: the lead's, unless that is a home folder.
-  assert.equal(model.joinFolder(item), "/home/me/tasks/garden-plan-g1");
-  for (const cwd of ["/home/me", "/home/me/", "/Users/me", "/root", "~", null]) assert.equal(model.joinFolder({ ...item, lead: { ...shell, cwd } }), null, String(cwd));
+  // Its folders, best first: the lead's launch folder, then where the lead and live members run now
+  // (a folder moved by hand: hc keeps the old path), then their launch folders; never a home folder.
+  const fg = (cwd) => (cwd === undefined ? undefined : { pid: 9, name: "zsh", argv: ["zsh"], cwd });
+  const place = (cwd, live, more = {}) => model.joinPlace({ ...item, lead: { ...shell, cwd, foreground: fg(live) }, live: [{ ...shell, cwd, foreground: fg(live) }], ...more });
+  const A = "/home/me/tasks/garden-plan-g1", B = "/home/me/tasks/garden-g1";
+  assert.deepEqual(model.joinPlace(item).folders, [A, `${A}/notes`], "the lead's, then the worker's");
+  assert.deepEqual(place(A, B).folders, [A, B], "moved: A while it exists, else B");
+  assert.deepEqual(place(A, "/tmp").folders, [A, "/tmp"], "a cd to /tmp: A first");
+  assert.deepEqual(place("/tmp/g1", "/private/tmp/g1/sub").folders, ["/tmp/g1", "/private/tmp/g1/sub"], "a symlinked launch path: still A first");
+  for (const cwd of ["/home/me", "/home/me/", "/Users/me", "/root", "~"]) assert.deepEqual(place(cwd, cwd).folders, [], String(cwd));
+  assert.deepEqual(place(A, "/home/me").folders, [A], "a cd home: no folder of its own");
+  // An ended lead: the anchor is its first live member, and only folders on that member's machine count.
+  const ended = { ...shell, state: "finished", cwd: A };
+  const away = { ...worker, address: "vps/t2", cwd: "/srv/g1", foreground: fg("/srv/g1") };
+  assert.deepEqual(model.joinPlace({ ...item, lead: ended, leadGone: true, live: [away] }), { anchor: away, machine: "vps", folders: ["/srv/g1"] });
+  const near = { ...worker, cwd: `${A}/notes`, foreground: fg(`${B}/notes`) };
+  assert.deepEqual(model.joinPlace({ ...item, lead: ended, leadGone: true, live: [near] }).folders, [A, `${B}/notes`, `${A}/notes`], "same machine: the lead's folder first");
+  assert.deepEqual(model.joinPlace({ ...item, lead: null, leadGone: true, live: [near] }).folders, [`${B}/notes`, `${A}/notes`], "no lead known");
   // Labels: the new lead keeps the title, who gave it and our space name; the old lead whose program ended is a shell.
   assert.deepEqual(model.joinPairs(item, "lead", recipe, "claude-opus"), ["task.id=g1", "task.role=lead", "task.title=Garden plan", "task.by=you",
     "task.recipe=personal-lead", "task.area=personal", "task.lead=claude-opus", "tower.tab-name=lead", "tower.space-name=Garden plan"]);

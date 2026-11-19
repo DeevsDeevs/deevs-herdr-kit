@@ -643,6 +643,53 @@ const newSpace = (fx) => fx.runs.filter((r) => r[0] === "space.new").at(-1)?.[1]
   await tick(2500);
   assert.deepEqual(fx.hcCalls.filter((x) => x[0] === "label").map((x) => x.slice(1).join(" ")), ["t1 tower.tab-name=shell"]);
 }
+// A task whose folder was moved by hand: hc's cwd still names the old folder (A), the lead's program
+// runs in the new one (foreground.cwd, B). The launch folder wins while it exists on the task's
+// machine (a lead's cd moves nothing); once it is gone, the folder the lead runs in now; when no
+// folder of the task is there, the start is refused with a toast that names it and no tab is made.
+{
+  const A = "/home/me/tasks/garden-plan-m1", B = "/home/me/tasks/garden-m1";
+  const labels = { "task.id": "m1", "task.role": "lead", "task.title": "Garden plan", "task.by": "llm", "task.recipe": "personal-lead", "task.area": "personal",
+    "herdr.space": "sp1", "herdr.tab": "tb1", "tower.space-name": "Garden plan", "tower.tab-name": "lead" };
+  const fg = (cwd) => ({ pid: 7, name: "claude", argv: ["claude"], cwd });
+  const member = (address, cwd, live, more = {}) => ({ address, state: "live", status: "idle", turn: 1, cwd, foreground: live && fg(live),
+    program: { agent: true, name: "Claude Code" }, labels: { "task.id": "m1", "task.role": "worker" }, ...more });
+  const lead = (address, cwd, live, more) => member(address, cwd, live, { labels, ...more });
+  // terms: the task's terminals; as: lead or worker. Gives the answer, the start's folder and what was looked for.
+  const ask = async (terms, as, gone = []) => {
+    const fx = world();
+    fx.fixture.terms = terms;
+    fx.fixture.machines = [{ name: "vps", state: "connected" }];
+    fx.fixture.spaces = [{ id: "vps/sp1", name: "Garden plan", named: true, machine: "vps", active: true, tabs: [{ id: "vps/tb1", name: "lead", named: true }] }];
+    const { batch } = await copy();
+    Object.assign(fx, { runs: [], made: [], looked: [], gone });
+    fx.files[`${INBOX}/req.json`] = JSON.stringify({ recipe: "personal-lead", words: "water the beans", task: "m1", as, at: clock });
+    await batch([`${INBOX}/req.json`]);
+    await settle();
+    const start = fx.runs.find((r) => r[0] === "tab.new" || r[0] === "space.new");
+    return { a: JSON.parse(answered(fx, "req")), folder: start?.[1].folder ?? null, looked: fx.looked, made: fx.made, toast: fx.notes?.at(-1)?.body ?? null };
+  };
+  // Moved: A gone, the worker starts in B, looked for on the task's machine, nothing made.
+  let r = await ask([lead("vps/t1", A, B)], "worker", [A]);
+  assert.deepEqual([r.a.ok, r.folder, r.looked, r.made], [true, B, [["vps", A, B]], []], JSON.stringify(r));
+  // B gone as well: refused, said in a toast, no tab, no space, no folder.
+  r = await ask([lead("vps/t1", A, B)], "worker", [A, B]);
+  assert.deepEqual([r.a.ok, r.a.why, r.toast, r.folder, r.made], [false, `${A} does not exist on vps`, `${A} does not exist on vps`, null, []]);
+  // A shell lead that cd'd out of its task (/tmp, ~/Downloads, the next task's folder) while A exists: A.
+  for (const live of ["/tmp", "/home/me/Downloads", "/home/me/tasks/garden-plan-m1-2", `${A}/notes`]) {
+    r = await ask([lead("vps/t1", A, live, { program: { agent: false, name: "zsh" }, status: null })], "worker");
+    assert.equal(r.folder, A, `cd ${live}: the task stays in its folder`);
+  }
+  // A symlinked launch path: hc keeps /tmp/t1 as given, the kernel reports the real path of a subfolder.
+  r = await ask([lead("vps/t1", "/tmp/t1", "/private/tmp/t1/sub")], "worker");
+  assert.equal(r.folder, "/tmp/t1", "a cd into a subfolder through a symlink moves nothing");
+  // The lead ended (no live folder) in a moved task: New lead takes a live member's folder now.
+  r = await ask([lead("vps/t1", A, null, { state: "finished", foreground: undefined }), member("vps/t2", `${A}/notes`, B)], "lead", [A, `${A}/notes`]);
+  assert.deepEqual([r.a.ok, r.folder, r.looked], [true, B, [["vps", A, B, `${A}/notes`]]], JSON.stringify(r));
+  // The ended lead on this computer, its live member on vps: the start goes to vps, so only vps's folders count there.
+  r = await ask([lead("t1", A, null, { state: "finished", foreground: undefined }), member("vps/t2", "/srv/garden", "/srv/garden")], "lead");
+  assert.deepEqual([r.a.ok, r.folder, r.looked], [true, "/srv/garden", [["vps", "/srv/garden"]]], JSON.stringify(r));
+}
 // The row menu's New lead, taken in a render (where Herdr's cx.notify throws): the composer opens on
 // that task as its new lead, with the "in <title>" chip and lead | worker.
 {

@@ -135,7 +135,9 @@ export function detailOf(selection, terms, listed, spaceList, changes) {
     needs: blocked.map((a) => ({ ...a, kind: kindOf(a.t), sentence: a.t.report?.msg?.trim() || null })),
     space: homeSpace(anchor, byAddress, spaceList),
     machine: machineOf(anchor.address),
-    cwd: anchor.foreground?.cwd ?? anchor.cwd ?? null,
+    // Its launch folder, and the one its program runs in now (shown once read.py finds the launch one gone).
+    cwd: anchor.cwd ?? anchor.foreground?.cwd ?? null,
+    liveCwd: anchor.foreground?.cwd ?? null,
     recipe: lead?.labels?.["task.recipe"] ?? null,
     area: lead?.labels?.["task.area"] ?? null,
     // An older list publishes no need: the lead's own task.ask then.
@@ -440,7 +442,11 @@ export function messageOf(status, read, hasLead, why = {}) {
   return { text, color: "dim", prefix: `Last said ${agoWords(last.ago_ms)}: ` };
 }
 
-// The footer's folder: the path without the home part; ellipsis_start keeps the tail.
+// The task's folder in the header's tooltip: the lead's launch folder, as the list's joinPlace takes
+// it while it exists (a cd moves nothing); the folder it runs in now once the lead's read found the
+// launch folder gone (data.launch_gone: moved by hand, hc keeps the old path).
+export const shownFolder = (d, data) => (data?.launch_gone && d.liveCwd ? d.liveCwd : d.cwd);
+
 // The footer's folder: its last path segment (the full path goes in the tooltip).
 export const folderOf = (path) => path?.replace(/\/+$/, "").split("/").pop() || path || null;
 

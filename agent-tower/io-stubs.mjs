@@ -25,6 +25,12 @@ export const exec = (cmd, args = [], opts = {}) => {
     if (fx().noMkdir) return Promise.resolve({ code: 1, stdout: "", stderr: "mkdir: Permission denied" });
     return Promise.resolve({ code: 0, stdout: `${args[3].replace(/^~/, "/home/me")}\n`, stderr: "" });
   }
+  // The first of a task's folders that is there (model.FIRST_DIR_SCRIPT); fx().gone lists those that are not.
+  if (cmd === "sh" && args[2] === "dir") {
+    (fx().looked ??= []).push([opts.on ?? null, ...args.slice(3)]);
+    const first = args.slice(3).find((d) => !fx().gone?.includes(d));
+    return Promise.resolve(first ? { code: 0, stdout: first, stderr: "" } : { code: 1, stdout: "", stderr: "" });
+  }
   // The namer (main.js askNamer): fx().namer(prompt) gives its answer, or a promise of one.
   if (cmd === "sh" && args[1] === '"$@" </dev/null' && fx().namer) {
     const prompt = args.find((a) => a.includes("<task>"));
@@ -47,6 +53,11 @@ export const exec = (cmd, args = [], opts = {}) => {
   if (cmd === "rm") for (const p of args.filter((a) => !a.startsWith("-"))) delete files[p];
   return Promise.resolve({ code: 0, stdout: "", stderr: "" });
 };
+// Toasts with what they said (fx().notes), still logged as "notify".
+export const notify = (n) => {
+  (fx().notes ??= []).push(n);
+  fx().log?.push({ what: "notify", at: Date.now() });
+};
 export const hc = (args) => {
   fx().hcCalls?.push(args);
   // hc get: the fixture's terminal as it is now (fx().getLabels[address] overrides its labels: a
@@ -56,7 +67,8 @@ export const hc = (args) => {
     const labels = { ...(t?.labels ?? {}), ...(fx().getLabels?.[args[1]] ?? {}) };
     return Promise.resolve(t ? { code: 0, stdout: JSON.stringify({ ...t, labels }) } : { code: 1, stdout: "", stderr: "no such terminal" });
   }
-  return Promise.resolve({ code: 0, stdout: JSON.stringify({ machines: [] }) });
+  // hc machine ls: the fixture's machines (their state as given).
+  return Promise.resolve({ code: 0, stdout: JSON.stringify({ machines: args[0] === "machine" ? fx().fixture.machines ?? [] : [] }) });
 };
 // Elements that remember their ids and tooltips (fx().ids, fx().tips), for checks on what a render built.
 const recording = () => {
