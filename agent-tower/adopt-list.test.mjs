@@ -1,6 +1,6 @@
 // node adopt-list.test.mjs: adopt's wiring in the list (main.js, model.js) under perf/mod-stubs.mjs.
 // The row menu's "Make a task" makes the row's space a task; a space made with "New space" leads a
-// task from birth; an agent opened later in an adopted space joins its task; Earlier is A-Z.
+// task from birth; an agent opened later in an adopted space joins its task; Earlier is newest first.
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 
@@ -87,11 +87,12 @@ await settle();
 assert.deepEqual(labelled(), [["t4", "task.role=worker"]]);
 assert.equal(fx.hcCalls.find((a) => a[0] === "label")[2], "task.id=inv01");
 
-// Earlier: A-Z by title (case aside), a directory; the other groups keep Herdr's recency order.
+// Earlier: newest first like every group, the same time A-Z by title (case aside).
 const old = (key, title, daysAgo) => ({ key, taskId: key, title, labelTitle: title, lead: { address: key, labels: {} }, live: [], tree: [], top: "idle", status: "idle", leftOvers: [], changedTo: daysAgo });
-const items = [old("c", "zebra notes", 2), old("a", "Alpha plan", 9), old("b", "beta trip", 5)];
-const changes = new Map(items.map((i) => [i.key, { at: Date.now() - i.changedTo * 86400e3 }]));
-const groups = model.groupItems(items, changes, Date.now());
-assert.deepEqual(groups.find((g) => g.id === "earlier").items.map((i) => i.title), ["Alpha plan", "beta trip", "zebra notes"]);
+const items = [old("c", "zebra notes", 2), old("a", "Alpha plan", 9), old("b", "beta trip", 5), old("d", "Garden beds", 5), old("e", "apple pie", 5)];
+const at = Date.now();
+const changes = new Map(items.map((i) => [i.key, { at: at - i.changedTo * 86400e3 }]));
+const groups = model.groupItems(items, changes, at);
+assert.deepEqual(groups.find((g) => g.id === "earlier").items.map((i) => i.title), ["zebra notes", "apple pie", "beta trip", "Garden beds", "Alpha plan"]);
 
 console.log("adopt-list ok");

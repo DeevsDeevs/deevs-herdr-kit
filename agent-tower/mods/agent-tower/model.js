@@ -637,7 +637,7 @@ export function stateOf(item, { listed, seen, now, changes }) {
 }
 
 // Herdr's order: "Pinned" (your pins, whatever their state or age), "Needs you", "Done", "Working", "Idle", then "Earlier" (quiet for a day), each most
-// recently changed first (a stale Working item first), empty ones left out.
+// recently changed first (a stale Working item first, the same time A-Z by title), empty ones left out.
 // The groups in Herdr's order, the same in every view: Needs you first.
 export const GROUPS = [
   { id: "pinned", label: "Pinned", status: null },
@@ -678,14 +678,11 @@ export function groupItems(items, changes, now, listed = new Map(), seen = {}) {
     const id = item.pinned ? "pinned" : stateOf(item, { listed, seen, now, changes });
     groups.find((g) => g.id === id).items.push(item);
   }
-  for (const g of groups) {
-    // Earlier is a directory of places to return to: A-Z, so each keeps its place.
-    if (g.id === "earlier") {
-      const keys = new Map(g.items.map((i) => [i, titleKey(i.title ?? titleOf(i))]));
-      g.items.sort((a, b) => compareTitleKeys(keys.get(a), keys.get(b)));
-    }
-    else g.items.sort((a, b) => isStale(b, changes, now) - isStale(a, changes, now) || changedAt(b, changes) - changedAt(a, changes));
-  }
+  const keys = new Map();
+  const key = (i) => keys.get(i) ?? keys.set(i, titleKey(i.title ?? titleOf(i))).get(i);
+  // Every group, Earlier too: the same time A-Z by title, so the order never flickers.
+  for (const g of groups) g.items.sort((a, b) => isStale(b, changes, now) - isStale(a, changes, now)
+    || changedAt(b, changes) - changedAt(a, changes) || compareTitleKeys(key(a), key(b)));
   return groups.filter((g) => g.items.length);
 }
 
