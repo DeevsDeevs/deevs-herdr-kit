@@ -140,7 +140,7 @@ The Eye on Codex, leads on Opus, workers on Sonnet:
 - A row that isn't a task yet has "Make a task" in its right-click menu.
 - A space made with the list's "New space" is a task from birth: titled with the space's name, in
   the area shown. An agent you open later in one of its tabs joins it as a worker.
-- Earlier lists its tasks A–Z, one line each.
+- Earlier lists its tasks newest first, one line each.
 - Herdr's own screens name a task's space after its title and its tabs lead, a worker's name,
   shell or Eye. A new task's space is "New task" with a "lead" tab until the namer's title
   comes (if the namer fails, until a Rename). A space still carrying Herdr's own name (its folder's) takes its task's title at

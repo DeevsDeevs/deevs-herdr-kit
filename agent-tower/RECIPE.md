@@ -171,7 +171,7 @@ One column on `chrome`, 13px text, in the vocabulary of Herdr's shipped `agents`
   count after it in `dim`, 10px above it (none above the first); a click folds the group
   (a `chevron-right` shows while folded). Spaces and Left over start folded; Earlier starts
   open (one fold per area). Folds and opens are kept in shared state, so an area switch keeps
-  them. Earlier is a directory: one 24px line per task, A to Z, nothing under it. Done shows at most 5 rows, then a 26px "N more" row in `dim` at the
+  them. Earlier: one 24px line per task, newest first, nothing under it. Done shows at most 5 rows, then a 26px "N more" row in `dim` at the
   sub-row inset that shows the rest ("Show fewer" folds them again).
 - **An item row**, Herdr's agent row: 8px side and 5px vertical padding, 8px corners,
   hover `hover`, `selected` when it is the selected item (below), no tooltip on the row (it
@@ -354,8 +354,9 @@ come from the app's program table.
   a new change of the lead makes it Done again; a worker's change neither brings it back nor restarts its 12
   hours. It then falls to Idle or Earlier.
 - **Earlier**: an item that would be idle, quiet for 24 hours or more.
-- **Order**: inside a group, most recently changed first; in Working an item quiet for 20
-  minutes goes first; Earlier is A-Z by title (case and accents ignored, numbers by value).
+- **Order**: inside a group, Earlier too, most recently changed first; in Working an item quiet
+  for 20 minutes goes first; the same time goes A-Z by title (case and accents ignored, numbers
+  by value), so the order never flickers.
 - **Age** is the time since the mod saw a terminal's status word or turn change, on this
   computer's clock, first seen at the core's `status_ms` when there is one, else at that
   moment. Each list copy (the docked list, the window) looks every second from a timer,

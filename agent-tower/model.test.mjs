@@ -99,7 +99,7 @@ assert.deepEqual(order.items.map((i) => i.key), ["agent:t20", "agent:t5"]);
 const old2 = new Map([...changes, ["t8", { at: NOW - 25 * H }], ["t5", { at: NOW - 30 * H }], ["t6", { at: NOW - 30 * H }], ["t9", { at: NOW - 30 * H }]]);
 const g2 = model.groupItems(items, old2, NOW);
 assert.deepEqual(g2.map((g) => g.id), ["needs", "idle", "earlier"]);
-assert.deepEqual(g2.find((g) => g.id === "earlier").items.map((i) => i.key).sort(), ["agent:t5", "agent:t8"]);
+assert.deepEqual(g2.find((g) => g.id === "earlier").items.map((i) => i.key), ["agent:t8", "agent:t5"], "Earlier: newest first");
 // A stale Working item sorts first in Working.
 const w = [term("w1", "s1", { status: "working" }), term("w2", "s2", { status: "working" })];
 const wi = model.workItems(w, new Map(), spaces);
