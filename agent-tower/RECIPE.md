@@ -431,14 +431,19 @@ come from the app's program table.
 - **Start**: Enter in the composer. When the recipe names a machine, the mod first asks
   `hc machine ls`; if that machine does not answer it toasts "The task didn't start ·
   work-vps does not answer; nothing was started.", starts nothing and keeps your words.
-  Then it makes a 5-character id, opens a new space for
-  the lead with `space.new {name, tab, folder, machine, argv, task}` (name "New task", or
-  "New task 2" and on while a start with that name is pending; tab "lead"; machine from the
+  Then it names the task: a start with a title (`tower-new --title`) has its name; any other
+  asks the namer (below) and waits up to 8 s for it (it answers in about 3 s; meanwhile the
+  composer stays open, dimmed, with your words). Then it makes a 5-character id, opens a new space for
+  the lead with `space.new {name, tab, folder, machine, argv, task}` (name the title, else
+  "New task" when the namer was late; "<name> 2" and on while a start with that name is
+  pending; tab "lead"; machine from the
   recipe; folder the recipe's `folder`, else `<taskRoot>/<slug>-<task id>` made on the lead's
   machine (`model.taskFolder`: the area's `taskRoot`, else the settings', else `~/tasks`; the
-  slug the first four words typed, three when four pass 32 characters, lowercase, joined by
-  hyphens, punctuation dropped; `sh -c 'mkdir -p … && cd … && pwd'` there, so `~` is that
-  machine's home). If the folder can't be made the start is refused, "its folder could not be
+  slug from the title, never the words typed: its first four words without small words (a,
+  an, the, and, of, for, in, on, with; "to" stays: "Cache to Redis" is `cache-to-redis`),
+  three when four pass 32 characters, lowercase, joined by hyphens, punctuation dropped; with
+  no title, `<taskRoot>/<task id>`; `sh -c 'mkdir -p … && cd … && pwd'` there, so `~` is that
+  machine's home). The folder is made once and never moved or renamed: a later title leaves it. If the folder can't be made the start is refused, "its folder could not be
   made in <dir>"; a task never gets the shown space's folder. argv the lead agent's run through
   `env TOWER_TASK=<id> TOWER_WORKER=<workers' agent command>`, so the message you read holds
   no ids, paths or usage text; task: the first message below). `TOWER_WORKER` is the path of
@@ -447,7 +452,8 @@ come from the app's program table.
   elsewhere), and if it can't be written `TOWER_WORKER` is the argv, shell-quoted. The start
   closes the composer, then watches for the space with that name on that machine, finds
   its terminal and labels it in one `hc label` call (`task.id`, `task.role=lead`,
-  `task.title=<your words>`, `task.by=raw`, `task.recipe`, `task.area=<the recipe's
+  `task.title=<the title>` with `task.by=eye` (`--title`), `you` (`--title --yours`) or `llm`
+  (the namer in time), else `task.title=<your words>`, `task.by=raw`, `task.recipe`, `task.area=<the recipe's
   area>` so it stays in the area it was started from, `task.lead=<agent id>`; the title is
   cut to 80 characters). It is given up on, with a toast, if no terminal is found in 60
   seconds, or at once when its machine stops answering. Escape closes the composer.
@@ -479,8 +485,11 @@ come from the app's program table.
     its order, in plain lines: plan and delegate; `task.ask` before waiting on you and
     cleared next turn, asked only when a decision needs you; the task's terminals (`hc ls
     --json --label task.id=<id> | jq -r '.terminals[].address'`, `--all` for ended ones) and
-    one terminal's labels (`hc get <address> | jq .labels`); start workers with the agent
+    one terminal's labels (`hc get <address> | jq .labels`); name the task before the first
+    worker, again only when its mission changes, with the one line above, and never rename or
+    move its folder; start workers with the agent
     command named below, brief on the run line, `--cwd <dir>` (the task's own folder), a
+    `<role>` that says what the worker works on (not a step or a counter), a
     remote worker by `<machine>/<id>-<role>`; reuse an idle worker when its context fits, a
     fresh one for a cold look; a sub-lead starts with the same `task.id` and
     `task.role=worker`; what a brief gives and how it ends (report to the parent with the
@@ -510,7 +519,9 @@ come from the app's program table.
   skill's Eye part." (the skill has it answer first with where its area stands, in the
   list's words); without it the full text (its area's tasks from `hc ls --json` by
   `task.area`, else the area's machines, else the default area; starts leads with
-  "$TOWER_NEW", choosing one of its area's recipes from "$TOWER_CONFIG"; a task's terminals and
+  `"$TOWER_NEW" --title "<Name>"`, naming each task in your style (naming a task it starts is
+  not renaming; your own name with `--yours`), choosing one of its area's recipes from
+  "$TOWER_CONFIG"; asked to rename a task, `hc label <lead> "task.title=<Name>" task.by=you`; a task's terminals and
   labels by the same `hc ls`/`hc get` lines as a lead's; a task whose lead has ended, or that
   you want a fresh lead for, gets `"$TOWER_NEW" --task <id> <recipe id> "<their words>"`,
   never a new task; passes messages to
@@ -540,10 +551,12 @@ come from the app's program table.
     `by`), `start` and `end` act on its own area only; `status` sees all.
 - **The inbox**, how the Eye starts tasks exactly as the composer does: `tower-new`
   writes `<tower dir>/inbox/<id>.json` (`{recipe, words, agent?, area?, task?, as?, at}`,
-  `area` from `TOWER_AREA` when set, `task` and `as` from `--task <id>` and `--as lead|worker`; written aside and moved in) and waits up to 25 seconds for `outbox/<id>.json`, printing it as
-  one line of JSON. `tower-new [--task <id> [--as lead|worker]] <recipe id> "<words>"
-  [agent id]` (`--as` without `--task` is wrong usage) exits 0 when started, 1 when not, 2
-  on wrong usage. The docked copy (never a window) watches the inbox with `watchFolder`,
+  `area` from `TOWER_AREA` when set, `task` and `as` from `--task <id>` and `--as lead|worker`,
+  `title` and `yours` from `--title "<Name>"` and `--yours`; written aside and moved in) and waits up to 25 seconds for `outbox/<id>.json`, printing it as
+  one line of JSON. `tower-new [--title "<Name>" [--yours]] [--task <id> [--as lead|worker]]
+  <recipe id> "<words>" [agent id]` (`--as` without `--task`, `--yours` without `--title`, an
+  empty `--title` or `--title` with `--task` are wrong usage) exits 0 when started, 1 when not, 2
+  on wrong usage. A title that is only spaces is refused, "the title is empty". The docked copy (never a window) watches the inbox with `watchFolder`,
   scans it at start and on a 5 s tick, and acts only while it holds the lease file
   `<tower dir>/inbox.lease` (`model.leaseKeeper`; renewed every 10 s, free 20 s after the
   last renewal, a copy without it tries every 10 s, released when the copy closes). Timeline's
@@ -568,8 +581,12 @@ come from the app's program table.
   naming a recipe of another area is refused ("the recipe X is in Personal; this is Work's
   Eye"). A request without `area` (by hand, or from an older Eye) is not area-checked. Then it goes
   through the composer's own start (`startTask`: refusals, machine check, pending row,
-  label, naming). The answer is `{ok: true, task, starting: true}` as soon as the lead's
-  space is asked for, or `{ok: false, why}`; a later failure only shows in the list. Answers
+  label, naming). The answer is `{ok: true, task, starting: true}` as soon as the start goes
+  ahead (the request is checked and its machine answers), before the namer's wait, the folder
+  and the space, or `{ok: false, why}`. From then on the only refusal left is a folder that can't
+  be made, said in a toast. Answering at the space instead could pass `tower-new`'s 25 s on a cold
+  machine; it would then say "nothing was started" while the task starts, and an Eye trying
+  again would start it twice. Answers
   nobody fetched are swept from the outbox after ten minutes.
   A request with `task` goes to New lead (below) instead (`model.checkJoin`): `as` left out is
   lead; refused with "there is no task "x"", "task x is in Personal; this is Work's Eye" or
@@ -590,14 +607,35 @@ come from the app's program table.
   toast "Recipe <label>: unknown agent"; a recipe with an old `argv` (which wins over its `lead`
   and `roles.lead`) gets "Recipe <label>: argv overrides lead". Each shows once a day, from the
   docked list (`agent-tower.warned`); the reasons are in the README's Settings.
-- **Name**: right after labelling, the mod asks the namer to name the outcome "in at most
-  four words, under 26 characters", not who does it or how ("Tea, coffee and water notes",
-  not "Delegating three text files"; no verbs like delegate, have workers, ask)
+- **Name**: a start without a title asks the namer before anything is made, in the person's
+  style (`model.namePrompt`): one to four words, the object first and the kind of work last
+  ("Parser fuzz review", "Invoice export fix", "Cache to Redis", "Bird song guide"), a verb
+  only when it is the work ("Fix login redirect"), no filler, pronouns, articles, ids, dates,
+  numbers or words for the process, a misheard word not copied when the right one is plain
   (by default `claude -p --model haiku --no-session-persistence --tools ""` with your words
-  as data, 60 s limit). If the answer is one non-empty line of at most 40 characters and the
-  lead's `task.by` is still `raw` (and you have not renamed it meanwhile), it writes
-  `task.title` and `task.by=llm` in one call; the
-  space follows through Names. If it fails, your words stay.
+  as data, 60 s limit). An answer is one non-empty line of at most 40 characters. In the 8 s
+  wait it names the space and the folder; later, it reads the lead's labels again with
+  `hc get` right before writing (the list may not show a label written a moment ago) and
+  writes `task.title` and `task.by=llm` in one call only if `task.by` is still `raw` (nobody,
+  neither you nor its lead, named it meanwhile); the space follows through Names. If it fails, your words stay.
+- **The lead names its task** (the skill's Lead part and the contract): once it understands
+  it, before its first worker, and again only when its mission changes, with one line that
+  writes `task.title=<Name>` and `task.by=lead` on its own terminal only while `task.by` is
+  `raw`, `llm`, `eye` or `lead`: `hc get $HC_TERMINAL_ID | jq -e '.labels["task.by"] // "" |
+  test("^(raw|llm|eye|lead)$")' >/dev/null && hc label $HC_TERMINAL_ID "task.title=<Name>"
+  task.by=lead`. It never renames or moves the task's folder. The space follows through Names.
+- **Your titles win** (`model.personTitles`): a title whose `task.by` is `you`, `adopt` or
+  `space` is remembered per task in `agent-tower.own-titles`, with its lead's address (Herdr
+  keeps it across restarts; a Rename is remembered at once). When a live lead's labels then show another title with
+  `task.by` `raw`, `llm`, `eye` or `lead` (an agent wrote over it), the docked copy that holds
+  the inbox lease writes the remembered title and its `task.by` back, on its 2 s naming tick,
+  at most once a minute per title. A write made while no copy runs is put back when one runs
+  again, if the person's title was seen before; one set and overwritten while none ran is not
+  known. An agent that writes `task.title` alone, leaving `task.by=you`, can't be told from
+  you and is kept. An entry is forgotten once its lead is gone from a machine that answers and
+  shows terminals (`model.forgettable`), so a machine not loaded yet after Herdr starts keeps its
+  titles; an entry from before the address was kept goes when its task is gone with every machine
+  answering.
 - **Rename** (item menu) turns the row's title into an input in place, title selected.
   Enter saves (cut to 80 characters), Escape leaves it. On a task it writes `task.title`
   and `task.by=you`; on an unlabelled agent it writes `task.id=<new id>`,
@@ -605,15 +643,16 @@ come from the app's program table.
   space follows through Names, unless someone typed its name. The model never touches a
   task whose `task.by` is `you`.
 - **Names** (`model.wantedNames`), in Herdr's own screens (its spaces, tabs and Agents list):
-  - At birth a task's space is "New task" and its tab "lead", both recorded as ours in the
-    lead's one label call. While the title is still the raw words (`task.by=raw`) nothing is
-    renamed; the space takes the namer's title when it answers, and stays "New task" until a
-    Rename if the namer fails.
+  - At birth a task's space has its title (or "New task" when the namer was late) and its tab
+    "lead", both recorded as ours in the lead's one label call. While the title is still the
+    raw words (`task.by=raw`) nothing is renamed; the space takes the namer's late title when
+    it answers, and stays "New task" until a Rename (or its lead names the task) if the namer fails.
   - A space holding one task alone takes the task's title, and follows it (the namer's name,
-    a Rename). A space with several tasks, or none, keeps its name; an Eye's
+    a Rename, its lead's own name). A space with several tasks, or none, keeps its name; an Eye's
     space keeps "Eye · <area label>".
   - Tabs, by the first terminal in them (Eye, then lead, worker, shell): "Eye"; "lead"; a
-    worker's hc name, else "<program> worker"; "shell", or "shell · <folder>" when the
+    worker's hc name without its task id (`<id>-<role>` shows `<role>`; the hc name keeps the
+    id), else "<program> worker"; "shell", or "shell · <folder>" when the
     space has two shell tabs. Where the space doesn't say the task (several tasks, or a name
     someone typed), the lead's tab says "lead · <title>", since the Agents list shows
     "space · tab".
@@ -621,9 +660,12 @@ come from the app's program table.
     mod sets is first labelled, `tower.space-name=<name>` on the space's first terminal (Eye,
     lead, worker, shell) or `tower.tab-name=<name>` on the tab's, then `space.rename` /
     `tab.rename`; if the label call fails, nothing is renamed. A name is changed only when
-    `named` is false or it equals such a label in that space or tab. Any other name was
-    typed and is never changed. The start and the Eye's start label their `space.new` name in
-    their one label call, so a new space is ours from birth.
+    `named` is false or it equals such a label in that space or tab. A tab still carrying a
+    terminal's hc name (Herdr names a tab opened by Keep after it) counts as Herdr's, but only
+    while the mod has never named that tab (no `tower.tab-name` on a terminal in it); an hc name
+    typed back after that is the person's. Any other name was typed and is never changed. The start and the Eye's start label their `space.new` name in
+    their one label call, so a new space is ours from birth; a lead found while the window
+    closes gets the same call.
   - **When:** every 2 s in the docked copy that holds the inbox lease (one per computer). A
     machine whose layout isn't ready waits; each name is tried at most once a minute. This
     covers the start, Open as a tab, adopt, New space, Rename, the namer and a tab opened by
@@ -799,7 +841,7 @@ come from the app's program table.
 
 - `run()` returns nothing, so a new lead is found by its space's name and machine among
   spaces that were not there before the start. Two starts on one machine are told apart by
-  their placeholder name ("New task", "New task 2", …); a second start with the same words
+  their name at birth (the title or "New task", then "<name> 2", …); a second start with the same words
   while the first is still starting is refused.
 - A remote space's id is `machine/<id>`; the `herdr.space` label on its terminals holds the
   id without the machine prefix.

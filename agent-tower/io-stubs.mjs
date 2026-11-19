@@ -25,6 +25,12 @@ export const exec = (cmd, args = [], opts = {}) => {
     if (fx().noMkdir) return Promise.resolve({ code: 1, stdout: "", stderr: "mkdir: Permission denied" });
     return Promise.resolve({ code: 0, stdout: `${args[3].replace(/^~/, "/home/me")}\n`, stderr: "" });
   }
+  // The namer (main.js askNamer): fx().namer(prompt) gives its answer, or a promise of one.
+  if (cmd === "sh" && args[1] === '"$@" </dev/null' && fx().namer) {
+    const prompt = args.find((a) => a.includes("<task>"));
+    (fx().namerAsked ??= []).push(prompt);
+    return Promise.resolve(fx().namer(prompt)).then((name) => ({ code: name ? 0 : 1, stdout: name ? `${name}\n` : "", stderr: "" }));
+  }
   const files = fx().files;
   if (cmd === "find") {
     if (fx().failFind > 0) {
@@ -43,6 +49,13 @@ export const exec = (cmd, args = [], opts = {}) => {
 };
 export const hc = (args) => {
   fx().hcCalls?.push(args);
+  // hc get: the fixture's terminal as it is now (fx().getLabels[address] overrides its labels: a
+  // label written that the list has not read yet).
+  if (args[0] === "get") {
+    const t = fx().fixture.terms.find((x) => x.address === args[1]);
+    const labels = { ...(t?.labels ?? {}), ...(fx().getLabels?.[args[1]] ?? {}) };
+    return Promise.resolve(t ? { code: 0, stdout: JSON.stringify({ ...t, labels }) } : { code: 1, stdout: "", stderr: "no such terminal" });
+  }
   return Promise.resolve({ code: 0, stdout: JSON.stringify({ machines: [] }) });
 };
 // Elements that remember their ids and tooltips (fx().ids, fx().tips), for checks on what a render built.

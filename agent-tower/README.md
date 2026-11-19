@@ -61,8 +61,9 @@ falls back to its default and a toast names it.
   `<tower folder>/eye/<area id>`) and `rules` (lines put first in its message). Its agent is
   `roles.eye` unless the area names one.
 - `taskRoot`: where a task lives when its recipe names no `folder`, at the top or per area
-  (default `~/tasks`): `<taskRoot>/<slug>-<task id>`, the slug from the title or the first words
-  typed, made on the lead's machine. A start whose folder can't be made is refused; a task never
+  (default `~/tasks`): `<taskRoot>/<slug>-<task id>`, the slug from the task's title at birth
+  (never the words typed; `<taskRoot>/<task id>` when it has none yet), made on the lead's
+  machine and never moved or renamed after. A start whose folder can't be made is refused; a task never
   takes the shown space's folder.
 - `skill`: the skill leads and the Eye follow (default `"tower"`); `null` sends the full rules
   (`contract`) in the first message instead.
@@ -141,9 +142,13 @@ The Eye on Codex, leads on Opus, workers on Sonnet:
 - A space made with the list's "New space" is a task from birth: titled with the space's name, in
   the area shown. An agent you open later in one of its tabs joins it as a worker.
 - Earlier lists its tasks newest first, one line each.
-- Herdr's own screens name a task's space after its title and its tabs lead, a worker's name,
-  shell or Eye. A new task's space is "New task" with a "lead" tab until the namer's title
-  comes (if the namer fails, until a Rename). A space still carrying Herdr's own name (its folder's) takes its task's title at
+- A task is named at birth: by the Eye (`tower-new --title`), else by the namer, which a start
+  from the list's box waits up to 8 s for (the composer stays dimmed meanwhile). Its lead names it
+  again once it understands the work. A title you gave (Rename, `--yours`, adopt) is put back
+  if an agent writes over it.
+- Herdr's own screens name a task's space after its title and its tabs lead, a worker's role
+  (its hc name without the task id), shell or Eye. A task with no title yet has a "New task"
+  space with a "lead" tab until the namer's title comes (if the namer fails, until a Rename). A space still carrying Herdr's own name (its folder's) takes its task's title at
   once; only a name someone typed is kept. `tower-names` shows what it would rename
   (`--apply` does it; `--named` also replaces names you typed).
 - `tower-eye status|start|end [--area <id>]` shows, starts or ends an area's Eye without a click.
@@ -156,8 +161,10 @@ End. A waiting Eye counts in its area's red number. It runs on this computer in 
 "Eye · <area>", labelled `tower.eye=1` and `tower.area=<area id>`, with `TOWER_AREA` in its
 environment beside `TOWER_NEW` and `TOWER_CONFIG`.
 
-An Eye gives a task whose lead ended a fresh one with `tower-new --task <id> <recipe id>
-"<words>"` (`--as worker` adds a worker instead), never a new task.
+An Eye names each task it starts: `tower-new --title "<Name>" [--yours] <recipe id> "<words>"`
+(`--yours` when you gave the name). An Eye gives a task whose lead ended a fresh one with
+`tower-new --task <id> <recipe id> "<words>"` (`--as worker` adds a worker instead), never a new
+task.
 
 An Eye keeps to its area by its rules and one check, not by a wall:
 - **Checked:** `tower-new` sends the Eye's area with the request, and Agent Tower refuses a recipe
