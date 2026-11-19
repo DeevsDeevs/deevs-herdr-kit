@@ -13,6 +13,7 @@ const make = () => {
     if (k === "when") return (on, f) => (on ? f(p) : p);
     if (k === "id") return (v) => (target.ids.push(v), p);
     if (k === "on_click") return (f) => (target.clicks.push(f), p);
+    if (k === "text_color") return (c) => ((target.color ??= c), p);
     if (k === "hover") return (f) => (f(make()), p);
     return () => p;
   } });
@@ -130,5 +131,25 @@ assert.deepEqual(realLanes.map((l) => l.area.id), ["work", "personal"]);
 assert.deepEqual(realLanes[0].columns.needs.map((i) => i.taskId), ["x1"]);
 assert.deepEqual(realLanes[1].columns.working.map((i) => i.taskId), ["x2"]);
 assert.ok(text(board.render(t, real, { ...ui, selectedKey: null })).includes("Fix billing export"));
+// track-fix 6: the Lead chip shows the lead's own word, not the task's: an idle lead whose worker
+// asks is no blocked lead; a done lead seen (a click here) reads idle.
+{
+  const quietLead = [live("q1", "idle", { "task.id": "y1", "task.role": "lead", "task.title": "Made-up quiet lead", "task.area": "work" }),
+    live("q2", "blocked", { "task.id": "y1", "task.role": "worker" }, "q1")];
+  const rm = model.taskModel({ terms: quietLead, listed: new Map(), spaces: [], config: model.parseConfig({}).config ?? model.DEFAULTS, changes: new Map(), now: 0 });
+  assert.deepEqual([rm.items[0].word, rm.items[0].leadWord], ["blocked", "idle"]);
+  const chip = find(board.render(t, rm, { ...ui, selectedKey: "task:y1" }), "chip-q1");
+  assert.equal(chip.color, "#dim", "the Lead chip is the idle lead's, not the worker's ask");
+  const doneLead = [{ ...quietLead[0], status: "done", turn: 1 }];
+  const seenAt = { q1: 5 };
+  const dm = model.taskModel({ terms: doneLead, listed: new Map(), spaces: [], config: model.parseConfig({}).config ?? model.DEFAULTS,
+    changes: new Map([["q1", { at: 5 }]]), seen: seenAt, now: 10 });
+  assert.equal(dm.items[0].leadWord, "idle", "a seen Done reads idle on its chip, as on its row");
+  // track-fix R1 4: the lead's own ask is the lead's: its chip is blocked.
+  const asking = [live("q1", "idle", { "task.id": "y1", "task.role": "lead", "task.title": "Made-up asking lead", "task.ask": "Which made-up branch?" })];
+  const am = model.taskModel({ terms: asking, listed: new Map(), spaces: [], config: model.parseConfig({}).config ?? model.DEFAULTS, changes: new Map(), now: 0 });
+  assert.equal(am.items[0].leadWord, "blocked", "a lead that asks has a blocked chip");
+  assert.equal(find(board.render(t, am, { ...ui, selectedKey: "task:y1" }), "chip-q1").color, "#blocked");
+}
 
 console.log("ok");

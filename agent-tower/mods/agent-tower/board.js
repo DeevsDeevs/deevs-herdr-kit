@@ -118,7 +118,7 @@ function card(t, item, area, ui) {
 
 function chips(t, item, area, ui) {
   // Quiet members fold into one count, as in the list.
-  const rows = [...(item.leadGone || !item.lead ? [] : [{ t: item.lead, status: item.word, lead: true }]), ...(item.activeTree ?? item.tree ?? [])];
+  const rows = [...(item.leadGone || !item.lead ? [] : [{ t: item.lead, status: item.leadWord ?? item.status, lead: true }]), ...(item.activeTree ?? item.tree ?? [])];
   const folded = item.activeTree ? quietWords(item.quiet ?? []) : "";
   return h_flex().w_full().min_w(0).pt(2).gap(5).flex_wrap()
     .children(rows.map((r) => {

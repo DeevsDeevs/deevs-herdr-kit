@@ -61,10 +61,24 @@ const changes = fresh(terms);
 assert.ok(model.finishedUnseen(fix, new Map(), {}, NOW, changes), "a fresh paneless done lead is Done");
 assert.ok(!model.finishedUnseen(fix, new Map(), {}, NOW, fresh(terms, NOW - 13 * H)), "it ages out after 12h");
 assert.ok(model.finishedUnseen(fix, new Map([["t5", "done"]]), {}, NOW, fresh(terms, NOW - 13 * H)), "with a pane it waits for a look");
-const seenAt = model.changedAt(fix, changes);
+const seenAt = changes.get("t5").at;
 assert.ok(!model.finishedUnseen(fix, new Map(), { t5: seenAt }, NOW, changes), "a click clears it");
-const later = new Map([...changes, ["t6", { at: NOW }]]);
-assert.ok(model.finishedUnseen(fix, new Map(), { t5: seenAt }, NOW, later), "a new change after the click shows it again");
+// track-fix 3: a worker's change after the click neither brings Done back nor restarts its 12h.
+const workerLater = new Map([...changes, ["t6", { at: NOW }]]);
+assert.ok(!model.finishedUnseen(fix, new Map(), { t5: seenAt }, NOW, workerLater), "a worker's change does not bring a seen Done back");
+assert.ok(!model.finishedUnseen(fix, new Map(), {}, NOW, new Map([...fresh(terms, NOW - 13 * H), ["t6", { at: NOW }]])), "nor restart its 12h");
+const later = new Map([...changes, ["t5", { at: NOW }]]);
+assert.ok(model.finishedUnseen(fix, new Map(), { t5: seenAt }, NOW, later), "the lead's own new finish after the click shows it again");
+// track-fix R1 3: a click stored before the update (the item's newest time, after the lead's finish) still counts.
+assert.ok(!model.finishedUnseen(fix, new Map(), { t5: seenAt + 30e3 }, NOW, changes), "an older click at a worker's later time stays seen");
+// track-fix 4: Herdr's herdr.seen at the lead's turn (looked at in Herdr, or on another client) clears it.
+{
+  const lead = (seen) => model.workItems([term("h1", "s1", { status: "done", turn: 3, labels: seen == null ? {} : { "herdr.seen": seen } })], new Map(), spaces)[0];
+  const ch = new Map([["h1", { at: NOW - 60e3 }]]);
+  assert.ok(!model.finishedUnseen(lead("3"), new Map(), {}, NOW, ch), "herdr.seen clears Done for a lead without a pane");
+  assert.ok(model.finishedUnseen(lead("2"), new Map(), {}, NOW, ch), "seen at an older turn: still Done");
+  assert.ok(model.finishedUnseen(lead(null), new Map(), {}, NOW, ch), "no label: our own rules");
+}
 assert.deepEqual(fix.tree.map((r) => r.t.address), ["t6", "t9"]);
 
 assert.ok(items.some((i) => i.key === "agent:t8"), "an agent a shell started is its own item");
@@ -583,11 +597,40 @@ assert.ok(!ch.has("t9") && ch.has("rem/t6"), "gone for a day: it goes");
   assert.deepEqual([back.get("t1").at, back.get("t1").gone], [NOW - 5 * 86400e3, undefined], "its age is kept");
   // A done that comes without working before it (Herdr reports an old agent done again when it is
   // opened) is no new finish; a done after working is.
-  model.trackChanges(back, [term("t1", "s1", { status: "done", turn: 3 })], NOW + 120e3, []);
-  assert.equal(back.get("t1").at, NOW - 5 * 86400e3, "done again after a peek: same age");
+  model.trackChanges(back, [term("t1", "s1", { status: "done", turn: 2 })], NOW + 120e3, []);
+  assert.equal(back.get("t1").at, NOW - 5 * 86400e3, "done again after a peek (same turn): same age");
   model.trackChanges(back, [term("t1", "s1", { status: "working", turn: 3 })], NOW + 180e3, []);
   model.trackChanges(back, [term("t1", "s1", { status: "done", turn: 4 })], NOW + 240e3, []);
   assert.equal(back.get("t1").at, NOW + 240e3, "a finish after working is new");
+  // track-fix 1: a turn missed between two sightings (done at 4, next seen done at 5) is a new finish.
+  model.trackChanges(back, [term("t1", "s1", { status: "done", turn: 5 })], NOW + 300e3, []);
+  assert.equal(back.get("t1").at, NOW + 300e3, "a higher turn is a new finish, though its working was never seen");
+  // Without turns, the word decides as before.
+  const noTurn = new Map([["n1", { word: "idle", at: NOW - 86400e3, had: true }]]);
+  model.trackChanges(noTurn, [term("n1", "s1", { status: "done" })], NOW, []);
+  assert.equal(noTurn.get("n1").at, NOW - 86400e3, "no turn: done again keeps its time");
+}
+// track-fix 5: two copies' maps fold together to the same times: the earlier for the same word and
+// turn, the later sighting for another state.
+{
+  const a = new Map([["m1", { word: "done", turn: 2, at: NOW - 5e3 }], ["m2", { word: "working", turn: 1, at: NOW - 90e3 }]]);
+  const b = { m1: { word: "done", turn: 2, at: NOW - 1e3 }, m2: { word: "done", turn: 2, at: NOW - 2e3 }, m3: { word: "idle", turn: 0, at: NOW } };
+  assert.deepEqual(model.mergeChanges(a, b), { changed: true, tell: true });
+  assert.deepEqual([a.get("m1").at, a.get("m2").word, a.get("m3").at], [NOW - 5e3, "done", NOW], "earlier same state, newer state, a new one");
+  const back = Object.fromEntries(a);
+  assert.deepEqual(model.mergeChanges(new Map(Object.entries(b)), back).changed, true);
+  assert.deepEqual(model.mergeChanges(a, back), { changed: false, tell: false }, "the same map: nothing to do");
+  // track-fix R1 2: the same time with another word or turn: both sides pick the same winner, and
+  // only the winner tells, so two copies never write back and forth.
+  const idle = { word: "idle", turn: 5, at: NOW }, doneAgain = { word: "done", turn: 5, at: NOW }, turn6 = { word: "idle", turn: 6, at: NOW };
+  for (const [x, y] of [[idle, doneAgain], [idle, turn6]]) {
+    const one = new Map([["z", x]]), two = new Map([["z", y]]);
+    const r1 = model.mergeChanges(one, { z: y });
+    const r2 = model.mergeChanges(two, { z: x });
+    assert.deepEqual(one.get("z"), two.get("z"), "one winner on both sides");
+    assert.equal(r1.tell + r2.tell, 1, "only the winner tells");
+    assert.deepEqual(model.mergeChanges(one, Object.fromEntries(two)), { changed: false, tell: false }, "then quiet");
+  }
 }
 // A finish nobody looked at is Done for a day; older, it goes to Earlier with the other quiet ones.
 {

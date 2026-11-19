@@ -4,7 +4,8 @@
 export * from "./perf/mod-stubs.mjs";
 const fx = () => globalThis.__fx;
 export const appHome = () => "/made/up/app";
-export const readTextFile = (p) => Promise.resolve(fx().files[p] ?? null);
+// fx().hold[path]: a promise the read waits on (a slow disk), to catch what runs meanwhile.
+export const readTextFile = (p) => (fx().hold?.[p] ?? Promise.resolve()).then(() => fx().files[p] ?? null);
 export const writeTextFile = (p, text, expected) => {
   if ((fx().files[p] ?? null) !== (expected ?? null)) return Promise.reject(new Error("The file changed outside Herdr"));
   fx().files[p] = text;
