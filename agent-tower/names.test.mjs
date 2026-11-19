@@ -3,7 +3,7 @@
 // a name someone typed (a converted space), two tasks in one space, another machine, an Eye, an Eye
 // started by hand; and both scripts' requests and answers through a made-up inbox.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,7 +18,7 @@ const space = (id, name, named, tabs, machine = null) => ({ id, name, named, mac
 const terms = [
   // One task, Herdr's own names everywhere: a lead, a worker, a shell.
   lead("t1", "a1", "Invoice CSV export", "sp1", "tb1"),
-  term("t2", { "task.id": "a1", "herdr.space": "sp1", "herdr.tab": "tb2" }, { name: "study-v01", parent: "t1" }),
+  term("t2", { "task.id": "a1", "herdr.space": "sp1", "herdr.tab": "tb2" }, { name: "a1-snow-gear", parent: "t1" }),
   term("t3", { "task.id": "a1", "task.role": "shell", "herdr.space": "sp1", "herdr.tab": "tb3" }, { status: null, program: { agent: false, name: "zsh" }, cwd: "/home/me/shop" }),
   // Converted: the space's name was typed by someone; its task now has another title.
   lead("t4", "a2", "Billing schema check", "sp2", "tb4"),
@@ -52,7 +52,33 @@ const byId = Object.fromEntries(wanted.map((s) => [s.id, s]));
 
 assert.deepEqual(wanted.map((s) => s.id), ["sp1", "sp2", "sp3", "sp4", "sp5", "work-vps/sp6", "sp7"], "every space holding a task or an Eye, none other");
 assert.deepEqual([byId.sp1.state, byId.sp1.to, byId.sp1.anchor], ["change", "Invoice CSV export", "t1"], "Herdr's name: the task's title, recorded on its lead");
-assert.deepEqual(byId.sp1.tabs.map((tb) => [tb.to, tb.state, tb.anchor]), [["lead", "change", "t1"], ["study-v01", "change", "t2"], ["shell", "change", "t3"]]);
+assert.deepEqual(byId.sp1.tabs.map((tb) => [tb.to, tb.state, tb.anchor]), [["lead", "change", "t1"], ["snow-gear", "change", "t2"], ["shell", "change", "t3"]],
+  "a worker's tab: its hc name without the task id");
+{
+  // Only its own task's id goes; a name without it, or the id alone, stays as it is.
+  const w = (name) => term("w1", { "task.id": "a1", "task.role": "worker", "herdr.space": "sp1", "herdr.tab": "tb2" }, { name, parent: "t1" });
+  const tabOf = (name) => {
+    const ts = [terms[0], w(name)];
+    return model.wantedNames({ terms: ts, spaces: [spaceList[0]], items: model.workItems(ts, new Map(), [spaceList[0]]) })[0].tabs[1].to;
+  };
+  assert.deepEqual(["study-v01", "a9-api-review", "a1-", "a1-api-review"].map(tabOf), ["study-v01", "a9-api-review", "a1-", "api-review"]);
+  // A worker opened as a tab: Herdr names the tab after its hc name and counts it as named. That name
+  // is Herdr's, not a person's: it becomes the role. A name someone typed there stays.
+  const kept = (tabName, ours = null, worker = w("a1-snow-gear")) => {
+    const sp = space("sp1", "Invoice CSV export", true, [["tb1", "lead", true], ["tb2", tabName, true]]);
+    const ts = [{ ...terms[0], labels: { ...terms[0].labels, "tower.space-name": "Invoice CSV export", "tower.tab-name": "lead" } },
+      ours ? { ...worker, labels: { ...worker.labels, "tower.tab-name": ours } } : worker];
+    const tb = model.wantedNames({ terms: ts, spaces: [sp], items: model.workItems(ts, new Map(), [sp]) })[0].tabs[1];
+    return [tb.to, tb.state];
+  };
+  assert.deepEqual(kept("a1-snow-gear"), ["snow-gear", "change"]);
+  assert.deepEqual(kept("Gear list"), ["snow-gear", "named"]);
+  // Once the mod has named that tab, an hc name typed back is the person's and stays.
+  assert.deepEqual(kept("a1-snow-gear", "snow-gear"), ["snow-gear", "named"]);
+  const devserver = term("w2", { "task.id": "a1", "task.role": "shell", "herdr.space": "sp1", "herdr.tab": "tb2" }, { name: "devserver", status: null, program: { agent: false, name: "zsh" } });
+  assert.deepEqual(kept("devserver", null, devserver), ["shell", "change"], "a shell kept as a tab: Herdr's hc name");
+  assert.deepEqual(kept("devserver", "shell", devserver), ["shell", "named"], "typed back after the mod named it: the person's");
+}
 assert.deepEqual([byId.sp2.state, byId.sp2.from, byId.sp2.to], ["named", "Billing", "Billing schema check"], "a typed name stays, with the title --named would give");
 assert.deepEqual([byId.sp2.tabs[0].to, byId.sp2.tabs[0].alt], ["lead · Billing schema check", "lead"], "its lead's tab says the task while the space doesn't; lead once it does");
 assert.deepEqual([byId.sp3.state, byId.sp3.to, byId.sp3.tabs[0].state], ["change", "Garden plan", "same"], "still ours: follows the title");
@@ -76,7 +102,7 @@ assert.deepEqual(twoShells[0].tabs.map((tb) => tb.to), ["lead", "shell · api", 
 // What to do: only names that are ours, the space before its tabs.
 const changes = model.nameChanges(wanted);
 assert.deepEqual(changes.filter((c) => c.id.startsWith("sp1") || c.id === "tb1" || c.id === "tb2" || c.id === "tb3").map((c) => [c.kind, c.id, c.to]),
-  [["space", "sp1", "Invoice CSV export"], ["tab", "tb1", "lead"], ["tab", "tb2", "study-v01"], ["tab", "tb3", "shell"]]);
+  [["space", "sp1", "Invoice CSV export"], ["tab", "tb1", "lead"], ["tab", "tb2", "snow-gear"], ["tab", "tb3", "shell"]]);
 assert.ok(!changes.some((c) => c.id === "sp2" || c.id === "sp4" || c.id === "sp5" || c.id === "tb6"), "never a typed name, nor a shared space");
 
 // --named: the typed names too.
@@ -148,6 +174,20 @@ const e1 = await script("tower-eye", ["start", "--area", "Work"], { ok: true, ad
 assert.deepEqual([e1.request.eye, e1.out, e1.code], [{ do: "start", area: "Work" }, "Started Work's Eye: t9.\n", 0]);
 const e2 = await script("tower-eye", [], { ok: true, text: "Work: none" }, { TOWER_AREA: "Work" });
 assert.deepEqual(e2.request.eye, { do: "status", by: "Work" });
+// tower-new --title: the new task's name goes with the request (--yours: the person's own); the words as typed.
+const s1 = await script("tower-new", ["--title", 'Cache to "Redis"', "work-lead", "so, I want the cache\tmoved"], { ok: true, task: "k1", starting: true });
+assert.deepEqual([s1.request.title, s1.request.yours, s1.request.words, s1.request.recipe, s1.code], ['Cache to "Redis"', undefined, "so, I want the cache\tmoved", "work-lead", 0]);
+const s2 = await script("tower-new", ["--title", "Bird song guide", "--yours", "personal-lead", "a guide to the bird songs"], { ok: true, task: "k2", starting: true });
+assert.deepEqual([s2.request.title, s2.request.yours], ["Bird song guide", true]);
+// Other control characters (ESC, form feed, DEL) are dropped, so the request stays JSON; tabs and lines are escaped.
+const s3 = await script("tower-new", ["--title", "Cache\x1b[1m to Redis", "work-lead", "fix\x1bthe\fcache\x7f\tnow\nplease"], { ok: true, task: "k3", starting: true });
+assert.deepEqual([s3.request?.title, s3.request?.words], ["Cache[1m to Redis", "fixthecache\tnow\nplease"]);
+// Usage errors exit 2 and write nothing: --yours alone, an empty or missing title, a title for a task that exists.
+for (const args of [["--yours", "work-lead", "w"], ["--title", "", "work-lead", "w"], ["--title"], ["--title", "X", "--task", "k1", "work-lead", "w"]]) {
+  const dir = mkdtempSync(join(tmpdir(), "tower-new-"));
+  const r = spawnSync(new URL("./mods/agent-tower/tower-new", import.meta.url).pathname, args, { env: { ...process.env, AGENT_TOWER_DIR: dir } });
+  assert.deepEqual([r.status, String(r.stderr).startsWith("usage: tower-new [--title"), readdirSync(dir)], [2, true, []], args.join(" "));
+}
 const e3 = await script("tower-eye", ["end"], { ok: false, why: "no" });
 assert.deepEqual([e3.request.eye, e3.code], [{ do: "end" }, 1]);
 for (const [name, args] of [["tower-names", ["--nope"]], ["tower-eye", ["stop"]], ["tower-eye", ["--area"]]]) {
@@ -191,13 +231,16 @@ for (const [name, args] of [["tower-names", ["--nope"]], ["tower-eye", ["stop"]]
 // ── Where a task lives without a recipe folder: <taskRoot>/<slug>-<id> ──
 {
   assert.equal(model.slugOf("so garden plan task - i want to start"), "so-garden-plan-task");
-  assert.equal(model.slugOf("Fix: the café's CSV, again!"), "fix-the-café-s");
+  assert.equal(model.slugOf("Fix: the café's CSV, again!"), "fix-café-s-csv", "small words go");
+  assert.equal(model.slugOf("Cache to Redis"), "cache-to-redis", "\"to\" stays");
+  assert.equal(model.slugOf("The notes of a walk and the songs for an album with captions"), "notes-walk-songs-album");
   assert.equal(model.slugOf("Supercalifragilisticexpialidocious and more words"), "supercalifragilisticexpialidocio");
   assert.equal(model.slugOf("!!!"), "");
   const config = model.parseConfig({ taskRoot: "/srv/work/", areas: [{ id: "work", label: "Work", taskRoot: "~/jobs" }, { id: "personal", label: "Personal" }] }).config;
   assert.equal(model.taskFolder(config, "work", "Billing schema check", "b7"), "~/jobs/billing-schema-check-b7");
   assert.equal(model.taskFolder(config, "personal", "Garden plan", "g2"), "/srv/work/garden-plan-g2");
   assert.equal(model.taskFolder(model.DEFAULTS, "personal", "", "g3"), "~/tasks/g3");
+  assert.equal(model.taskFolder(model.DEFAULTS, "personal", null, "g4"), "~/tasks/g4", "no title yet: the id alone");
   const bad = model.parseConfig({ taskRoot: 7 });
   assert.deepEqual([bad.bad, bad.config.taskRoot], [["taskRoot"], "~/tasks"]);
   assert.deepEqual(model.parseConfig({ areas: [{ id: "w", label: "W", taskRoot: 3 }] }).bad, ["areas"]);

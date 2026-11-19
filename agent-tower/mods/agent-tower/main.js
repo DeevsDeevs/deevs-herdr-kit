@@ -389,6 +389,16 @@ const eyeIcon = (size, color) => svg("mods/agent-tower/eye.svg").size(size).flex
 const shownSpace = () => spaces().find((s) => s.active)?.id ?? null;
 // Task titles by task id, so a title outlives its lead's record.
 const TITLES = "agent-tower.titles";
+// The titles the person gave, by task id, put back when an agent writes over one (model.personTitles).
+const OWN_TITLES = "agent-tower.own-titles";
+// A found lead's (or Eye's) one label call, with the names its space.new gave, so they stay ours to
+// keep in step (model.wantedNames).
+const leadLabels = (p) => [
+  ...(p.eye ? ["tower.eye=1", ...(p.eyeArea ? [`tower.area=${p.eyeArea}`] : [])] : [...model.leadPairs(p), `${model.TAB_NAME}=${model.LEAD_TAB}`]),
+  `${model.SPACE_NAME}=${p.name}`,
+];
+// How long a start without a title waits for the namer (it answers in about 3 s) before its folder is made.
+const NAMER_WAIT_MS = 8000;
 // Before the rename these lived under agent-tasks.*; read them until the new key is written.
 const sharedOr = (key) => shared(key) ?? shared(key.replace("agent-tower.", "agent-tasks."));
 const pad = (n) => String(n).padStart(2, "0");
@@ -815,7 +825,7 @@ export default class AgentTasks extends View {
     const labelling = [];
     for (const p of this.pending.filter((p) => !p.found)) {
       const found = model.findLead(p, spaceList, terms);
-      if (found) labelling.push(hc(["label", found.terminal.address, ...model.leadPairs(p)]).catch(() => null));
+      if (found) labelling.push(hc(["label", found.terminal.address, ...leadLabels(p)]).catch(() => null));
       else notify({ title: "A task may start unlabelled", body: `"${p.words}" was still starting when the window closed, so it won't show as a task.`, level: "warning" });
     }
     await Promise.all(labelling);
@@ -913,19 +923,19 @@ export default class AgentTasks extends View {
   // The one start path, for the composer and for the inbox. reply gets {ok, task, lead} once the
   // lead is labelled, or {ok: false, why}; launched runs when the space is asked for. Refusals
   // toast as before.
-  startTask(cx, recipe, words, agentId, { reply = () => {}, launched = () => {} } = {}) {
-    // Never the words as a name: "New task" until the namer's title (model.wantedNames). findLead
-    // tells two starts on one machine apart by name, so a second one is "New task 2".
+  // title, by: the name it starts with (tower-new --title); without one the namer is asked first and
+  // waited for NAMER_WAIT_MS (the composer stays dimmed with your words meanwhile).
+  // accepted(cx, id) runs once the start goes ahead (its machine answers): from then on the only
+  // refusal left is a folder that can't be made, said in a toast.
+  startTask(cx, recipe, words, agentId, { title = null, by = null, reply = () => {}, launched = () => {}, accepted = () => {} } = {}) {
     if (this.pending.some((p) => !p.eye && p.words === words) || this.starting.has(`words:${words}`)) {
       notify({ title: "That task is still starting", body: "Wait for it, or use other words.", level: "warning" });
       reply({ ok: false, why: "a task with these words is still starting" });
       return;
     }
     const machine = recipe.machine ?? null;
-    let name = model.NEW_TASK;
-    for (let n = 2; this.pending.some((p) => p.name === name) || this.starting.has(name); n++) name = `${model.NEW_TASK} ${n}`;
-    this.starting.add(name);
     this.starting.add(`words:${words}`);
+    let name = null;
     cx.spawn(async (cx) => {
       // The settings as they are now: a role or recipe changed since Herdr started counts.
       this.config = await loadConfig();
@@ -937,9 +947,23 @@ export default class AgentTasks extends View {
         // The words were the composer's; it wants them back.
         reply({ ok: false, why: silentWords(silent, "started") });
       } else {
+        const id = model.newId();
+        accepted(cx, id);
+        // A name late to come still names the task afterwards (nameTask), unless someone named it.
+        let naming = null;
+        if (!title) {
+          naming = this.askNamer(words);
+          title = await Promise.race([naming, new Promise((done) => cx.timer.after(NAMER_WAIT_MS, () => done(null)))]);
+          by = "llm";
+        }
+        // Never the words as a name: the title, else "New task" until the namer's (model.wantedNames).
+        // findLead tells two starts on one machine apart by name, so a second one is "<name> 2".
+        const base = title ? model.plainName(title) : model.NEW_TASK;
+        name = base;
+        for (let n = 2; this.pending.some((p) => p.name === name) || this.starting.has(name); n++) name = `${base} ${n}`;
+        this.starting.add(name);
         const skill = await this.skillOn(machine);
-        const id = await this.launch(cx, recipe, words, name, agentId, reply, skill);
-        if (id) launched(cx, id);
+        if (await this.launch(cx, recipe, words, name, agentId, reply, skill, { id, title, by, naming: title ? null : naming })) launched(cx, id);
       }
       this.starting.delete(name);
       this.starting.delete(`words:${words}`);
@@ -965,20 +989,19 @@ export default class AgentTasks extends View {
   }
 
   // skill: whether the skill is on the lead's machine; without it the lead gets the full contract.
-  async launch(cx, recipe, words, name, agentId, reply, skill) {
-    const id = model.newId();
+  async launch(cx, recipe, words, name, agentId, reply, skill, { id = model.newId(), title = null, by = null, naming = null } = {}) {
     const machine = recipe.machine ?? null;
     const lead = model.leadAgent(this.config, recipe, agentId ?? (shared(LEAD_PICK) ?? {})[recipe.id]);
     const worker = await this.workerCommand(machine, model.workerAgent(this.config, recipe));
     // The recipe's folder, else one of its own: never the shown space's (space.new's default).
-    const folder = recipe.folder ?? await this.makeFolder(machine, model.taskFolder(this.config, recipe.area, words, id));
+    const folder = recipe.folder ?? await this.makeFolder(machine, model.taskFolder(this.config, recipe.area, title, id));
     if (!folder) {
-      const why = `its folder could not be made in ${model.taskFolder(this.config, recipe.area, words, id)}`;
+      const why = `its folder could not be made in ${model.taskFolder(this.config, recipe.area, title, id)}`;
       notify({ title: "The task didn't start", body: why, level: "error" });
       reply?.({ ok: false, why });
       return null;
     }
-    this.pending.push({ id, name, words, machine, recipe: recipe.id, area: recipe.area, lead: lead.id, reply, before: new Set(spaces().map((s) => s.id)), at: Date.now(), found: false });
+    this.pending.push({ id, name, words, title, by, naming, machine, recipe: recipe.id, area: recipe.area, lead: lead.id, reply, before: new Set(spaces().map((s) => s.id)), at: Date.now(), found: false });
     run("space.new", {
       name,
       tab: model.LEAD_TAB,
@@ -1127,8 +1150,7 @@ export default class AgentTasks extends View {
   // with the name its space.new gave, so that name stays ours to keep in step (model.wantedNames).
   labelLead(cx, p, { terminal }) {
     cx.spawn(async (cx) => {
-      const pairs = p.eye ? ["tower.eye=1", ...(p.eyeArea ? [`tower.area=${p.eyeArea}`] : [])] : [...model.leadPairs(p), `${model.TAB_NAME}=${model.LEAD_TAB}`];
-      const r = await hc(["label", terminal.address, ...pairs, `${model.SPACE_NAME}=${p.name}`])
+      const r = await hc(["label", terminal.address, ...leadLabels(p)])
         .catch((e) => ({ code: 1, stderr: String(e) }));
       if (r.code !== 0) {
         this.pending = this.pending.filter((x) => x !== p);
@@ -1145,7 +1167,7 @@ export default class AgentTasks extends View {
         cx.notify();
         return;
       }
-      await this.nameTask(p.id, terminal.address, p.words);
+      if (!p.title && p.naming) await this.nameTask(p.id, terminal.address, p.naming);
     });
   }
 
@@ -1365,13 +1387,16 @@ export default class AgentTasks extends View {
         continue;
       }
       if (!checked.ok) answer({ ok: false, why: checked.why });
-      // Answered as soon as the lead's space is asked for (an agent's tool may wait only seconds);
-      // a later failure shows in the list.
+      // Answered as soon as the start goes ahead, before the namer's wait and the folder (tower-new
+      // gives up after 25 s, and an Eye told "nothing was started" would start it twice); a later
+      // failure shows in a toast.
       else this.startTask(cx, checked.recipe, checked.words, checked.agent, {
+        title: checked.title,
+        by: checked.by,
         reply: (a) => {
           if (!a.ok && !this.answered?.has(id)) answer(a);
         },
-        launched: (_cx, task) => {
+        accepted: (_cx, task) => {
           (this.answered ??= new Set()).add(id);
           answer({ ok: true, task, starting: true });
         },
@@ -1390,13 +1415,21 @@ export default class AgentTasks extends View {
     const now = Date.now();
     this.namesTried ??= new Map();
     for (const [k, at] of this.namesTried) if (now - at > 60000) this.namesTried.delete(k);
-    const todo = model.nameChanges(model.wantedNames({ terms: terminals(), spaces: spaces(), items: this.items }))
+    const terms = terminals();
+    // Your titles win: one an agent wrote over is put back (model.personTitles).
+    const guard = model.personTitles(this.items, sharedOr(OWN_TITLES) ?? {}, terms, this.reach);
+    if (guard.next) setShared(OWN_TITLES, guard.next);
+    const putBack = guard.putBack.filter((b) => !this.namesTried.has(`${b.address}=${b.pairs[0]}`));
+    // While a title is put back, names wait a tick: the space never takes the overwritten title.
+    const todo = putBack.length ? [] : model.nameChanges(model.wantedNames({ terms, spaces: spaces(), items: this.items }))
       .filter((c) => !off.has(c.machine) && !this.namesTried.has(`${c.id}=${c.to}`));
-    if (!todo.length) return;
+    if (!todo.length && !putBack.length) return;
     for (const c of todo) this.namesTried.set(`${c.id}=${c.to}`, now);
+    for (const b of putBack) this.namesTried.set(`${b.address}=${b.pairs[0]}`, now);
     this.namingNow = true;
     cx.spawn(async () => {
       try {
+        for (const b of putBack) await hc(["label", b.address, ...b.pairs]).catch(() => null);
         await this.setNames(todo);
       } finally {
         this.namingNow = false;
@@ -1458,23 +1491,33 @@ export default class AgentTasks extends View {
     if (old != null) await writeTextFile(path, text, old).catch(() => null);
   }
 
-  // A small model names the task; your words stay when it fails or you renamed it meanwhile.
-  // renamedTasks covers a rename terminals() doesn't show yet.
-  async nameTask(taskId, address, words) {
+  // A small model names the task: its name, or null (said once per session in Herdr's log).
+  async askNamer(words) {
     const namer = this.config.roles.namer;
     // stdin closed: a namer that also reads stdin (claude -p) would wait for it, then fail.
     const r = await exec("sh", ["-c", '"$@" </dev/null', "sh", namer[0], ...model.namerArgs(namer, model.namePrompt(words))], { timeout: 60000 })
       .catch((e) => ({ code: -1, stderr: String(e?.message ?? e) }));
     const name = r?.code === 0 ? model.acceptName(r.stdout) : null;
-    // A failed naming leaves your words as the title; said once per session in Herdr's log.
     if (!name && !this.namerFailed) {
       this.namerFailed = true;
       console.log(`agent-tower: the namer gave no name (exit ${r?.code}): ${(r?.stderr || r?.stdout || "").trim().split("\n").pop()}`);
     }
+    return name;
+  }
+
+  // The namer's late name, unless someone named the task meanwhile (you, its lead): your words stay
+  // when it fails. renamedTasks covers a rename terminals() doesn't show yet.
+  async nameTask(taskId, address, naming) {
+    const name = await naming;
     if (!name || this.renamedTasks.has(taskId)) return;
-    // A rename meanwhile set task.by to "you"; a label written a moment ago may not show yet.
-    const by = terminals().find((t) => t.address === address)?.labels?.["task.by"];
-    if (by && by !== "raw") return;
+    // Someone named it meanwhile (you, its lead): terminals() may not show a label written a moment
+    // ago, so the lead's labels are read again right before the write.
+    const now = await hc(["get", address, "--json"]).catch(() => null);
+    let by = null;
+    try {
+      by = JSON.parse(now?.stdout ?? "null")?.labels?.["task.by"] ?? null;
+    } catch {}
+    if (now?.code !== 0 || by !== "raw") return;
     const w = await hc(["label", address, `task.title=${name}`, "task.by=llm"]).catch(() => null);
     if (w?.code === 0 && !this.renamedTasks.has(taskId)) this.rememberTitle(taskId, name);
   }
@@ -1512,6 +1555,8 @@ export default class AgentTasks extends View {
     if (!item?.lead || !title) return;
     const taskId = item.taskId ?? model.newId();
     this.renamedTasks.add(taskId);
+    // Yours from now on: an agent's write over it is put back (nameTick).
+    setShared(OWN_TITLES, { ...(sharedOr(OWN_TITLES) ?? {}), [taskId]: { title, by: "you", address: item.lead.address } });
     const pairs = item.taskId
       ? [`task.title=${title}`, "task.by=you"]
       : [`task.id=${taskId}`, "task.role=lead", `task.title=${title}`, "task.by=you"];

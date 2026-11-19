@@ -32,7 +32,12 @@ async function copy({ draw = true } = {}) {
   let notified = 0;
   const cx = { focus_handle: () => ({ focus() {} }), notify() { notified++; }, stop_propagation() {},
     spawn(f) { Promise.resolve().then(() => f(cx)).catch(() => {}); },
-    timer: { every: (ms, f) => (timers.push({ ms, f, next: clock + ms }), { cancel() {} }), after: () => ({ cancel() {} }) } };
+    timer: { every: (ms, f) => (timers.push({ ms, f, next: clock + ms }), { cancel() {} }),
+      // Only the namer's wait runs here (fx.afterRuns); Herdr's other one-shot timers stay off as before.
+      after: (ms, f) => {
+        if (globalThis.__fx.afterRuns) timers.push({ ms, f, next: clock + ms, once: true });
+        return { cancel() {} };
+      } } };
   const v = new AgentTasks();
   v.init({}, cx);
   await settle();
@@ -46,6 +51,7 @@ async function copy({ draw = true } = {}) {
       if (!due) break;
       clock = Math.max(clock, due.next);
       due.next += due.ms;
+      if (due.once) timers.splice(timers.indexOf(due), 1);
       due.f(cx);
       await settle();
     }
@@ -365,9 +371,10 @@ const answered = (fx, id) => fx.files[`${OUTBOX}/${id}.json`] ?? null;
   await batch([`${INBOX}/req-st.json`]);
   assert.equal(JSON.parse(answered(fx, "req-st")).text, "Work: none\nPersonal: t4, idle");
 }
-// A start never names the space with the words typed: "New task" and "lead" at birth, recorded as ours
-// in the lead's one label call, in a folder of its own (<taskRoot>/<slug>-<id>), never the shown space's;
-// the space takes the namer's title when it comes.
+// A start never names the space with the words typed: with no title (the namer gave none) "New task"
+// and "lead" at birth, recorded as ours in the lead's one label call, in a folder of its own
+// (<taskRoot>/<id>: never a slug of the words, never the shown space's); the space takes the namer's
+// title when it comes.
 {
   const fx = world();
   const { v, cx, tick, batch } = await copy();
@@ -382,8 +389,8 @@ const answered = (fx, id) => fx.files[`${OUTBOX}/${id}.json`] ?? null;
   assert.ok(a.ok && a.starting, JSON.stringify(a));
   const [cmd, args] = fx.runs.find((r) => r[0] === "space.new");
   assert.equal(cmd, "space.new");
-  assert.deepEqual([args.name, args.tab, args.folder], ["New task", "lead", `/home/me/tasks/so-garden-plan-task-${a.task}`]);
-  assert.deepEqual(fx.made, [[null, `~/tasks/so-garden-plan-task-${a.task}`]], "made on the lead's machine");
+  assert.deepEqual([args.name, args.tab, args.folder], ["New task", "lead", `/home/me/tasks/${a.task}`]);
+  assert.deepEqual(fx.made, [[null, `~/tasks/${a.task}`]], "made on the lead's machine");
   // Herdr makes it; the lead is labelled once it shows.
   fx.fixture.spaces = [{ id: "sp9", name: "New task", named: true, machine: null, active: true, tabs: [{ id: "tb9", name: "lead", named: true }] }];
   const t9 = { address: "t9", state: "live", status: "working", turn: 1, cwd: args.folder, program: { agent: true, name: "Claude Code" }, labels: { "herdr.space": "sp9", "herdr.tab": "tb9" } };
@@ -404,14 +411,194 @@ const answered = (fx, id) => fx.files[`${OUTBOX}/${id}.json`] ?? null;
   v.render(cx);
   await tick(2500);
   assert.deepEqual(fx.hcCalls.filter((x) => x[0] === "label").map((x) => x.slice(1).join(" ")), ["t9 tower.space-name=Garden planting calendar"]);
-  // A folder that can't be made: no start, and never the shown space's folder.
+  // A folder that can't be made: no start, and never the shown space's folder. The request was answered
+  // when the start went ahead (before the folder); the failure is a toast.
   fx.noMkdir = true;
   fx.runs = [];
+  fx.log = [];
   fx.files[`${INBOX}/req-nofolder.json`] = JSON.stringify({ recipe: "personal-lead", words: "made-up words", at: clock });
   await batch([`${INBOX}/req-nofolder.json`]);
   await settle();
-  assert.match(answered(fx, "req-nofolder"), /folder could not be made/);
+  assert.ok(JSON.parse(answered(fx, "req-nofolder")).starting);
   assert.deepEqual(fx.runs, []);
+  assert.ok(fx.log.some((x) => x.what === "notify"), "said in a toast");
+}
+// Names (BUILD2-NAMING). The lead the stubs show for a start: its space and terminal, with the labels
+// its one label call gave (tower.* and task.*).
+const showLead = (fx, address, sp, tb, args) => {
+  fx.fixture.spaces = [...fx.fixture.spaces.filter((x) => x.id !== sp), { id: sp, name: args.name, named: true, machine: null, active: true, tabs: [{ id: tb, name: "lead", named: true }] }];
+  const t = { address, state: "live", status: "working", turn: 1, cwd: args.folder, program: { agent: true, name: "Claude Code" }, labels: { "herdr.space": sp, "herdr.tab": tb } };
+  fx.fixture.terms = [...fx.fixture.terms.filter((x) => x.address !== address), t];
+  return t;
+};
+const took = (fx, t) => {
+  for (const call of fx.hcCalls.filter((x) => x[0] === "label" && x[1] === t.address)) {
+    for (const kv of call.slice(2)) t.labels[kv.slice(0, kv.indexOf("="))] = kv.slice(kv.indexOf("=") + 1);
+  }
+};
+const newSpace = (fx) => fx.runs.filter((r) => r[0] === "space.new").at(-1)?.[1] ?? null;
+// tower-new --title: the space and the folder take the Eye's title at once, the lead is born with it
+// (task.by=eye), the namer is never asked, and the words reach the lead whole.
+{
+  const fx = world();
+  const { tick, batch } = await copy();
+  Object.assign(fx, { runs: [], made: [], hcCalls: [], namer: () => "Never asked" });
+  const words = "so, I wanted a task in which the session cache moves to redis, ok?";
+  fx.files[`${INBOX}/req-t.json`] = JSON.stringify({ recipe: "personal-lead", words, title: "Cache to Redis", at: clock });
+  await batch([`${INBOX}/req-t.json`]);
+  await settle();
+  const a = JSON.parse(answered(fx, "req-t"));
+  const args = newSpace(fx);
+  assert.deepEqual([a.ok, args.name, args.folder], [true, "Cache to Redis", `/home/me/tasks/cache-to-redis-${a.task}`]);
+  assert.ok(args.task.endsWith(`: ${words}`), args.task);
+  const t = showLead(fx, "t9", "sp9", "tb9", args);
+  await tick(1600);
+  const label = fx.hcCalls.find((x) => x[0] === "label" && x[1] === "t9");
+  assert.ok(["task.title=Cache to Redis", "task.by=eye", "tower.space-name=Cache to Redis"].every((x) => label.includes(x)), label.join(" "));
+  assert.equal(fx.namerAsked, undefined, "no namer call");
+  took(fx, t);
+  // --yours: the person's name (task.by=you).
+  fx.hcCalls = [];
+  fx.files[`${INBOX}/req-y.json`] = JSON.stringify({ recipe: "personal-lead", words: "a guide from the bird song recordings", title: "Bird song guide", yours: true, at: clock });
+  await batch([`${INBOX}/req-y.json`]);
+  await settle();
+  const y = newSpace(fx);
+  assert.deepEqual([y.name, y.folder], ["Bird song guide", `/home/me/tasks/bird-song-guide-${JSON.parse(answered(fx, "req-y")).task}`]);
+  showLead(fx, "t8", "sp8", "tb8", y);
+  await tick(1600);
+  assert.ok(fx.hcCalls.find((x) => x[0] === "label" && x[1] === "t8").includes("task.by=you"));
+  // An empty title is refused with a reason.
+  fx.files[`${INBOX}/req-e.json`] = JSON.stringify({ recipe: "personal-lead", words: "x", title: "  ", at: clock });
+  await batch([`${INBOX}/req-e.json`]);
+  assert.match(answered(fx, "req-e"), /the title is empty/);
+}
+// Without a title, the start waits for the namer: no space before its answer, then the space and the
+// folder take its name (task.by=llm). tower-new's request is answered at once, before the wait (it
+// gives up after 25 s, and an Eye told "nothing was started" would start the task twice).
+{
+  const fx = world();
+  const { tick, batch } = await copy();
+  let answer = null;
+  Object.assign(fx, { runs: [], made: [], hcCalls: [], afterRuns: true, namer: () => new Promise((ok) => (answer = ok)) });
+  fx.files[`${INBOX}/req-n.json`] = JSON.stringify({ recipe: "personal-lead", words: "so i need the invoice export fixed, the date colum is wrong", at: clock });
+  await batch([`${INBOX}/req-n.json`]);
+  const early = JSON.parse(answered(fx, "req-n") ?? "null");
+  assert.deepEqual([early?.ok, early?.starting, typeof early?.task], [true, true, "string"], "answered before the namer's wait");
+  await tick(3000);
+  assert.deepEqual([newSpace(fx), fx.namerAsked?.length], [null, 1], "waiting on the namer");
+  assert.ok(fx.namerAsked[0].includes("so i need the invoice export fixed"), "asked with the words");
+  answer("Invoice export fix");
+  await settle();
+  const a = JSON.parse(answered(fx, "req-n"));
+  const args = newSpace(fx);
+  assert.deepEqual([args.name, args.folder], ["Invoice export fix", `/home/me/tasks/invoice-export-fix-${a.task}`]);
+  showLead(fx, "t7", "sp7", "tb7", args);
+  await tick(1600);
+  const label = fx.hcCalls.find((x) => x[0] === "label" && x[1] === "t7");
+  assert.ok(label.includes("task.title=Invoice export fix") && label.includes("task.by=llm"), label.join(" "));
+}
+// The namer too slow (8 s): the task starts in <taskRoot>/<id> as "New task"; its late answer still
+// names it, unless the lead named the task meanwhile (task.by=lead): the lead's title stays and its
+// space follows it.
+{
+  const fx = world();
+  const { v, cx, tick, batch } = await copy();
+  const late = [];
+  Object.assign(fx, { runs: [], made: [], hcCalls: [], afterRuns: true, namer: () => new Promise((ok) => late.push(ok)) });
+  for (const [id, words] of [["req-l1", "the parser needs a fuzz run, made-up one"], ["req-l2", "a made-up login redirect loop to fix"]]) {
+    fx.files[`${INBOX}/${id}.json`] = JSON.stringify({ recipe: "personal-lead", words, at: clock });
+  }
+  await batch([`${INBOX}/req-l1.json`, `${INBOX}/req-l2.json`]);
+  await tick(7000);
+  assert.equal(newSpace(fx), null, "still waiting at 7 s");
+  await tick(1500);
+  const starts = fx.runs.filter((r) => r[0] === "space.new").map((r) => r[1]);
+  const ids = ["req-l1", "req-l2"].map((id) => JSON.parse(answered(fx, id)).task);
+  assert.deepEqual(starts.map((x) => [x.name, x.folder]), [["New task", `/home/me/tasks/${ids[0]}`], ["New task 2", `/home/me/tasks/${ids[1]}`]], "the id alone; two starts told apart");
+  const t1 = showLead(fx, "t1", "sp1", "tb1", starts[0]);
+  const t2 = showLead(fx, "t2", "sp2", "tb2", starts[1]);
+  await tick(1600);
+  took(fx, t1);
+  took(fx, t2);
+  assert.deepEqual([t1.labels["task.by"], t2.labels["task.by"]], ["raw", "raw"]);
+  // t2's lead names its task with the rule's line before the namer answers.
+  t2.labels = { ...t2.labels, "task.title": "Fix login redirect", "task.by": "lead" };
+  fx.hcCalls = [];
+  late[0]("Parser fuzz review");
+  late[1]("Login redirect loop");
+  await settle();
+  const titled = fx.hcCalls.filter((x) => x[0] === "label" && x.some((kv) => kv.startsWith("task.title=")));
+  assert.deepEqual(titled, [["label", "t1", "task.title=Parser fuzz review", "task.by=llm"]], "the late name lands only where no one named the task");
+  took(fx, t1);
+  fx.hcCalls = [];
+  fx.log = [];
+  v.render(cx);
+  await tick(2500);
+  assert.deepEqual(fx.hcCalls.filter((x) => x[0] === "label").map((x) => x.slice(1).join(" ")).sort(),
+    ["t1 tower.space-name=Parser fuzz review", "t2 tower.space-name=Fix login redirect"], "both spaces follow their titles");
+  assert.deepEqual(fx.made.map((m) => m[1]), ids.map((id) => `~/tasks/${id}`), "no folder moved or made again");
+}
+// A late namer reads the lead's labels again right before writing: a name its lead gave a moment ago
+// (not in terminals() yet) stays.
+{
+  const fx = world();
+  const { tick, batch } = await copy();
+  let answer = null;
+  Object.assign(fx, { runs: [], made: [], hcCalls: [], afterRuns: true, namer: () => new Promise((ok) => (answer = ok)) });
+  fx.files[`${INBOX}/req-r.json`] = JSON.stringify({ recipe: "personal-lead", words: "made-up words about a cache", at: clock });
+  await batch([`${INBOX}/req-r.json`]);
+  await tick(8500);
+  const t = showLead(fx, "t3", "sp3", "tb3", newSpace(fx));
+  await tick(1600);
+  took(fx, t);
+  assert.equal(t.labels["task.by"], "raw");
+  fx.getLabels = { t3: { "task.title": "Cache to Redis", "task.by": "lead" } };
+  fx.hcCalls = [];
+  answer("Cache notes");
+  await settle();
+  assert.deepEqual(fx.hcCalls.filter((x) => x[0] === "label"), [], "the lead's name stays");
+}
+// Herdr closing while a lead is still starting: the lead found then gets the same one label call,
+// with the names its space was born with, so they stay ours.
+{
+  const fx = world();
+  const { v, batch } = await copy();
+  Object.assign(fx, { runs: [], made: [], hcCalls: [] });
+  fx.files[`${INBOX}/req-c.json`] = JSON.stringify({ recipe: "personal-lead", words: "made-up words", title: "Cache to Redis", at: clock });
+  await batch([`${INBOX}/req-c.json`]);
+  await settle();
+  showLead(fx, "t4", "sp4", "tb4", newSpace(fx));
+  await v.close();
+  const label = fx.hcCalls.find((x) => x[0] === "label" && x[1] === "t4");
+  assert.ok(["task.title=Cache to Redis", "task.by=eye", "tower.space-name=Cache to Redis", "tower.tab-name=lead"].every((x) => label?.includes(x)), label?.join(" "));
+}
+// The person's title wins: a title from him (Rename, the Eye's --yours, adopt) that an agent writes
+// over is put back, with who gave it; a machine's title stays free to change.
+{
+  const fx = world();
+  const mk = (address, id, by, title, sp) => ({ address, state: "live", status: "idle", turn: 1, program: { agent: true, name: "Claude Code" },
+    labels: { "task.id": id, "task.role": "lead", "task.title": title, "task.by": by, "herdr.space": sp, "herdr.tab": `tb-${sp}`, "tower.space-name": title, "tower.tab-name": "lead" } });
+  const mine = mk("t1", "m1", "you", "Bird song guide", "sp1");
+  const theirs = mk("t2", "m2", "eye", "Parser fuzz review", "sp2");
+  fx.fixture.terms = [mine, theirs];
+  fx.fixture.spaces = [["sp1", "Bird song guide"], ["sp2", "Parser fuzz review"]].map(([id, name]) => ({ id, name, named: true, machine: null, active: id === "sp1", tabs: [{ id: `tb-${id}`, name: "lead", named: true }] }));
+  const { v, cx, tick } = await copy();
+  await tick(2500);
+  assert.deepEqual(fx.shared["agent-tower.own-titles"], { m1: { title: "Bird song guide", by: "you", address: "t1" } });
+  mine.labels = { ...mine.labels, "task.title": "Bird song list", "task.by": "lead" };
+  theirs.labels = { ...theirs.labels, "task.title": "Parser fuzz fixes", "task.by": "lead" };
+  fx.hcCalls = [];
+  v.render(cx);
+  await tick(2500);
+  const calls = fx.hcCalls.filter((x) => x[0] === "label").map((x) => x.slice(1).join(" "));
+  assert.ok(calls.includes("t1 task.title=Bird song guide task.by=you"), calls.join("\n"));
+  assert.ok(!calls.some((c) => c.startsWith("t2 task.title")), "a machine's title is not guarded");
+  assert.ok(!calls.some((c) => c.startsWith("t1 tower.space-name")), "its space never takes the overwritten title");
+  // A Rename from the list is remembered at once, before the labels show it.
+  v.renaming = v.items.find((i) => i.taskId === "m2").key;
+  v.renameInput.set_value("Fuzz corpus review");
+  v.saveRename(cx);
+  assert.deepEqual(fx.shared["agent-tower.own-titles"].m2, { title: "Fuzz corpus review", by: "you", address: "t2" });
 }
 // A new lead inside a task whose lead has ended (its pane a shell now): a new "lead" tab in the
 // task's own space, in its folder, with its task.id and title; the old lead becomes a shell; one row.
