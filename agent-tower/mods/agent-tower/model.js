@@ -1260,6 +1260,10 @@ export function taskFolder(config, area, title, id) {
 
 // A shell line that makes the folder on its machine (~ is that machine's home) and prints its path.
 export const MKDIR_SCRIPT = 'd="$1"; case "$d" in "~") d="$HOME";; "~/"*) d="$HOME/${d#"~/"}";; esac; mkdir -p "$d" && cd "$d" && pwd';
+// Prints the first of its arguments that is a folder on that machine (as given), else exits 1.
+export const FIRST_DIR_SCRIPT = 'for d; do case "$d" in "~") e="$HOME";; "~/"*) e="$HOME/${d#"~/"}";; *) e="$d";; esac; [ -d "$e" ] && { printf "%s" "$d"; exit 0; }; done; exit 1';
+
+const HOME_FOLDER = /^(~|\/root|\/(home|Users)\/[^/]+)\/?$/;
 
 // A new lead or worker inside a task (tower-new --task, the row menu's New lead, the composer's
 // "in <title>"): the task it joins, by any of its ids. Gives {ok, item, as} or {ok: false, why}.
@@ -1274,11 +1278,20 @@ export function checkJoin(req, items, config) {
   return { ok: true, item, as };
 }
 
-// The task's folder for a new member: its lead's (live or ended), unless that is a home folder or
-// unknown; then null (the caller makes one by taskFolder).
-export function joinFolder(item) {
-  const cwd = (item.lead ?? item.live[0])?.cwd ?? null;
-  return cwd && !/^(~|\/root|\/(home|Users)\/[^/]+)\/?$/.test(cwd) ? cwd : null;
+// Where a new member of the task starts: the machine of its anchor (the lead, or its first live
+// member once the lead has ended) and the folders it may start in there, best first. The lead's
+// launch folder wins while it exists (a lead's cd, even to /tmp or a symlink's real path, moves
+// nothing); once it is gone (moved by hand: hc keeps the old path) the folders the lead and the live
+// members run in now (hc's foreground.cwd), then their launch folders. Home folders are left out.
+// joinTask takes the first that exists on that machine (FIRST_DIR_SCRIPT); none: it makes one.
+export function joinPlace(item) {
+  const anchor = item.leadGone ? item.live[0] ?? item.lead : item.lead;
+  const machine = anchor ? machineOf(anchor.address) : null;
+  const here = [item.lead, ...item.live].filter((t) => t && machineOf(t.address) === machine);
+  const lead = here.includes(item.lead) ? item.lead : null;
+  const folders = [lead?.cwd, ...here.map((t) => t.foreground?.cwd), ...here.map((t) => t.cwd)]
+    .filter((f) => f && !HOME_FOLDER.test(f));
+  return { anchor, machine, folders: [...new Set(folders)] };
 }
 
 // The first message of a new lead in a task (it takes over from the one before), or of a worker

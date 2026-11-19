@@ -1,8 +1,9 @@
 # One read for the tower panel on one machine: the lead's transcript, how long each worker's own
 # transcript has been quiet, git for the members' folders, the branch's pull request and the newest
 # chain link. argv[1]: JSON {lead?: {pid, argv, cwd}, workers: [{key, pid, argv, cwd}], cwds,
-# lead_cwd?, chain, gh_skip: [root]}. Prints JSON (at most 64 KB). Every time is "seconds ago" on
-# this machine's clock: the mod never compares clocks.
+# lead_cwd?, launch? (the lead's launch folder: launch_gone when it is not there), chain,
+# gh_skip: [root]}. Prints JSON (at most 64 KB). Every time is "seconds ago" on this machine's
+# clock: the mod never compares clocks.
 # find_transcript and its helpers come from agent-images/extract.py (same kit, MIT).
 import concurrent.futures
 import datetime
@@ -797,6 +798,9 @@ def main():
             out["lead"] = agent(req["lead"], True)
         out["workers"] = {w["key"]: agent(w, False) for w in req.get("workers") or []}
         out["repos"] = repos(req.get("cwds") or [])
+        # The lead's launch folder gone (moved by hand: hc keeps the old path): the panel shows where it runs now.
+        if req.get("launch"):
+            out["launch_gone"] = not os.path.isdir(os.path.expanduser(req["launch"]))
         skip = set(req.get("gh_skip") or [])
         asks = {r["root"]: pool.submit(pull_request, r["root"]) for r in out["repos"]
                 if r["upstream"] and not r["default"] and r["root"] not in skip}

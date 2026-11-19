@@ -690,8 +690,16 @@ come from the app's program table.
 - **New lead** (item menu, the composer's "in <title>", or `tower-new --task <id> [--as
   lead|worker]`) starts an agent inside a task (`joinTask`): a new tab in the task's space on
   its lead's machine (named "lead" for a lead), or, if that space has gone, a new space named
-  after the task. Folder: the lead's own (`model.joinFolder`, unless it is a home folder),
-  else the recipe's, else `<taskRoot>/<slug>-<task id>` as for a start. One at a time per
+  after the task. Its machine is the anchor's: the lead's, or its first live member's once the
+  lead has ended. Folder (`model.joinPlace`, home folders left out): the first that exists on
+  that machine, looked for in one `exec` (`FIRST_DIR_SCRIPT`), of the lead's launch folder (hc's
+  `cwd`: it wins while it exists, so no `cd` of the lead, in or out of the task or through a
+  symlink, moves the task), then the folders the lead and the task's live members on that machine
+  run in now (hc's `foreground.cwd`: a folder moved by hand, where hc keeps the old path), then
+  their launch folders; with none of those, the recipe's `folder` (looked for the same way), else
+  `<taskRoot>/<slug>-<task id>` made as for a start. When none of the task's folders exists the
+  start is refused, toast "The agent didn't start", "<the first of them> does not exist on <machine>",
+  and `tower-new` gets the same reason. One at a time per
   task ("a new agent in this task is still starting"). Found like a start (a live terminal in
   a tab of that space that wasn't there before, given up after a minute) and labelled in one
   call: a lead gets `task.id`, `task.role=lead`, the task's `task.title` and `task.by`,
@@ -1022,7 +1030,9 @@ Top to bottom:
   - the task's mark (18px, as its list row shows it: its status mark, or under the list's
     "agents" mark the number of agents working);
   - the title (the lead's `task.title`, else the sidebar's title, else its hc title), cut
-    with an ellipsis, tooltip "<title> · Task <id> · <recipe> · <folder>";
+    with an ellipsis, tooltip "<title> · Task <id> · <recipe> · <folder>": the lead's launch folder, or the one it
+    runs in now once the panel's read on its machine found the launch folder gone (`read.py`
+    `launch_gone`, `panel.shownFolder`);
   - the machines it runs on other than this one, 12, `dim`;
   - the 24px close box "Close the panel".
 

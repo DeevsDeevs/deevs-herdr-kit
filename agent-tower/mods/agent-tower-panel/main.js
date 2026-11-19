@@ -186,6 +186,7 @@ export default class AgentTowerPanel extends View {
       args.lead = shared ? null : specOf(lead);
       args.ambiguous = shared;
       args.lead_cwd = cwdOf(lead);
+      args.launch = lead.cwd ?? null;
       args.chain = true;
       args.chains = d.ids;
       if (cwdOf(lead)) args.cwds.push(cwdOf(lead));
@@ -342,6 +343,11 @@ export default class AgentTowerPanel extends View {
     setShared(KEPT_VIEW, Object.fromEntries(newest));
   }
 
+  // The last read on the lead's machine for this item, if any.
+  leadData(d) {
+    return d?.lead?.state === "live" ? this.cache.get(d.key)?.machines[mk(panel.machineOf(d.lead.address))]?.data ?? null : null;
+  }
+
   // A click on the title goes into the task at once (rules 1 and 6).
   titleClick(d) {
     enter(d.key);
@@ -353,7 +359,7 @@ export default class AgentTowerPanel extends View {
     const hidden = this.hideText && live;
     const recipe = live ? this.config.recipes.find((r) => r.id === d.recipe) : null;
     // Rule 7: the whole title and what it is, never how to use it.
-    const tip = live ? [d.title, d.taskId ? `Task ${d.taskId}` : null, recipe?.label, this.hideText ? null : panel.folderOf(d.cwd)].filter(Boolean).map(panel.mask).join(" · ") : null;
+    const tip = live ? [d.title, d.taskId ? `Task ${d.taskId}` : null, recipe?.label, this.hideText ? null : panel.folderOf(panel.shownFolder(d, this.leadData(d)))].filter(Boolean).map(panel.mask).join(" · ") : null;
     const away = live ? d.machines.filter(Boolean).join(", ") : "";
     const title = div().id("tp-title").min_w(0).truncate().font_semibold().text_color(hidden ? t.dim : t.foreground).child(hidden ? "Text hidden" : d?.title ?? "Details")
         .when(Boolean(tip) && !hidden, (el) => el.tooltip(tip))

@@ -1084,8 +1084,8 @@ export default class AgentTasks extends View {
       reply({ ok: false, why: "a new agent in this task is still starting" });
       return;
     }
-    const anchor = item.leadGone ? item.live[0] ?? item.lead : item.lead;
-    const machine = model.machineOf(anchor.address);
+    const place = model.joinPlace(item);
+    const machine = place.machine;
     const title = model.titleOf(item);
     const join = { task: item.taskId, item, as, title, machine, at: Date.now(), reply, found: false, members: new Set(item.live.map((t) => t.address)) };
     this.joining.push(join);
@@ -1105,7 +1105,12 @@ export default class AgentTasks extends View {
         : this.config.agents.find((a) => a.id === agentId) ?? model.workerAgent(this.config, recipe);
       const worker = as === "lead" ? await this.workerCommand(machine, model.workerAgent(this.config, recipe)) : null;
       const dir = model.taskFolder(this.config, item.area ?? recipe.area, title, item.taskId);
-      const folder = model.joinFolder(item) ?? recipe.folder ?? await this.makeFolder(machine, dir);
+      // The first of the task's folders (else the recipe's) that exists on its machine; a check that
+      // could not run takes the first. None there: refused here, not a space that fails to start.
+      const known = place.folders.length ? place.folders : recipe.folder ? [recipe.folder] : [];
+      const there = known.length ? await exec("sh", ["-c", model.FIRST_DIR_SCRIPT, "dir", ...known], { on: machine, timeout: 15000 }).catch(() => null) : null;
+      if (there && there.code !== 0) return fail(cx, `${known[0]} does not exist on ${machine ?? "this computer"}`);
+      const folder = known.length ? (there?.stdout || known[0]) : await this.makeFolder(machine, dir);
       if (!folder) return fail(cx, `its folder could not be made in ${dir}`);
       const argv = model.withEnv({ TOWER_TASK: item.taskId, TOWER_WORKER: worker }, agent.argv);
       const task = model.joinMessage(recipe, this.config, item, as, words, skill);
