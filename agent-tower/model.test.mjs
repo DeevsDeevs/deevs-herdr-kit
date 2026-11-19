@@ -626,12 +626,35 @@ assert.equal(model.splitWait("Asks you", "Supercalifragilisticexpialidociousword
 
 // Names fit the sidebar: the namer is asked for one to four words in the person's style; up to 40 kept.
 assert.ok(model.namePrompt("x").includes("one to four words, the object first and the kind of work last"));
-assert.ok(["\"Cache to Redis\"", "\"Fix login redirect\"", "(I, we, so, want, need, please, task)", "no articles, ids, dates or numbers", "misheard"].every((w) => model.namePrompt("x").includes(w)));
+assert.ok(["\"Cache to Redis\"", "\"Fix login redirect\"", "(I, we, so, want, need, please, task)", "no articles", "misheard"].every((w) => model.namePrompt("x").includes(w)));
+assert.ok(["no digits except inside a product or protocol name (S3, IPv6, H264)", "\"buy a kettle under 80 €\" → \"Kettle pick\""].every((w) => model.namePrompt("x").includes(w)));
+assert.ok(model.namePrompt("x").endsWith("</task>\nThe name, without numbers:"), "the rule is read last, after the task");
 assert.equal(model.acceptName("Travel router VPN setup\n"), "Travel router VPN setup");
 assert.equal(model.acceptName("Seed list sorted by sowing months\n"), "Seed list sorted by sowing months", "haiku's usual length is taken");
 assert.equal(model.acceptName("x".repeat(40)), "x".repeat(40));
 assert.equal(model.acceptName("x".repeat(41)), null, "longer than 40: your words stay");
 assert.equal(model.acceptName("two\nlines"), null);
+// The namer's names carry no numbers, whatever it says: an amount, a year, a count, a date, an issue
+// number goes with the word that led to it; a name with digits in it stays; nothing left is no name.
+assert.equal(model.acceptName("Travel router under 200 € with WireGuard"), "Travel router with WireGuard", "an amount");
+assert.equal(model.acceptName("Kettle pick for about 80 euros"), "Kettle pick", "an amount in words");
+assert.equal(model.acceptName("Garden sowing plan 2027"), "Garden sowing plan", "a year");
+assert.equal(model.acceptName("2026 tax summary with 1099s"), "Tax summary", "a year first, a count last");
+assert.equal(model.acceptName("Load test 10k users Redis"), "Load test users Redis", "a count");
+assert.equal(model.acceptName("Lyon weekend on 12/12"), "Lyon weekend", "a date");
+assert.equal(model.acceptName("Backups nightly at 03:00"), "Backups nightly", "a time");
+assert.equal(model.acceptName("Postgres 14→17 upgrade"), "Postgres upgrade", "versions");
+assert.equal(model.acceptName("Bump node to v22.4"), "Bump node");
+assert.equal(model.acceptName("Fix issue #482 CSV export"), "Fix CSV export", "an issue number");
+assert.equal(model.acceptName("PR 1093 parser fuzz review"), "Parser fuzz review", "still a capital first");
+assert.equal(model.acceptName("Ticket ABC-1234 login loop"), "Login loop", "a ticket id");
+assert.equal(model.acceptName("Router check, 2 laptops"), "Router check, laptops");
+assert.equal(model.acceptName("S3 overfetch review"), "S3 overfetch review", "a name with digits in it stays");
+assert.equal(model.acceptName("IPv6 router H264 3D Q3 2FA check"), "IPv6 router H264 3D Q3 2FA check");
+assert.equal(model.acceptName("Under 200 €"), null, "nothing left: no name (the caller uses the id)");
+assert.equal(model.acceptName("Task 42"), null, "one filler word left: no name");
+assert.equal(model.acceptName("Kettle pick under 80 € " + "x".repeat(28)), "Kettle pick " + "x".repeat(28), "40 counted after the cut");
+assert.equal(model.acceptName("Kettle pick under 80 € " + "x".repeat(29)), null);
 
 // Per-terminal memory forgets gone terminals, but only on machines that answered and showed
 // terminals in this read: a quiet machine, or an empty read after a start, loses nothing.
