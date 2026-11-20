@@ -854,6 +854,21 @@ come from the app's program table.
   elements}`) and per command (`{at, what, ms}`) to `<tower folder>/perf.jsonl`, never
   terminal text; past 1 MiB the file moves to `perf.jsonl.1`. Herdr cuts a mod's render off
   at 50 ms; `perf.test.mjs` fails a view projected over 25 ms on the Mac.
+- Herdr's reads (`terminals()`, `agents()`, `spaces()`, `panes()`, `machines()`,
+  `focused()`, `layout()`, `shared(k)`) are read once per render: each render starts its
+  own frame `{at, reads}`, and a frame is used only while younger than 100 ms. Outside a
+  render they read straight through. Every copy of the mod shares one module, so one
+  frame.
+- **A render can be cut off at any instruction and nothing after it runs: keep nothing
+  that outlives a render unless a dead render can't keep it.** Herdr stops a render past
+  50 ms (a timer, event or task past 500 ms) with QuickJS's interrupt, which no `catch` or
+  `finally` sees, and an async function cut that way never settles its promise. So no
+  correctness rests on code after a body: a busy mark is the time it was set and lapses
+  (`model.held`), the model pass works on its own copy of the change map, the lease
+  keeper's chain starts again once stuck longer than a lease. The one-second tick drops
+  render state it finds between renders and, with `"perf": true`, logs
+  `{at, what: "render cut off", left, count}`. `cutoff.test.mjs` cuts runs off with Node's
+  `vm` timeout, which skips `catch` and `finally` the same way.
 - The row, group label, tree lines, status marks, fold chip, rail test, repeat notes,
   avatar colours, machine line (Copy, Connect) and menu are adapted from Herdr's `agents`,
   `spaces` and `menu` mods (Apache-2.0, see `NOTICE`).

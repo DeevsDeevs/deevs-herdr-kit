@@ -6,6 +6,7 @@
 import { div, v_flex, h_flex } from "./perf.js";
 import { rowMark, WORD, wordColor, duration } from "./marks.js";
 import { readTextFile, exec, window, home } from "herdr";
+import { held } from "./model.js";
 
 export const FILE = "watchlist.json";
 export const NOTES = "investing-notes.md";
@@ -50,8 +51,8 @@ export const lastLines = (text, n = NOTE_LINES) => text.replace(/\s+$/, "").spli
 // is told to draw again only when a file changed.
 export function load(ui) {
   const s = ui.state;
-  if (s.reading || (s.at && ui.now - s.at < READ_MS)) return null;
-  s.reading = true;
+  if (held(s.reading) || (s.at && ui.now - s.at < READ_MS)) return null;
+  s.reading = Date.now();
   // A read that fails (or a throw anywhere here) must not stop the next one.
   return (async () => {
     try {
@@ -66,7 +67,7 @@ export function load(ui) {
         ui.notify();
       }
     } finally {
-      s.reading = false;
+      s.reading = null;
     }
   })().catch(() => null);
 }

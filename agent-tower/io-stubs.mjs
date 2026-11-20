@@ -19,6 +19,7 @@ export const run = (cmd, args) => {
 };
 export const exec = (cmd, args = [], opts = {}) => {
   fx().execs.push(cmd);
+  fx().execArgs?.push(args);
   // A task's folder (model.MKDIR_SCRIPT): made, with ~ as the made-up home; fx().noMkdir fails it.
   if (cmd === "sh" && args[2] === "mk") {
     fx().made?.push([opts.on ?? null, args[3]]);

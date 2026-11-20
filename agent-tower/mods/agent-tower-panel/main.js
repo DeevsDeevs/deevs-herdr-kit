@@ -136,7 +136,7 @@ export default class AgentTowerPanel extends View {
     // Per item key: { machines: { [machine]: { at, data, fails, failedAt, error, missing, signature } }, ended, clamp }.
     this.cache = new Map();
     // Machines with a read running: one at a time each.
-    this.inflight = new Set();
+    this.inflight = new Map(); // machine -> since when its read runs (panel.held)
     // Pull requests per machine|root, read at most every 5 minutes: { at, pr }.
     this.prs = new Map();
     this.view = { key: null };
@@ -208,17 +208,18 @@ export default class AgentTowerPanel extends View {
     const signature = members.map((t) => `${t.address}:${t.status}:${t.turn}`).join(" ");
     const anyWorking = members.some((t) => t.status === "working");
     for (const { m, args } of this.groupsOf(d, terms).values()) {
-      if (down.has(mk(m)) || this.inflight.has(mk(m))) continue;
+      if (down.has(mk(m)) || panel.held(this.inflight.get(mk(m)))) continue;
       const state = item.machines[mk(m)];
       const forced = this.forced === d.key;
       const freshen = this.freshen && state?.at != null && now - state.at > 60000;
       const wait = forced || freshen ? 0 : panel.readDue(state, { anyWorking, signature, now });
       if (wait > 0) {
         // A change inside the floor: read when the floor ends, not at whatever render comes next.
-        if (state.signature !== signature && !state.missing && state.fails < 3 && !state.wake) {
-          state.wake = true;
+        if (state.signature !== signature && !state.missing && state.fails < 3 && !(state.wake > now)) {
+          // When the timer fires: a mark a cut-off render left lapses then by itself.
+          state.wake = now + wait + 50;
           cx.timer.after(wait + 50, (cx) => {
-            state.wake = false;
+            state.wake = null;
             cx.notify();
           });
         }
@@ -242,8 +243,8 @@ export default class AgentTowerPanel extends View {
     const item = this.item(key);
     const state = (item.machines[mk(m)] ??= { fails: 0 });
     state.signature = signature;
-    state.reading = true;
-    this.inflight.add(mk(m));
+    state.reading = Date.now();
+    this.inflight.set(mk(m), state.reading);
     // hc ls --all lists every machine: once per round, with the lead's read or, after it ended, the first member's.
     // Ended members (hc ls --all) every LIST_EVERY_MS, and at once when a member that was live at the
     // last list has gone: Herdr drops an ended terminal, and only this list still has it.
@@ -291,7 +292,7 @@ export default class AgentTowerPanel extends View {
         state.failedAt = Date.now();
         state.error = String(e?.message ?? e).replace(/^Error: /, "");
       }
-      state.reading = false;
+      state.reading = null;
       this.inflight.delete(mk(m));
       cx.notify();
     });

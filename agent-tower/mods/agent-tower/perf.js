@@ -99,6 +99,8 @@ export function perfLog({ on = false, dir, exec, clock = () => Date.now() }) {
     file,
     render: (view, ms, elements = null) => add({ view: commandName(view), ms: Math.round(ms * 100) / 100, elements }),
     command: (what, ms) => add({ what: commandName(what), ms: Math.round(ms * 100) / 100 }),
+    // Render state a cut-off render left (left: what, from a fixed few words), and how many so far.
+    cutOff: (left, count) => add({ what: "render cut off", left, count }),
     flush,
     waiting: () => st.lines.length,
     set(next) {

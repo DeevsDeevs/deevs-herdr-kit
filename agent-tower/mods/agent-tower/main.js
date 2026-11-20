@@ -18,15 +18,24 @@ import { div, svg, image, v_flex, h_flex } from "./perf.js";
 // shared state 84 times and the layout 10 times a render). Outside a render (a click, a timer) they
 // read straight through; a write in the render updates what it remembers, and a layout command
 // forgets the layout.
-let frame = null;
+// Herdr cuts a render off past 50 ms at any instruction and nothing after runs, not even finally
+// (RECIPE.md). So each render starts its own frame, and a frame counts only while younger than any
+// live render can be: one a cut-off render left behind is never read, and the tick clears it.
+const FRAME_MS = 100;
+let frame = null; // {at, reads: Map, depth, carried}
+const liveFrame = () => {
+  const age = frame ? Date.now() - frame.at : -1;
+  return age >= 0 && age <= FRAME_MS ? frame.reads : null;
+};
 const once = (key, read) => {
-  if (!frame) return read();
-  if (!frame.has(key)) frame.set(key, read());
-  return frame.get(key);
+  const reads = liveFrame();
+  if (!reads) return read();
+  if (!reads.has(key)) reads.set(key, read());
+  return reads.get(key);
 };
 const shared = (k) => once(`shared:${k}`, () => hostShared(k));
 const setShared = (k, v) => {
-  frame?.set(`shared:${k}`, v);
+  liveFrame()?.set(`shared:${k}`, v);
   return hostSetShared(k, v);
 };
 const terminals = () => once("terminals", hostTerminals);
@@ -37,20 +46,33 @@ const machines = () => once("machines", hostMachines);
 const focused = () => once("focused", hostFocused);
 const layout = () => once("layout", hostLayout);
 const run = (command, args) => {
-  if (frame) {
-    if (String(command).startsWith("layout.")) frame.delete("layout");
-    if (String(command).startsWith("pane.") || String(command).startsWith("agent.")) frame.delete("focused");
+  const reads = liveFrame();
+  if (reads) {
+    if (String(command).startsWith("layout.")) reads.delete("layout");
+    if (String(command).startsWith("pane.") || String(command).startsWith("agent.")) reads.delete("focused");
   }
   return hostRun(command, args);
 };
+// Each render starts its own frame (were one ever nested, the outer would then read straight through).
 function inFrame(draw) {
-  const outer = frame;
-  frame ??= new Map();
-  try {
-    return draw();
-  } finally {
-    if (!outer) frame = null;
-  }
+  // A frame still here at a render's start is a cut-off render's (or a nested one's: none today).
+  if (frame) perfLog.cutOff(["frame"], ++cutOffs);
+  const mine = { at: Date.now(), reads: new Map(), depth: 0, carried: 0 };
+  frame = mine;
+  const out = draw();
+  if (frame === mine) frame = null;
+  return out;
+}
+// Render state found outside a render (the tick runs between renders) was left by a cut-off one:
+// dropped, and counted. What was left, or null.
+let cutOffs = 0;
+function clearCutOff() {
+  const left = [frame && "frame", model.passLeft() && "model pass"].filter(Boolean);
+  if (!left.length) return null;
+  frame = null;
+  model.clearPass();
+  cutOffs++;
+  return left;
 }
 
 // The perf log (off unless the settings say "perf": true), made again whenever the settings are read.
@@ -69,24 +91,20 @@ const readTextFile = timed(hostRead, (a) => `read ${baseName(a[0])}`);
 const writeTextFile = timed(hostWrite, (a) => `write ${baseName(a[0])}`);
 // A render, timed with the elements it built: for the list, the stage and each view. A render
 // inside another (a view in the stage) is counted in both: the outer one carries its count over.
-let renderDepth = 0;
-let carried = 0;
+// The depth and the carried count live in the render's frame, so a cut-off render's go with it.
 function timedRender(view, draw) {
-  if (!perfLog.on) return draw();
+  if (!perfLog.on || !frame) return draw();
+  const f = frame;
   const before = perf.elements();
-  const outer = renderDepth ? carried + before : 0;
-  carried = 0;
-  renderDepth++;
+  const outer = f.depth ? f.carried + before : 0;
+  f.carried = 0;
+  f.depth++;
   const t0 = perf.now();
-  let out;
-  try {
-    out = draw();
-  } finally {
-    renderDepth--;
-  }
-  const mine = carried + perf.elements();
+  const out = draw();
+  f.depth--;
+  const mine = f.carried + perf.elements();
   perfLog.render(view, perf.now() - t0, mine);
-  carried = renderDepth ? outer + mine : 0;
+  f.carried = f.depth ? outer + mine : 0;
   return out;
 }
 import { chrome, statusMark, markSlot, rowMark, programIcon, machineChip, BADGE, RANK, WORD } from "./marks.js";
@@ -636,7 +654,7 @@ export default class AgentTasks extends View {
     this.listedMachines = [];
     this.reach = [];
     this.pending = [];
-    this.busy = false; // a send to the Eye or a start from the composer is in flight
+    this.busy = null; // since when a send to the Eye or a start from the composer is in flight
     this.chosen = null; // the chip picked since the composer opened
     this.starting = new Set(); // names whose start is between the checks and space.new
     this.skillAt = new Map(); // machine -> Promise<whether the skill is there>
@@ -658,7 +676,7 @@ export default class AgentTasks extends View {
     this.lastShown = undefined; // the space on screen at the last render
     this.renaming = null;
     this.renamedTasks = new Set();
-    this.refreshingMachines = false;
+    this.refreshingMachines = null;
     this.scroll = ScrollHandle.new();
     this.scrollEarlier = ScrollHandle.new();
     // Search: every item in every area, group and fold (ctrl-s / or the magnifier).
@@ -724,7 +742,12 @@ export default class AgentTasks extends View {
     // Changes get their time every second, drawn or not: Herdr draws no covered, minimized or
     // hidden window, but runs its timers.
     this.trackTick(cx, false);
-    cx.timer.every(1000, (cx) => this.trackTick(cx));
+    cx.timer.every(1000, (cx) => {
+      // Between renders: render state still set was left by a cut-off render (the second line after liveFrame).
+      const left = clearCutOff();
+      if (left) perfLog.cutOff(left, cutOffs);
+      this.trackTick(cx);
+    });
     this.refreshMachines(cx);
     cx.timer.every(30000, (cx) => {
       perfLog.flush();
@@ -762,8 +785,8 @@ export default class AgentTasks extends View {
   // The settings file, every 30 s from the docked list: changed (or new, or gone), it is read again
   // here, and the other copies follow (one shared value, only on a change).
   checkSettings(cx) {
-    if (this.checkingSettings) return;
-    this.checkingSettings = true;
+    if (model.held(this.checkingSettings)) return;
+    this.checkingSettings = Date.now();
     cx.spawn(async (cx) => {
       try {
         const text = await readTextFile(settingsFile ?? `${towerDir()}/config.json`).catch(() => null);
@@ -773,15 +796,15 @@ export default class AgentTasks extends View {
         setShared(CONFIG_AT, this.configAt);
         cx.notify();
       } finally {
-        this.checkingSettings = false;
+        this.checkingSettings = null;
       }
     });
   }
 
   // A hung machine link can hang `hc machine ls`; never stack a second one behind it.
   refreshMachines(cx) {
-    if (this.refreshingMachines) return;
-    this.refreshingMachines = true;
+    if (model.held(this.refreshingMachines, 10 * 60000)) return;
+    this.refreshingMachines = Date.now();
     cx.spawn(async (cx) => {
       try {
         const r = await hc(["machine", "ls", "--json"]);
@@ -794,7 +817,7 @@ export default class AgentTasks extends View {
           }
         }
       } catch {}
-      this.refreshingMachines = false;
+      this.refreshingMachines = null;
     });
   }
 
@@ -883,33 +906,33 @@ export default class AgentTasks extends View {
   // Enter in the composer: to the Eye, or a lead from the chosen recipe.
   // One send or start at a time: while one is in flight Enter does nothing (the input dims).
   start(cx) {
-    if (this.busy) return;
+    if (model.held(this.busy)) return;
     if (this.composeTo === "eye") return this.tellEye(cx);
     const words = model.oneLine(this.input.value());
     const recipe = this.chosenRecipe(this.shownArea()?.id);
     if (!words || !recipe) return;
-    this.busy = true;
+    this.busy = Date.now();
     cx.notify();
     // "in <title>": a new lead or worker inside that task instead of a new task.
     const into = this.intoItem();
     if (into) {
       return this.joinTask(cx, into, recipe, words, this.intoAs === "lead" ? this.leadFor(recipe).id : null, this.intoAs, {
         launched: (cx) => {
-          this.busy = false;
+          this.busy = null;
           this.closeComposer(cx);
         },
         reply: (a) => {
-          if (!a.ok) this.busy = false;
+          if (!a.ok) this.busy = null;
         },
       });
     }
     this.startTask(cx, recipe, words, null, {
       launched: (cx) => {
-        this.busy = false;
+        this.busy = null;
         this.closeComposer(cx);
       },
       reply: (a) => {
-        if (!a.ok) this.busy = false;
+        if (!a.ok) this.busy = null;
       },
     });
   }
@@ -1230,14 +1253,14 @@ export default class AgentTasks extends View {
   tellEye(cx) {
     const text = model.oneLine(this.eyeInput.value());
     const eye = this.eye;
-    if (!text || !eye || this.busy) return;
+    if (!text || !eye || model.held(this.busy)) return;
     if (model.eyeAgent(eye, Date.now(), this.changes ?? new Map()) !== "ok") return;
     if (model.eyeWait(eye, new Map(agents().map((a) => [a.address, a.status]))) === "open") return;
-    this.busy = true;
+    this.busy = Date.now();
     cx.notify();
     cx.spawn(async (cx) => {
       const r = await hc(["send", "--", eye.address, text]).catch((e) => ({ code: 1, stderr: String(e) }));
-      this.busy = false;
+      this.busy = null;
       if (r.code !== 0) notify({ title: "Not sent to the Eye. Your text is kept.", body: model.errorWords(r), level: "error" });
       else {
         this.eyeInput.set_value("");
@@ -1277,11 +1300,11 @@ export default class AgentTasks extends View {
   async readInbox(cx, paths = null) {
     this.inboxAll ||= paths == null;
     this.inboxPaths = new Set([...(this.inboxPaths ?? []), ...(paths ?? [])]);
-    if (this.readingInbox) {
+    if (model.held(this.readingInbox)) {
       this.readAgain = true;
       return;
     }
-    this.readingInbox = true;
+    this.readingInbox = Date.now();
     try {
       do {
         this.readAgain = false;
@@ -1291,7 +1314,7 @@ export default class AgentTasks extends View {
         await this.readInboxOnce(cx, want);
       } while (this.readAgain);
     } finally {
-      this.readingInbox = false;
+      this.readingInbox = null;
     }
   }
 
@@ -1415,7 +1438,7 @@ export default class AgentTasks extends View {
   // The inbox holder sets the names that are ours to set, every 2 s. A machine whose layout isn't
   // ready waits; each name is tried once a minute, so a rename Herdr refuses isn't asked again and again.
   nameTick(cx) {
-    if (!this.configLoaded || !this.items || this.namingNow || !this.inboxKeeper?.held()) return;
+    if (!this.configLoaded || !this.items || model.held(this.namingNow) || !this.inboxKeeper?.held()) return;
     const off = new Set(machines().filter((m) => m.layout !== "ready").map((m) => m.name));
     const now = Date.now();
     this.namesTried ??= new Map();
@@ -1431,13 +1454,13 @@ export default class AgentTasks extends View {
     if (!todo.length && !putBack.length) return;
     for (const c of todo) this.namesTried.set(`${c.id}=${c.to}`, now);
     for (const b of putBack) this.namesTried.set(`${b.address}=${b.pairs[0]}`, now);
-    this.namingNow = true;
+    this.namingNow = Date.now();
     cx.spawn(async () => {
       try {
         for (const b of putBack) await hc(["label", b.address, ...b.pairs]).catch(() => null);
         await this.setNames(todo);
       } finally {
-        this.namingNow = false;
+        this.namingNow = null;
       }
     });
   }
@@ -1764,7 +1787,7 @@ export default class AgentTasks extends View {
       .when(!props()?.overlay && viewSwitch() === "menu", (el) => el.child(iconButton(t, "at-views", null, (cx, press) => this.openViewMenu(cx, press),
         "Views", false, viewIcon(VIEWS.find((x) => x.id === viewNow().view)?.icon ?? "view-list"))))
       .child(iconButton(t, "at-find", "search", (cx) => (this.searching ? this.closeSearch(cx) : this.openSearch(cx)), "Search tasks, agents and machines in every area (Ctrl-S /)", this.searching))
-      .child(iconButton(t, "at-new", "plus", (cx) => (this.composing ? !this.busy && this.closeComposer(cx) : this.openComposer(cx)),
+      .child(iconButton(t, "at-new", "plus", (cx) => (this.composing ? !model.held(this.busy) && this.closeComposer(cx) : this.openComposer(cx)),
         this.eye ? "Tell the Eye, start a task or a space" : "New task or space", this.composing))
       .when(Boolean(props()?.overlay), (el) => el.child(iconButton(t, "at-close", "x", () => this.dismiss(), "Close (Esc)")));
   }
@@ -1913,7 +1936,7 @@ export default class AgentTasks extends View {
       .child(h_flex().id("at-input").h(30).px(9).items_center().rounded(7).border_1()
         .border_color(t.input).bg(t.background)
         .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-        .when(Boolean(this.busy), (el) => el.opacity(0.6))
+        .when(model.held(this.busy), (el) => el.opacity(0.6))
         .child(Input.new(toEye ? this.eyeInput : this.input).flex_1().h_full().text_size(13).text_color(t.foreground)))
       // The Eye and the recipes, then Herdr's own "New space" (what Herdr's + does), with the
       // machines to pick from when there are others: one + for both.
@@ -2549,9 +2572,9 @@ export default class AgentTasks extends View {
   // The spaces mod's Connect: forget the old machine and add the new one under the same name.
   reconnect(machine, cx) {
     const name = machine.name;
-    if (this.reconnecting[name]?.busy) return;
+    if (model.held(this.reconnecting[name]?.busy, 10 * 60000)) return;
     const state = this.reconnecting[name] ??= { machine, removed: false };
-    state.busy = true;
+    state.busy = Date.now();
     state.error = null;
     cx.notify();
     cx.spawn(async (cx) => {
@@ -2574,7 +2597,7 @@ export default class AgentTasks extends View {
         delete this.reconnecting[name];
       } catch (e) {
         state.error = String(e.message ?? e);
-        state.busy = false;
+        state.busy = null;
       }
       this.refreshMachines(cx);
       cx.notify();
@@ -2616,7 +2639,7 @@ export default class AgentTasks extends View {
             cx.stop_propagation();
             this.reconnect(machine, cx);
           })
-          .child(repair?.busy ? "Connecting…" : "Connect")))
+          .child(model.held(repair?.busy, 10 * 60000) ? "Connecting…" : "Connect")))
         .child(div().size(6).rounded(3).flex_none().bg(t.dim));
     });
     if (!lines.length && !before.length) return null;
@@ -2994,7 +3017,7 @@ export default class AgentTasks extends View {
     this.recReady = false;
     this.recDirty = false;
     this.screensDirty = false;
-    this.flushing = false;
+    this.flushing = null;
     this.recKeeper = model.leaseKeeper({ path: `${towerDir()}/recorder.lease`, id: this.id, read: (p) => readTextFile(p), write: writeTextFile,
       ms: model.REC_LEASE_MS });
     // Every 20 s: the holder renews (a write, no read); a copy without it looks whether it is free.
@@ -3086,8 +3109,8 @@ export default class AgentTasks extends View {
   // which are thinned by age; tasks end and, 90 days later, fold into ended.json; the folder keeps
   // its budget. Only the lease holder; a failure leaves events.json as it was, to try next hour.
   async movePast() {
-    if (!this.liveKeys || this.moving || !this.holdsRecorder()) return;
-    this.moving = true;
+    if (!this.liveKeys || model.held(this.moving) || !this.holdsRecorder()) return;
+    this.moving = Date.now();
     const dir = recDir();
     try {
       const now = Date.now();
@@ -3172,7 +3195,7 @@ export default class AgentTasks extends View {
       if (!this.moveFailed) console.log(`agent-tower: timeline: moving the past into ${dir}/tasks failed, events.json keeps it: ${e?.message ?? e}`);
       this.moveFailed = true;
     } finally {
-      this.moving = false;
+      this.moving = null;
     }
   }
 
@@ -3287,14 +3310,14 @@ export default class AgentTasks extends View {
   }
 
   async flushRecord(force) {
-    if (this.flushing || !this.holdsRecorder()) return;
+    if (model.held(this.flushing) || !this.holdsRecorder()) return;
     const now = Date.now();
     // The beat: written with the record, and at a close, so a quit's gap starts at the quit. In
     // between, the recorder lease's renewals are the sign of life (recordStart), so an idle record
     // is not rewritten.
     if (force) this.recDirty = true;
     if (!this.recDirty && !this.screensDirty) return;
-    this.flushing = true;
+    this.flushing = Date.now();
     try {
       const news = Boolean(this.screensDirty || this.recDirty);
       if (this.recDirty) {
@@ -3331,7 +3354,7 @@ export default class AgentTasks extends View {
       // Both writes failed (another writer between our read and write): next tick tries again.
       this.recDirty = true;
     } finally {
-      this.flushing = false;
+      this.flushing = null;
     }
   }
 

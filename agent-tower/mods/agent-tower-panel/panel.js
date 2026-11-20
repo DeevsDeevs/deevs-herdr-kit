@@ -87,6 +87,9 @@ function homeSpace(t, byAddress, spaceList) {
 
 // When an agent last changed, on the sidebar's clock (status_ms is not live, never an age).
 export const changedAt = (t, changes) => changes?.[t.address]?.at ?? null;
+// A busy mark is the time it was set, and lapses after ms: a run Herdr cut off before it cleared its
+// mark (a render at 50 ms, a task at 500 ms; nothing after the cut runs) can't keep it.
+export const held = (at, ms = 2 * 60000, now = Date.now()) => typeof at === "number" && now - at >= 0 && now - at < ms;
 
 // Herdr's compact age.
 export function duration(ms) {
@@ -484,7 +487,7 @@ export function dropGone(reads, current) {
 // down: machines that don't answer; leadKey: the lead's machine ("" here).
 export function checkedOf(reads, down, leadKey, now, staleMs = 3 * 60000) {
   const states = Object.values(reads);
-  const reading = states.some((s) => s.reading);
+  const reading = states.some((s) => held(s.reading, undefined, now));
   const good = states.filter((s) => s.at != null);
   const oldest = good.length ? Math.min(...good.map((s) => s.at)) : null;
   const failedFirst = !good.length && states.some((s) => s.fails || s.missing);

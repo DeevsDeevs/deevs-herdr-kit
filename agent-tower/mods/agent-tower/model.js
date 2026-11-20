@@ -1086,11 +1086,26 @@ export const mayAct = (lease, id, now, ms = LEASE_MS) => !lease || lease.id === 
 // another copy last renewed it, as this copy last read it (a takeover's sign of life).
 export function leaseKeeper({ path, id, read, write, ms = LEASE_MS, now = () => Date.now() }) {
   let chain = Promise.resolve();
+  let queuedAt = null; // since when steps have been waiting on the chain (null: it ran dry)
   let held = false;
   let at = 0;
   let mine = null;
   let otherAt = 0;
-  const step = (f) => (chain = chain.then(f, f));
+  // A step Herdr cut off (500 ms for a task) never settles, and every step after it would wait for
+  // good: a chain busy longer than a lease starts again.
+  const step = (f) => {
+    if (queuedAt != null && now() - queuedAt > ms) {
+      chain = Promise.resolve();
+      queuedAt = null;
+    }
+    queuedAt ??= now();
+    const tail = (chain = chain.then(f, f));
+    const dry = () => {
+      if (chain === tail) queuedAt = null;
+    };
+    tail.then(dry, dry);
+    return tail;
+  };
   const parse = (text) => {
     try {
       return JSON.parse(text ?? "null");
@@ -1609,14 +1624,24 @@ export function taskModelOnce(ctx, memo) {
 // Each item (and each left-over in loose) gets:
 //   title (titleOf), area (the area's id), group (pinned or its state), state (needs, done, working, idle, earlier: the group
 //   ignoring the pin), word (rowWord), need ({by, kind, text} or null), changed (ms), stale.
+// The pass works on its own copy of changes, so a pass cut off before its end (RECIPE.md: nothing
+// after the cut runs) leaves a memo no other call can hit; the next pass replaces it.
 export function taskModel({ terms, listed, spaces: spaceList, config, changes, seen = {}, now, titles = {}, reach = [], eye = null }) {
-  changedMemo = { changes, map: new WeakMap() };
-  try {
-    return taskModelPass({ terms, listed, spaceList, config, changes, seen, now, titles, reach, eye });
-  } finally {
-    changedMemo = null;
-  }
+  const mine = new Map(changes);
+  changedMemo = { changes: mine, map: new WeakMap() };
+  const m = taskModelPass({ terms, listed, spaceList, config, changes: mine, seen, now, titles, reach, eye });
+  changedMemo = null;
+  return m;
 }
+// A busy mark is the time it was set, and lapses after ms (default BUSY_MS): a run cut off before it
+// cleared its mark (a render at 50 ms, a timer or task at 500 ms; nothing after the cut runs) can't keep it.
+export const BUSY_MS = 2 * 60 * 1000;
+export const held = (at, ms = BUSY_MS, now = Date.now()) => typeof at === "number" && now - at >= 0 && now - at < ms;
+// A pass's memo seen outside any pass (by the list's tick) was left by a cut-off one.
+export const passLeft = () => changedMemo != null;
+export const clearPass = () => {
+  changedMemo = null;
+};
 
 function taskModelPass({ terms, listed, spaceList, config, changes, seen, now, titles, reach, eye }) {
   // Every Eye (each area's, and an old one for all) is never an item.
