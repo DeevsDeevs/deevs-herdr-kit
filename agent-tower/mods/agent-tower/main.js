@@ -3107,6 +3107,12 @@ export default class AgentTasks extends View {
       } catch {
         this.screens = {};
       }
+      // Gaps written before they were joined (or by another writer): joined, and written so at the next flush.
+      const joined = Array.isArray(this.rec.gaps) ? model.joinGaps(this.rec.gaps) : this.rec.gaps;
+      if (joined !== this.rec.gaps) {
+        this.rec.gaps = joined;
+        this.recDirty = true;
+      }
       // The last beat may be newer than events.json's (written on its own while nothing changed).
       try {
         this.rec.beat = Math.max(this.rec.beat ?? 0, Number(JSON.parse(beat ?? "null")?.beat) || 0);
@@ -3160,7 +3166,7 @@ export default class AgentTasks extends View {
       const indexWas = JSON.stringify({ ...index, at: 0 });
       const endedWas = JSON.stringify(ended);
       const gapKey = (g) => `${g.m}|${g.from}`;
-      index.gaps = [...new Map([...index.gaps, ...part.gaps].map((g) => [gapKey(g), g])).values()].sort((x, y) => x.from - y.from);
+      index.gaps = model.joinGaps([...new Map([...index.gaps, ...part.gaps].map((g) => [gapKey(g), g])).values()].sort((x, y) => x.from - y.from));
       const parts = new Map(part.tasks.map((t) => [t.key, t]));
       // Timeline's rebuilt pasts go into the task files too (backfill.json drops them after 7 days).
       const fill = (await this.readJson(`${dir}/backfill.json`, () => ({}))).value;

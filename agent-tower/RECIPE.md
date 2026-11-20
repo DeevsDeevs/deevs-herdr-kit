@@ -569,7 +569,12 @@ come from the app's program table.
   a copy that takes it back records nothing until it has read the record again):
   the holder records from its one-second look, drawn or not, on a change, a new look, an
   ended terminal and every 30 s, and a look that comes over 2 minutes after the last (the
-  computer slept) marks the time between as not recorded. The
+  computer slept) marks the time between as not recorded. A gap less than 10 s after the one
+  before it on the same machine joins it (`model.joinGaps`, `GAP_JOIN_MS`): a sleeping Mac
+  that wakes for a few seconds every quarter hour leaves one gap, not one per wake, and those
+  seconds are drawn as not recorded. The recorder joins when it adds or closes a gap, merges
+  two writers' files, loads `events.json` and moves gaps into `index.json`; Timeline joins
+  when it reads either file, so a file written before this reads joined. The
   tower dir holds `config.json`, `inbox/`, `outbox/`, `inbox.lease`, `recorder.lease`,
   `bin/` (workers' scripts), `eye/<area id>/`, `use.jsonl`, `use.md`, `perf.jsonl`,
   `timeline/` (`events.json`, `screens.json`, `beat.json`, `index.json`, `ended.json`,
@@ -884,6 +889,18 @@ come from the app's program table.
   `"perf": true`, logged once as `{at, what: "render cut off", left, count}`.
   `cutoff.test.mjs` cuts runs off with Node's `vm` timeout, which skips `catch` and
   `finally` the same way, and stands an ordinary throw in where a job must stop half-way.
+- Timeline's rebuild keeps each lane's stretches the moment they are worked out, under its
+  inputs (events, live word, its gaps, past, rebuilt entry, the now-line's pixel), so a
+  rebuild cut off half-way leaves the next one less to do, and a first draw too big for one
+  frame ends after a few; a lane with nothing ongoing keeps its stretches across the
+  now-line's pixels (only its marks are drawn again). The map is pruned to the shown lanes
+  when a rebuild ends. A lane is cut only by the gaps of its machine in the span, those
+  under a pixel apart joined, in one pass (`cutGaps`: a binary search per stretch), so the
+  cost follows the span, not the length of the gap list. `gaps.test.mjs` cuts a first draw
+  over frames and checks no finished lane is worked out again; `perf.test.mjs` times
+  Timeline on two made-up records of a Mac that slept (175 lanes, 85 and 850 gaps): each
+  frame under the record's limit, a rebuild with its lanes kept under 50 ms, a first draw
+  under 2 and 4 budgets.
 - The row, group label, tree lines, status marks, fold chip, rail test, repeat notes,
   avatar colours, machine line (Copy, Connect) and menu are adapted from Herdr's `agents`,
   `spaces` and `menu` mods (Apache-2.0, see `NOTICE`).

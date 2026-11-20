@@ -19,6 +19,15 @@ export const PRESETS = {
     backfillPerAgent: true, screensBytes: 900 * 1024, agentsPerTask: [40, 22, 15, 12, 10, 8, 6, 6, 5, 5, 4, 4, 4, 3, 3, 3, 3, 2, 2, 2] },
   mac: { tasks: 15, terminals: 100, machines: [null, "work-vps"], historyDays: 14, taskFiles: false, eventsDays: 14, lanes: 86, events: 415,
     allTerminals: true, backfillBytes: 39 * 1024, screensBytes: 490 * 1024, agentsPerTask: [30, 14, 10, 8, 6, 5, 4, 4, 3, 3, 2, 2, 2, 1, 1] },
+  // A Mac that slept for hours, waking a few seconds every quarter hour: each wake left one more gap.
+  // gaps: 175 lanes, 778 events, 85 gaps (71 of Herdr, 14 of two machines) 4-6 s apart.
+  gaps: { tasks: 31, terminals: 175, machines: [null, "work-vps", "lab-box"], historyDays: 3, taskFiles: false, eventsDays: 2, lanes: 175, events: 778,
+    allTerminals: true, backfillBytes: 39 * 1024, screensBytes: 100 * 1024, agentsPerTask: [30, 20, 15, 12, 10, 8, 8, 6, 6, 5, 5, 4, 4, 4, 3, 3, 3, 3, 2, 2],
+    gaps: { herdr: 71, machine: 14, apart: [4e3, 6e3] } },
+  // Ten times that, 40-90 s apart (too far to join): what the drawing itself must carry.
+  gaps10: { tasks: 31, terminals: 175, machines: [null, "work-vps", "lab-box"], historyDays: 8, taskFiles: false, eventsDays: 7, lanes: 175, events: 8000,
+    allTerminals: true, backfillBytes: 39 * 1024, screensBytes: 100 * 1024, agentsPerTask: [30, 20, 15, 12, 10, 8, 8, 6, 6, 5, 5, 4, 4, 4, 3, 3, 3, 3, 2, 2],
+    gaps: { herdr: 710, machine: 140, apart: [40e3, 90e3] } },
 };
 
 function rng(seed) {
@@ -63,6 +72,23 @@ function screen(r, chars) {
   }
   rows.push("╰" + "─".repeat(70) + "╯");
   return rows.join("\n").slice(-1500);
+}
+
+// Sleep cycles back from now: Herdr gaps of 10 to 16 minutes, `apart` ms between them; every few of
+// them a machine's gap too (hc's link drops while the Mac sleeps), the machines taking turns.
+function sleepGaps(P, r, now) {
+  const out = [];
+  const every = Math.max(1, Math.floor(P.gaps.herdr / Math.max(1, P.gaps.machine)));
+  const ms = P.machines.filter(Boolean);
+  let to = now - 10 * MIN;
+  for (let i = 0; i < P.gaps.herdr; i++) {
+    const from = Math.round(to - (10 + r() * 6) * MIN);
+    out.push({ m: "herdr", from, to: Math.round(to) });
+    const k = Math.floor(i / every);
+    if (i % every === 0 && k < P.gaps.machine) out.push({ m: ms[k % ms.length], from: from + 2e3, to: Math.round(to) + 1e3 });
+    to = from - P.gaps.apart[0] - r() * (P.gaps.apart[1] - P.gaps.apart[0]);
+  }
+  return out;
 }
 
 export function buildFixture(preset = "big", { now = Date.UTC(2026, 10, 15, 12), seed = 7 } = {}) {
@@ -150,7 +176,7 @@ export function buildFixture(preset = "big", { now = Date.UTC(2026, 10, 15, 12),
   }
   events.sort((x, y) => x.at - y.at);
   const looks = events.filter((_, i) => i % 3 === 0).map((e) => ({ a: e.a, at: e.at + 30e3 }));
-  const gaps = [{ m: "herdr", from: now - DAY - 8 * H, to: now - DAY }, ...(P.machines[1] ? [{ m: P.machines[1], from: now - 30 * H, to: now - 29 * H }] : [])];
+  const gaps = P.gaps ? sleepGaps(P, r, now) : [{ m: "herdr", from: now - DAY - 8 * H, to: now - DAY }, ...(P.machines[1] ? [{ m: P.machines[1], from: now - 30 * H, to: now - 29 * H }] : [])];
   const files = {};
   files[`${TOWER}/timeline/events.json`] = JSON.stringify({ v: 1, beat: now - 30e3, moved: P.taskFiles ? cut : undefined, lanes, events, looks, gaps });
 

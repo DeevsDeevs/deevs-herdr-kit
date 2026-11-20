@@ -6,6 +6,10 @@
 // laptop, maybe busy) a view's time is its best of V8_TRIES runs, scaled by a fixed loop timed in
 // the same process; when that loop shows the machine busy, the time limits are skipped.
 // Then perf.js (off by default, lines, names, cap) and that Watchlist's cache updates.
+// The gaps records (a Mac that slept with short wakes: many gaps, 175 lanes; and ten times that)
+// time Timeline alone: each frame, a rebuild whose lanes are kept, and a first draw. A first draw
+// may pass the budget (a cut one keeps its lanes, gaps.test.mjs), but only by FIRST_DRAW budgets,
+// and a rebuild with its lanes kept must fit one frame, or a cut-off first draw could never end.
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -30,7 +34,9 @@ export const MAC_FACTOR = 8;
 export const V8_RATIO = 8;
 // Per record, the projected Mac ms a view may take: half the budget on his size; on the much
 // bigger record, the whole budget (past it Herdr cuts the render off).
-export const LIMITS = { mac: BUDGET_MS / 2, big: BUDGET_MS };
+export const LIMITS = { mac: BUDGET_MS / 2, big: BUDGET_MS, gaps: BUDGET_MS / 2, gaps10: BUDGET_MS };
+// Budgets a first draw on the gaps records may take, spread over that many cut-off frames and more.
+export const FIRST_DRAW = { gaps: 2, gaps10: 4 };
 // Elements per render on the big record: about twice what each built at 15:40, except Timeline Week
 // and Month, which then built 11,600 and 9,900 (the over-budget renders) and must come down.
 const CEILING = { model: 0, "timeline Day": 3500, "timeline Week": 5000, "timeline Month": 5000, "timeline Day, all open": 5000, board: 700, radar: 800, watchlist: 700 };
@@ -41,7 +47,8 @@ const RUNS = 15;
 export const CAL_REF_MS = 0.26;
 const BUSY = 1.5;
 const V8_TRIES = 3;
-const PRESETS = (process.env.PERF_PRESET ?? "mac,big").split(",");
+const PRESETS = (process.env.PERF_PRESET ?? "mac,big,gaps,gaps10").split(",");
+const gapsRecord = (preset) => preset.startsWith("gaps");
 
 function findQjs() {
   if (process.env.QJS) return process.env.QJS;
@@ -65,9 +72,9 @@ async function timeViews(preset) {
     }
   }
   const { buildFixture } = await import("./perf/fixture.mjs");
-  const { bench } = await import("./perf/bench.mjs");
+  const { bench, CASES, GAP_CASES } = await import("./perf/bench.mjs");
   return bench({ kit: mods, fixture: buildFixture(preset), clock: () => performance.now(),
-    settle, runs: RUNS });
+    settle, runs: RUNS, cases: gapsRecord(preset) ? GAP_CASES : CASES });
 }
 
 // A fixed piece of work the size of a render (small objects, strings, a Map, a sort), timed as a view
@@ -115,10 +122,11 @@ for (const preset of PRESETS) {
   let speed = 1;
   let busy = false;
   let cal = null;
+  const limitOf = (r) => (r.case.includes("first draw") ? FIRST_DRAW[preset] * BUDGET_MS : r.case.includes("lanes kept") ? BUDGET_MS : limit);
   if (qjs) {
     rows = await timeViews(preset);
     // One slow run is not a failure: a view over the limit is timed again, and its faster median counts.
-    if (rows.some((r) => r.median * scale > limit)) rows = best(rows, await timeViews(preset));
+    if (rows.some((r) => r.median * scale > limitOf(r))) rows = best(rows, await timeViews(preset));
   } else {
     const before = await calibrate();
     rows = await timeViews(preset);
@@ -131,9 +139,9 @@ for (const preset of PRESETS) {
   const how = qjs ? `${engine} × ${scale}` : `${engine} × ${scale} × ${speed.toFixed(2)} (calibration ${cal} ms, quiet ${CAL_REF_MS})`;
   console.log(`${preset} record, ${how} = projected Mac ms (limit ${limit}): ${rows.map((r) => `${r.case} ${mac(r)}`).join(", ")}`);
   if (busy) console.log("perf: machine busy, limits skipped");
-  assert.deepEqual(rows.map((r) => r.case).filter((c) => /board|radar|watchlist|timeline/.test(c)).length, 7, "every view timed");
+  assert.deepEqual(rows.map((r) => r.case).filter((c) => /board|radar|watchlist|timeline/.test(c)).length, gapsRecord(preset) ? 8 : 7, "every view timed");
   for (const r of rows) {
-    if (!busy) assert.ok(mac(r) <= limit, `${preset} record, ${r.case}: projected ${mac(r)} ms on the Mac (${r.median} ms in ${engine}), over ${limit}`);
+    if (!busy) assert.ok(mac(r) <= limitOf(r), `${preset} record, ${r.case}: projected ${mac(r)} ms on the Mac (${r.median} ms in ${engine}), over ${limitOf(r)}`);
     if (preset === "big") assert.ok(r.elements <= (CEILING[r.case] ?? 700), `${r.case}: ${r.elements} elements, over ${CEILING[r.case] ?? 700}`);
   }
 }

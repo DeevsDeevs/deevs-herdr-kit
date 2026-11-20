@@ -1736,11 +1736,37 @@ export const newRecord = () => ({ v: 1, beat: 0, lanes: {}, events: [], looks: [
 // The word recorded: the core's own word (no agents() override), error as blocked.
 const recWord = (t) => (t.status === "error" ? "blocked" : t.status ?? null);
 
-// A Herdr gap: nobody watched between the last beat and this start.
+// Gaps of one machine closer than this are one: a sleeping Mac wakes for a few seconds about every
+// quarter hour, and each wake would leave one more gap for ever. Those seconds (under two pixels at
+// 1h, nothing at longer spans) are then drawn as not recorded.
+export const GAP_JOIN_MS = 10e3;
+
+// The closed gaps of each machine that overlap or lie under ms apart, joined (new objects); open
+// gaps as they are. The same array when nothing joins.
+export function joinGaps(gaps, ms = GAP_JOIN_MS) {
+  const closed = gaps.filter((g) => g.to != null).sort((x, y) => (x.m < y.m ? -1 : x.m > y.m ? 1 : x.from - y.from));
+  const out = [];
+  for (const g of closed) {
+    const prev = out.at(-1);
+    if (prev && prev.m === g.m && g.from - prev.to < ms) {
+      if (g.to > prev.to) out[out.length - 1] = { ...prev, to: g.to };
+      continue;
+    }
+    out.push(g);
+  }
+  if (out.length === closed.length) return gaps;
+  return [...out, ...gaps.filter((g) => g.to == null)].sort((x, y) => x.from - y.from);
+}
+
+// A Herdr gap: nobody watched between the last beat and this start (joined to the one before it
+// when the wake between was only seconds).
 // alive: another sign of life (the recorder lease's last renewal by the copy before this one).
 export function recordStart(rec, now, alive = 0) {
   const last = Math.max(rec.beat || 0, alive || 0);
-  if (last && now - last > REC_GAP_MS) rec.gaps.push({ m: "herdr", from: last, to: now });
+  if (last && now - last > REC_GAP_MS) {
+    rec.gaps.push({ m: "herdr", from: last, to: now });
+    rec.gaps = joinGaps(rec.gaps);
+  }
   rec.beat = now;
   return rec;
 }
@@ -1817,6 +1843,7 @@ export function recordStep(rec, { terms, all, now, reach = [], look }) {
       dirty = true;
     } else if (r.reachable && open) {
       open.to = now;
+      rec.gaps = joinGaps(rec.gaps);
       dirty = true;
     }
   }
@@ -1866,8 +1893,9 @@ export function mergeRecords(theirs, mine) {
     lanes: { ...(theirs.lanes ?? {}), ...mine.lanes },
     events: union([...(theirs.events ?? []), ...mine.events], (e) => `${e.a}|${e.at}|${e.s}`).sort((x, y) => x.at - y.at),
     looks: union([...(theirs.looks ?? []), ...mine.looks], (l) => `${l.a}|${l.at}`).sort((x, y) => x.at - y.at),
-    // A gap closed on either side is closed (the later duplicate wins, so the closed ones go last).
-    gaps: union([...mine.gaps, ...(theirs.gaps ?? [])].sort((x, y) => (y.to == null) - (x.to == null)), (g) => `${g.m}|${g.from}`),
+    // A gap closed on either side is closed (the later duplicate wins, so the closed ones go last);
+    // one side's joined gap covers the other's parts.
+    gaps: joinGaps(union([...mine.gaps, ...(theirs.gaps ?? [])].sort((x, y) => (y.to == null) - (x.to == null)), (g) => `${g.m}|${g.from}`)),
   };
 }
 

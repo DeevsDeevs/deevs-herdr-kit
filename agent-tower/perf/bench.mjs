@@ -17,6 +17,19 @@ export const CASES = [
   { case: "radar", view: "radar" },
   { case: "watchlist", view: "watchlist" },
 ];
+// A history with many gaps: each span drawn as on every frame, and drawn first (nothing kept from an
+// earlier frame: the projection a cut-off render used to start again).
+export const GAP_CASES = [
+  { case: "timeline 1h", view: "timeline", span: 0 },
+  { case: "timeline 8h", view: "timeline", span: 2 },
+  { case: "timeline Week", view: "timeline", span: 4 },
+  { case: "timeline 1h, first draw", view: "timeline", span: 0, fresh: true },
+  { case: "timeline 8h, first draw", view: "timeline", span: 2, fresh: true },
+  { case: "timeline Week, first draw", view: "timeline", span: 4, fresh: true },
+  // A rebuild whose lanes an earlier, cut-off one already worked out (or any change elsewhere).
+  { case: "timeline 8h, lanes kept", view: "timeline", span: 2, rebuild: true },
+  { case: "timeline Week, lanes kept", view: "timeline", span: 4, rebuild: true },
+];
 
 // Watchlist's files: tickers named in the fixture's titles, and a long notes file (only its newest
 // lines are drawn).
@@ -43,8 +56,10 @@ export async function bench({ kit, fixture, clock, settle, runs = 20, cases = CA
     const ui = { now: fixture.now, width: 1100, height: 720, area: null, selectedKey: null, state, towerDir: fixture.towerDir, here: "mac",
       shape: "sidebar", hideText: false, rowMark: "state", notify() {}, select() {}, pick() {}, open() {}, goInto() {}, onMenu: (el) => el };
     const once = () => {
+      if (c.fresh) ui.state = { span: c.span };
+      if (c.rebuild) ui.state.cache = null;
       const m = modelOf();
-      if (c.open) state.tasks = Object.fromEntries(m.items.map((i) => [i.key, true]));
+      if (c.open) ui.state.tasks = Object.fromEntries(m.items.map((i) => [i.key, true]));
       return mod ? mod.render(THEME, m, ui) : m;
     };
     for (let i = 0; i < 3; i++) {
