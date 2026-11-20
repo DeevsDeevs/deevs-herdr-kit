@@ -524,7 +524,7 @@ const newSpace = (fx) => fx.runs.filter((r) => r[0] === "space.new").at(-1)?.[1]
   await settle();
   const args = newSpace(fx);
   const [[, path, script]] = fx.scripts;
-  assert.ok(args.task.split("\n").includes(`Start workers with: ${path}`), args.task);
+  assert.ok(args.task.split("\n").includes(`Start workers with: ${path} (on another machine: agy -i)`), args.task);
   assert.ok(args.argv.includes(`TOWER_WORKER=${path}`), args.argv.join(" "));
   assert.ok(script.includes("trust") && script.endsWith(`exec agy -i "$@"\n`), script);
 }

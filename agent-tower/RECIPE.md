@@ -473,9 +473,11 @@ come from the app's program table.
     skill (questions to me go through task.ask): <your words>`; the skill reads the task id and the workers' command from
     `$TOWER_TASK` and `$TOWER_WORKER`;
   - without (`"skill": null`): the contract from the settings with `{id}` filled in, then
-    `Start workers with: <$TOWER_WORKER's script path, shell-quoted>` (the same script the skill
-    uses, so an agy worker's folder is trusted first; the worker argv, shell-quoted, when the
-    script could not be written) and "Task: <your words>". The skill itself is written elsewhere. In the contract,
+    `Start workers with: <the worker argv, shell-quoted>`; for a worker agent that needs its
+    folder trusted (agy), `Start workers with: <$TOWER_WORKER's script path, shell-quoted> (on
+    another machine: <the worker argv, shell-quoted>)`, since the script (the same one the skill
+    uses, which trusts the worker's folder first) exists only on the lead's machine; the argv
+    alone when the script could not be written and "Task: <your words>". The skill itself is written elsewhere. In the contract,
     `{worker-skill}` (the end of a brief) becomes "; use the <skill> skill if you have it"
     with the configured skill's name, and nothing when no skill is configured.
   - The skill form is used only where the skill is: before a start the mod runs
@@ -1200,10 +1202,15 @@ Top to bottom:
     for a tool's output, times in `created_at`). Which conversation: while agy works it holds
     `conversations/<conversation>.db` open (seen in `/proc` or `lsof`; the database itself is never
     opened); if that conversation's transcript is not written yet, nothing. Idle, agy closes it:
-    then, only in a process tree that runs agy, the one conversation whose first message is on the
-    terminal's run line (`agy -i "<brief>"`), and nothing when none or several fit, when
-    `history.jsonl` shows `/clear` (or `/new`, `/resume`) typed in it, or another conversation
-    typed into in the same folder since.
+    then, only in a process tree that runs agy, the one conversation whose whole first message
+    equals the message agy was started with (the word after the run line's last `-i`, or after a
+    `worker-*` script; both compared with runs of whitespace and quotes made one space) and whose
+    first step (`created_at`) is no earlier than that agy process's start (`ps` etime, 2 s slack).
+    Transcripts last written before that start are skipped by mtime, never opened. Nothing when
+    none or several fit, when `history.jsonl` puts that conversation in another folder, shows
+    `/clear` (or `/new`, `/resume`) typed in it, or another conversation typed into in the same
+    folder since. Two agy started with the identical message within the slack, or an earlier one
+    whose identical message was re-run later, show nothing while idle (several fit).
   - How long each worker's own transcript has been quiet.
   - Git status and the last commit for every member's folder.
   - `gh pr view`, reduced to counts and the URL. It runs only on a non-default branch with

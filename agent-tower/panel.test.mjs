@@ -352,8 +352,9 @@ assert.deepEqual(JSON.parse(batched), ["/home/me/.codex/sessions/2026/11/15/a.js
 
 // Antigravity (agy): its transcript is brain/<conversation>/.system_generated/logs/transcript.jsonl.
 // While it works, agy holds conversations/<conversation>.db open: that names it. Idle, it closes it:
-// then the conversation whose first message is on the terminal's run line, only in a process that
-// is agy, only when exactly one fits, and not after /clear or another conversation in its folder.
+// then the conversation whose whole first message is the run line's -i message and that began after
+// this agy started, only in a process that is agy, only when exactly one fits, not in another folder,
+// and not after /clear or another conversation in its folder.
 {
   const me = mkdtempSync(join(tmpdir(), "tower-agy-"));
   const agyHome = join(me, ".gemini/antigravity-cli");
@@ -380,7 +381,20 @@ assert.deepEqual(JSON.parse(batched), ["/home/me/.codex/sessions/2026/11/15/a.js
   for (const id of ["eeee-5", "ffff-6"]) conversation(id, [step(0, "USER_INPUT", 500, { content: asked(briefs.twin) }), step(1, "PLANNER_RESPONSE", 400, { content: "Twin." })]);
   const old = new Date(Date.now() - 400000);
   utimesSync(shells, old, old);
+  // A short opener inside another run line; workers added from the list share a long header.
+  conversation("iiii-9", [step(0, "USER_INPUT", 500, { content: asked("go") }), step(1, "PLANNER_RESPONSE", 400, { content: "Someone else's." })]);
+  const header = 'You are a worker on task k1, "Pond survey"; use the tower skill if you have it. Do exactly the task below. Start no other agents.\nTask: ';
+  conversation("jjjj-10", [step(0, "USER_INPUT", 300, { content: asked(header + "count the frogs") }), step(1, "PLANNER_RESPONSE", 200, { content: "Frogs counted." })]);
+  conversation("kkkk-11", [step(0, "USER_INPUT", 300, { content: asked(header + "count the newts") }), step(1, "PLANNER_RESPONSE", 200, { content: "Newts counted." })]);
+  conversation("llll-12", [step(0, "USER_INPUT", 300, { content: asked("Weigh the stones.") }), step(1, "PLANNER_RESPONSE", 200, { content: "Stones weighed." })]);
+  conversation("mmmm-13", [step(0, "USER_INPUT", 300, { content: asked("Lead the made-up survey.") }), step(1, "PLANNER_RESPONSE", 200, { content: "Survey led." })]);
+  // Last written before any of these agy processes started: never opened.
+  const stale = conversation("nnnn-14", [step(0, "USER_INPUT", 5000, { content: asked("Old made-up words.") })]);
+  conversation("oooo-15", [step(0, "USER_INPUT", 500, { content: asked("Rake the leaves.") }), step(1, "PLANNER_RESPONSE", 400, { content: "Leaves raked." })]);
+  const older = new Date(Date.now() - 4000000);
+  utimesSync(stale, older, older);
   writeFileSync(join(agyHome, "history.jsonl"), [
+    { display: "made-up typed words", timestamp: Date.now() - 150000, workspace: "/made/up/elsewhere", conversationId: "llll-12" },
     { display: "/clear", timestamp: Date.now() - 100000, workspace: "/made/up/moths", conversationId: "cccc-3" },
     { display: "made-up typed words", timestamp: Date.now() - 100000, workspace: "/made/up/shells", conversationId: "gggg-7" },
   ].map((l) => JSON.stringify(l)).join("\n") + "\n");
@@ -394,15 +408,16 @@ r.os.path.isdir = lambda p: False if p == "/proc" else os.path.isdir(p)
 class Out:
     def __init__(self, text): self.stdout = text
 def fake(cmd, *a, **k):
-    if cmd[0] == "ps": return Out("100 1 sh\\n101 100 agy\\n200 1 /made/up/bin/agy\\n300 1 codex\\n400 1 agy\\n")
+    if cmd[0] == "ps": return Out("100 1 1-00:00:00 sh\\n101 100 16:40 agy\\n200 1 10:00 /made/up/bin/agy\\n300 1 10:00 codex\\n400 1 10:00 agy\\n500 1 00:30 .agy-wrapped\\n")
     if cmd[0] == "lsof": return Out("p101\\nn${agyHome}/conversations/aaaa-1.db\\nn${agyHome}/conversation_summaries.db\\np400\\nn${agyHome}/conversations/hhhh-8.db\\n")
     raise AssertionError(cmd)
 r.subprocess.run = fake
 r.open_prefetch([p for c in cases if c["pid"] for p in r.tree(c["pid"])])
-print(json.dumps([r.agent(c, True) for c in cases]))
+print(json.dumps([[r.agent(c, True) for c in cases], sorted(p.split("/brain/")[1].split("/")[0] for p in r.AGY_FIRST)]))
 `, JSON.stringify(cases)], { encoding: "utf8", env: { ...process.env, HOME: me } }));
   const run = (brief) => ["/made/up/bin/worker-agy", brief];
-  const [busy, idle, notAgy, cleared, switched, twins, unwritten] = read([
+  const lead = (task) => ["zsh", "-lic", '"$@"; exec "$0" -li', "zsh", "env", "TOWER_TASK=k1", "TOWER_WORKER=/made/up/bin/worker-agy", "/made/up/bin/agy", "-i", task];
+  const [[busy, idle, notAgy, cleared, switched, twins, unwritten, frogs, newts, toads, opener, earlier, elsewhere, led], opened] = read([
     { pid: 100, argv: ["agy", "-i", "words typed later"], cwd: "/made/up/pond" },
     { pid: 200, argv: run(briefs.b), cwd: "/made/up/reeds" },
     { pid: 300, argv: ["codex", briefs.b], cwd: "/made/up/reeds" },
@@ -410,6 +425,13 @@ print(json.dumps([r.agent(c, True) for c in cases]))
     { pid: 200, argv: run(briefs.d), cwd: "/made/up/shells" },
     { pid: 200, argv: run(briefs.twin), cwd: "/made/up/twins" },
     { pid: 400, argv: run(briefs.b), cwd: "/made/up/reeds" },
+    { pid: 200, argv: run(header + "count the frogs"), cwd: "/made/up/pond/frogs" },
+    { pid: 200, argv: run(header + "count the newts"), cwd: "/made/up/pond/newts" },
+    { pid: 200, argv: run(header + "count the toads"), cwd: "/made/up/pond/toads" },
+    { pid: 500, argv: run("Count the reeds and go home."), cwd: "/made/up/reeds" },
+    { pid: 500, argv: run("Rake the leaves."), cwd: "/made/up/leaves" },
+    { pid: 200, argv: run("Weigh the stones."), cwd: "/made/up/stones" },
+    { pid: 200, argv: lead("Lead the made-up survey."), cwd: "/made/up/pond" },
   ]);
   assert.equal(busy.last.text, "Counted twelve herons.\n\nShall I go on?", "busy: the conversation it holds open");
   assert.ok(Math.abs(busy.last.ago_s - 600) < 5 && Math.abs(busy.turn_ago_s - 300) < 5, JSON.stringify(busy));
@@ -419,6 +441,11 @@ print(json.dumps([r.agent(c, True) for c in cases]))
   assert.equal(idle.last.text, "Reeds mapped.", "idle: the conversation started with its run line's brief");
   assert.deepEqual([notAgy.found, cleared.found, switched.found, twins.found, unwritten.found], [false, false, false, false, false],
     "never: a process that is not agy, a conversation left by /clear or for another in its folder, two that fit, one not written yet");
+  assert.deepEqual([frogs.last?.text, newts.last?.text], ["Frogs counted.", "Newts counted."], "workers sharing a long header: each its own");
+  assert.equal(led.last?.text, "Survey led.", "a lead's run line as Herdr wraps it: the word after -i");
+  assert.deepEqual([toads.found, opener.found, earlier.found, elsewhere.found], [false, false, false, false],
+    "never: only a shared header, a short opener inside the brief, a conversation begun before this agy, one typed into in another folder");
+  assert.ok(!opened.includes("nnnn-14"), `a transcript last written before every agy here started is not opened: ${opened}`);
   rmSync(me, { recursive: true, force: true });
 }
 

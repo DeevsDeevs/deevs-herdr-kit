@@ -37,20 +37,32 @@ def held(path):
 
 # The process table, read once per run: one ps for every agent asked about, not one each.
 KIDS = None
-# {pid: program name}, from the same ps.
+# {pid: program name} and {pid: seconds since it started}, from the same ps.
 NAMES = {}
+AGES = {}
+AGY_NAMES = ("agy", ".agy-wrapped")
+
+
+# ps's etime, [[dd-]hh:]mm:ss (Linux and macOS alike), in seconds.
+def elapsed(etime):
+    days, _, clock = etime.rpartition("-")
+    try:
+        return int(days or 0) * 86400 + sum(int(x) * 60 ** k for k, x in enumerate(reversed(clock.split(":"))))
+    except ValueError:
+        return None
 
 
 def tree(root):
     global KIDS
     if KIDS is None:
-        out = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,comm="], capture_output=True, text=True).stdout
+        out = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,etime=,comm="], capture_output=True, text=True).stdout
         KIDS = {}
         for row in out.splitlines():
-            parts = row.split(None, 2)
+            parts = row.split(None, 3)
             if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
                 KIDS.setdefault(int(parts[1]), []).append(int(parts[0]))
-                NAMES[int(parts[0])] = os.path.basename(parts[2].strip()) if len(parts) == 3 else ""
+                AGES[int(parts[0])] = elapsed(parts[2]) if len(parts) > 2 else None
+                NAMES[int(parts[0])] = os.path.basename(parts[3].strip()) if len(parts) == 4 else ""
     kids = KIDS
     pids, todo = [], [root]
     while todo:
@@ -137,33 +149,68 @@ def find_transcript(pid, argv, cwd):
     name = os.path.basename(argv[0]) if argv else ""
     if name == "pi" and cwd:
         return newest(f"{HOME}/.pi/agent/sessions/--{cwd.strip('/').replace('/', '-')}--/*.jsonl")
-    if any(NAMES.get(p) in ("agy", ".agy-wrapped") for p in pids):
-        return agy_idle(argv, cwd)
+    agy = [p for p in pids if NAMES.get(p) in AGY_NAMES]
+    if agy:
+        return agy_idle(argv, cwd, AGES.get(agy[0]))
     return None
 
 
-# agy's first messages, {transcript: loose text}, read once per run.
-AGY_FIRST = None
+# agy's first messages, {transcript: (loose text, seconds ago it was sent)}, read once per run.
+AGY_FIRST = {}
+# ps's etime is whole seconds; created_at is not.
+AGY_SLACK = 2
 
 
 def agy_transcript(cid):
     return f"{AGY_HOME}/brain/{cid}/.system_generated/logs/transcript.jsonl"
 
 
-# An idle agy has closed its conversation's database: its conversation is then the one whose first
-# message is on the terminal's run line (agy -i "<brief>"), if exactly one is. None when it has left
+# The message agy was started with: the word after the run line's last -i (Herdr appends a task
+# there), or the one after a Tower worker script ($TOWER_WORKER runs agy -i "$@").
+def agy_brief(argv):
+    for i in range(len(argv) - 2, -1, -1):
+        if argv[i] == "-i":
+            return argv[i + 1]
+    if len(argv) >= 2 and os.path.basename(argv[-2]).startswith("worker-"):
+        return argv[-1]
+    return None
+
+
+def agy_first(path):
+    if path not in AGY_FIRST:
+        AGY_FIRST[path] = (None, None)
+        try:
+            with open(path, "rb") as f:
+                d = json.loads(f.readline(TASK_HEAD["agy"]))
+            said = [e[1] for e in events(d) if e[0] == "prompt"] if isinstance(d, dict) else []
+            if said:
+                AGY_FIRST[path] = (loose(said[0]), stamp(d))
+        except (OSError, ValueError):
+            pass
+    return AGY_FIRST[path]
+
+
+# An idle agy has closed its conversation's database: its conversation is then the one whose whole
+# first message is the message it was started with and that began after this agy started (age: its
+# seconds, from ps), if exactly one is. None when its folder is known and another, or when it has left
 # that conversation since (/clear, or another conversation was typed into in its folder).
-def agy_idle(argv, cwd):
-    global AGY_FIRST
-    if AGY_FIRST is None:
-        AGY_FIRST = {}
-        for path in glob.glob(agy_transcript("*")):
-            try:
-                AGY_FIRST[path] = loose(opening(path, TASK_HEAD["agy"])[0] or "")[:100]
-            except OSError:
+def agy_idle(argv, cwd, age):
+    brief = agy_brief(argv)
+    if not brief or age is None:
+        return None
+    brief = loose(brief)
+    started = NOW - age - AGY_SLACK
+    fits = []
+    for path in glob.glob(agy_transcript("*")):
+        try:
+            # Last written before this agy started: not its conversation, and never opened.
+            if os.path.getmtime(path) < started:
                 continue
-    line = loose(" ".join(argv[1:]))
-    fits = [path for path, said in AGY_FIRST.items() if said and said in line]
+        except OSError:
+            continue
+        said, at = agy_first(path)
+        if said == brief and at is not None and at <= age + AGY_SLACK:
+            fits.append(path)
     if len(fits) != 1:
         return None
     cid = fits[0].split("/brain/")[1].split("/")[0]
@@ -176,9 +223,12 @@ def agy_idle(argv, cwd):
     for row in rows:
         if not isinstance(row, dict):
             continue
-        if row.get("conversationId") == cid and str(row.get("display") or "").strip().split(" ")[0] in AGY_LEAVE:
-            return None
-        if row.get("conversationId") not in (None, cid) and here and os.path.realpath(row.get("workspace") or "/") == here \
+        if row.get("conversationId") == cid:
+            if str(row.get("display") or "").strip().split(" ")[0] in AGY_LEAVE:
+                return None
+            if here and row.get("workspace") and os.path.realpath(row["workspace"]) != here:
+                return None
+        elif row.get("conversationId") and here and os.path.realpath(row.get("workspace") or "/") == here \
                 and (row.get("timestamp") or 0) / 1000 > since:
             return None
     return fits[0]

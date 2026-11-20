@@ -68,12 +68,17 @@ assert.equal(model.workerScript(["claude"]), '#!/bin/sh\nexec claude "$@"\n', "o
 // trusts an agy worker's folder; with no script (it could not be written), the argv as before.
 const noSkill = { ...def, skill: null, roles: { ...def.roles, worker: "agy" } };
 const workersLine = (worker) => model.firstMessage(def.recipes[1], noSkill, "k1", "made-up words", false, null, worker).split("\n").at(-2);
-assert.equal(workersLine("/made/up/bin/worker-agy"), "Start workers with: /made/up/bin/worker-agy");
-assert.equal(workersLine("/made up/bin/worker-agy"), "Start workers with: '/made up/bin/worker-agy'");
+assert.equal(workersLine("/made/up/bin/worker-agy"), "Start workers with: /made/up/bin/worker-agy (on another machine: agy -i)");
+assert.equal(workersLine("/made up/bin/worker-agy"), "Start workers with: '/made up/bin/worker-agy' (on another machine: agy -i)");
 assert.equal(workersLine("agy -i"), "Start workers with: agy -i");
 assert.equal(workersLine(null), "Start workers with: agy -i");
+// The script is on the lead's machine only: a worker that needs no trust step keeps its argv, which
+// works on every machine.
+const claudeWorkers = { ...def, skill: null };
+assert.equal(model.firstMessage(def.recipes[1], claudeWorkers, "k1", "made-up words", false, null, "/made/up/bin/worker-claude-opus").split("\n").at(-2),
+  `Start workers with: ${model.shellQuote(model.workerAgent(claudeWorkers, def.recipes[1]).argv)}`);
 const lead = { address: "t1", state: "live", program: { agent: true }, labels: { "task.id": "k1", "task.title": "Pond survey" } };
 const joined = model.joinMessage(def.recipes[1], noSkill, { taskId: "k1", lead, live: [lead] }, "lead", "made-up words", false, "/made/up/bin/worker-agy");
-assert.ok(joined.includes("\nStart workers with: /made/up/bin/worker-agy\n"), joined);
+assert.ok(joined.includes("\nStart workers with: /made/up/bin/worker-agy (on another machine: agy -i)\n"), joined);
 rmSync(home, { recursive: true, force: true });
 console.log("ok agy");
