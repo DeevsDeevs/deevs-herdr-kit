@@ -572,7 +572,10 @@ come from the app's program table.
   computer slept) marks the time between as not recorded. A gap less than 10 s after the one
   before it on the same machine joins it (`model.joinGaps`, `GAP_JOIN_MS`): a sleeping Mac
   that wakes for a few seconds every quarter hour leaves one gap, not one per wake, and those
-  seconds are drawn as not recorded. The recorder joins when it adds or closes a gap, merges
+  seconds are drawn as not recorded. Of two copies of one gap the one that covers more wins;
+  an open gap that a closed one overlaps is closed (someone saw the machine answer), one
+  that opens under 10 s after a closed one goes on from its start, open; the result does not
+  depend on which copy comes first. The recorder joins when it adds or closes a gap, merges
   two writers' files, loads `events.json` and moves gaps into `index.json`; Timeline joins
   when it reads either file, so a file written before this reads joined. The
   tower dir holds `config.json`, `inbox/`, `outbox/`, `inbox.lease`, `recorder.lease`,
@@ -894,13 +897,19 @@ come from the app's program table.
   rebuild cut off half-way leaves the next one less to do, and a first draw too big for one
   frame ends after a few; a lane with nothing ongoing keeps its stretches across the
   now-line's pixels (only its marks are drawn again). The map is pruned to the shown lanes
-  when a rebuild ends. A lane is cut only by the gaps of its machine in the span, those
-  under a pixel apart joined, in one pass (`cutGaps`: a binary search per stretch), so the
-  cost follows the span, not the length of the gap list. `gaps.test.mjs` cuts a first draw
-  over frames and checks no finished lane is worked out again; `perf.test.mjs` times
-  Timeline on two made-up records of a Mac that slept (175 lanes, 85 and 850 gaps): each
-  frame under the record's limit, a rebuild with its lanes kept under 50 ms, a first draw
-  under 2 and 4 budgets.
+  when a rebuild ends. A lane is cut by every gap of its machine and of Herdr, whatever the
+  span, so a stretch is the same in every span, in one pass (`cutGaps`: a binary search per
+  stretch). The cut lists are one per loaded gap list and machine, shared by every view (a
+  memo compares them by identity), and an open gap is cut as running on for good, so its
+  moving end changes nothing kept. The grey bands are worked out per view: the span's gaps,
+  those under a pixel apart drawn as one band. A task's line sweeps its lanes cut by their
+  machines' gaps only, with Herdr's gaps as edges inside which nothing is given out
+  (`summaryOf`'s gaps): the same pieces as over the fully cut lanes, without one per gap
+  per lane. `gaps.test.mjs` cuts first draws over frames (one view, two views in turn, a
+  machine not answering while now moves) and checks no finished lane is worked out again;
+  `perf.test.mjs` times Timeline on two made-up records of a Mac that slept (175 lanes, 85
+  and 850 gaps): each frame under the record's limit, a rebuild with its lanes kept under
+  50 ms, a first draw under 2 and 12 budgets.
 - The row, group label, tree lines, status marks, fold chip, rail test, repeat notes,
   avatar colours, machine line (Copy, Connect) and menu are adapted from Herdr's `agents`,
   `spaces` and `menu` mods (Apache-2.0, see `NOTICE`).

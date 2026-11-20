@@ -36,7 +36,9 @@ export const V8_RATIO = 8;
 // bigger record, the whole budget (past it Herdr cuts the render off).
 export const LIMITS = { mac: BUDGET_MS / 2, big: BUDGET_MS, gaps: BUDGET_MS / 2, gaps10: BUDGET_MS };
 // Budgets a first draw on the gaps records may take, spread over that many cut-off frames and more.
-export const FIRST_DRAW = { gaps: 2, gaps10: 4 };
+// gaps10 cuts every lane by 850 gaps exactly (a stretch is the same in every span): a week of
+// pieces, about 550 ms projected at Week; cut every frame it still ends (about 30 frames).
+export const FIRST_DRAW = { gaps: 2, gaps10: 12 };
 // Elements per render on the big record: about twice what each built at 15:40, except Timeline Week
 // and Month, which then built 11,600 and 9,900 (the over-budget renders) and must come down.
 const CEILING = { model: 0, "timeline Day": 3500, "timeline Week": 5000, "timeline Month": 5000, "timeline Day, all open": 5000, board: 700, radar: 800, watchlist: 700 };
