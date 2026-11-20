@@ -261,7 +261,8 @@ keep their asks and Done messages cut short, so treat them like their transcript
   the moment the list first saw it.
 - **While Herdr is closed or the computer sleeps**, no one watches. hc keeps running, so when you
   come back each agent's state and since when are right, but changes in between are lost, and
-  so are agents that ended and were removed meanwhile.
+  so are agents that ended and were removed meanwhile. A computer that wakes for a few seconds
+  while asleep leaves one band: gaps under 10 seconds apart are joined, those seconds included.
 - **While a machine does not answer**, nothing from it. After it comes back, the time of a change
   there is when Herdr saw it.
 - **A layout without agent-tower** records nothing, because Herdr has no background mod. Every
