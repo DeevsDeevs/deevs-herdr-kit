@@ -37,7 +37,10 @@ leads run (without it a lead gets the same rules in its first message), and sett
 falls back to its default and a toast names it.
 
 - `agents`: what can be started, `[{ "id", "label", "argv" }]`. Default: Claude with Fable, Opus
-  and Sonnet (`--permission-mode auto`), `pi`, and Codex (`codex --no-daemon`).
+  and Sonnet (`--permission-mode auto`), `pi`, Codex (`codex --no-daemon`) and Antigravity
+  (`agy -i`: agy takes its first message only after `-i`). A settings file with its own
+  `agents` list shows only those: add `{ "id": "agy", "label": "Antigravity", "argv": ["agy", "-i"] }`
+  to it.
 - `roles`: the default agent per role, by agent id: `eye`, `lead`, `worker` (default: Fable for
   the Eye and leads, Opus for workers); and `namer`, the command that names a new task (an argv;
   the task goes in after `-p`). A file may name just one.
@@ -111,6 +114,13 @@ The Eye on Codex, leads on Opus, workers on Sonnet:
 - **The machine a task's lead runs on:** before a start, one small script per worker agent,
   `~/.config/agent-tower/bin/worker-<agent id>` (`exec <the agent's argv> "$@"`), which the lead
   gets as `$TOWER_WORKER`, so an argv with quotes in it reaches workers intact.
+- **The machine an Antigravity agent starts on** (a lead, a new member, a worker through
+  `$TOWER_WORKER`, the Eye): before agy starts, `sh` and `jq` add the folder's real path to
+  `trustedWorkspaces` in `~/.gemini/antigravity-cli/settings.json`, so agy does not stop on "Do
+  you trust the contents of this project?". Written to a file beside it and renamed over it
+  (mode 600, every other key and the list's order kept); nothing is written when the folder is
+  listed or the file is not the JSON expected, and no file is made when agy never ran there (a
+  toast says so, and agy asks).
 - **The machine a task runs on:** `sh -c 'test -f "$HOME/.agents/skills/$1/SKILL.md"' sh
   tower` once per session, and for the panel `python3` with
   [read.py](mods/agent-tower-panel/read.py), which reads

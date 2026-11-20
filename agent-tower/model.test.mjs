@@ -367,7 +367,7 @@ const def = model.parseConfig(null).config;
 assert.equal(model.leadAgent(def, def.recipes[0]).id, "claude-fable");
 assert.equal(model.workerAgent(def, def.recipes[0]).id, "claude-opus");
 assert.equal(def.roles.eye, "claude-fable");
-assert.deepEqual(def.agents.map((a) => a.id), ["claude-fable", "claude-opus", "claude-sonnet", "pi", "codex"]);
+assert.deepEqual(def.agents.map((a) => a.id), ["claude-fable", "claude-opus", "claude-sonnet", "pi", "codex", "agy"]);
 // An old file (activities, a recipe with argv, no agents/roles/skill) still loads; its argv leads.
 const oldFile = model.parseConfig({ activities: [{ id: "work", label: "Work" }], recipes: [{ id: "here", label: "Lead here", activity: "work", argv: ["claude"], rules: ["Be brief."] }] });
 assert.deepEqual(oldFile.bad, []);

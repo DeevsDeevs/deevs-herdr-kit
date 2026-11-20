@@ -844,7 +844,9 @@ come from the app's program table.
   recipe `activity` (the new names win when both are there), recipes with `argv` and no
   agents or roles. Defaults: areas Work and Personal (default); agents Claude · Fable,
   Opus and Sonnet (`claude --model <m> --permission-mode auto`), pi, Codex
-  (`codex --no-daemon`); lead and eye Claude · Fable, worker Claude · Opus, namer haiku; one recipe per area, "A
+  (`codex --no-daemon`), Antigravity (`agy -i`: agy reads its first message only after `-i`;
+  before it starts anywhere, `model.TRUST_SCRIPT` lists its folder in agy's `trustedWorkspaces`
+  on that machine, from `main.js trustFolder` and the worker script); lead and eye Claude · Fable, worker Claude · Opus, namer haiku; one recipe per area, "A
   lead here", no machine, no rules; skill "tower".
 - `cx.timer.every(60000)` for ages, `cx.timer.every(30000)` for settings and machines
   (machines every 2 minutes while Herdr is in the background), `cx.timer.every(5000)` for the

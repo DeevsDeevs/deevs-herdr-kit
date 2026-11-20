@@ -31,6 +31,8 @@ const AGENTS = [
   { id: "claude-sonnet", label: "Claude · Sonnet", argv: ["claude", "--model", "sonnet", "--permission-mode", "auto"] },
   { id: "pi", label: "pi", argv: ["pi"] },
   { id: "codex", label: "Codex", argv: ["codex", "--no-daemon"] },
+  // agy refuses a bare trailing prompt: the first message Herdr (or the worker script) adds goes after -i.
+  { id: "agy", label: "Antigravity", argv: ["agy", "-i"] },
 ];
 const ROLES = {
   eye: "claude-fable",
@@ -142,7 +144,9 @@ export const workerAgent = (config, recipe) =>
 
 // The script that starts a worker's agent: written per agent where the lead runs, so a lead's
 // "$TOWER_WORKER" "<brief>" is one word that runs exactly that argv, whatever its quoting.
-export const workerScript = (argv) => `#!/bin/sh\nexec ${shellQuote(argv)} "$@"\n`;
+// agy's script first trusts the folder the worker starts in (TRUST_SCRIPT).
+export const workerScript = (argv) =>
+  `#!/bin/sh\n${needsTrust(argv) ? `${shellQuote(["sh", "-c", TRUST_SCRIPT, "trust"])} "$PWD" >/dev/null\n` : ""}exec ${shellQuote(argv)} "$@"\n`;
 export const workerFile = (agentId) => `worker-${String(agentId).replace(/[^\w.-]/g, "_")}`;
 
 // A command line a shell reads back as these words.
@@ -1280,6 +1284,36 @@ export function taskFolder(config, area, title, id) {
 export const MKDIR_SCRIPT = 'd="$1"; case "$d" in "~") d="$HOME";; "~/"*) d="$HOME/${d#"~/"}";; esac; mkdir -p "$d" && cd "$d" && pwd';
 // Prints the first of its arguments that is a folder on that machine (as given), else exits 1.
 export const FIRST_DIR_SCRIPT = 'for d; do case "$d" in "~") e="$HOME";; "~/"*) e="$HOME/${d#"~/"}";; *) e="$d";; esac; [ -d "$e" ] && { printf "%s" "$d"; exit 0; }; done; exit 1';
+
+// agy asks "Do you trust the contents of this project?" in every folder its settings don't list in
+// trustedWorkspaces (exact folders, a parent counts for nothing): an agent run as agy gets its folder
+// listed first, on its own machine.
+export const needsTrust = (argv) => argv[0].split("/").pop() === "agy";
+// Adds the real path of $1 (~: this machine's home) to trustedWorkspaces, keeping every other key and
+// the list's order; written beside the file and renamed over it, mode 600, so agy (which rewrites
+// the file itself) reads the old file or the new one, never half. sh and jq only: every Tower
+// agent's own hc lines already need jq. Prints added, there, absent (agy never ran here: no file is
+// made), bad (not the JSON expected: left as it is) or nojq.
+export const TRUST_SCRIPT = [
+  'f="$HOME/.gemini/antigravity-cli/settings.json"; d="$1"',
+  'case "$d" in "~") d="$HOME";; "~/"*) d="$HOME/${d#"~/"}";; esac',
+  'd=$(cd "$d" && pwd -P) || exit 1',
+  '[ -f "$f" ] || { echo absent; echo "agy has no settings on this machine yet: it will ask whether to trust $d" >&2; exit 0; }',
+  'command -v jq >/dev/null || { echo nojq; exit 0; }',
+  `s=$(jq -r --arg d "$d" 'if type != "object" or ((.trustedWorkspaces // []) | type) != "array" then "bad" elif any(.trustedWorkspaces[]?; . == $d) then "there" else "add" end' "$f" 2>/dev/null) || s=bad`,
+  '[ "$s" = add ] || { echo "$s"; exit 0; }',
+  't=$(mktemp "$f.XXXXXX") || exit 1',
+  `jq --arg d "$d" '.trustedWorkspaces = (.trustedWorkspaces // []) + [$d]' "$f" > "$t" && chmod 600 "$t" && mv -f "$t" "$f" && echo added || { rm -f "$t"; exit 1; }`,
+].join("\n");
+// What a toast says when the folder could not be listed (null: it is listed).
+export function trustWhy(word, where) {
+  if (word === "added" || word === "there") return null;
+  return {
+    absent: `agy has not run on ${where} yet: it has no settings to list the folder in`,
+    bad: `agy's settings on ${where} are not the JSON expected: left as they are`,
+    nojq: `jq is not on ${where}`,
+  }[word] ?? `the folder could not be listed in agy's settings on ${where}`;
+}
 
 const HOME_FOLDER = /^(~|\/root|\/(home|Users)\/[^/]+)\/?$/;
 
