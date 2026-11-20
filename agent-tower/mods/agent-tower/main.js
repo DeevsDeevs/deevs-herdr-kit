@@ -1040,6 +1040,7 @@ export default class AgentTasks extends View {
       reply?.({ ok: false, why });
       return null;
     }
+    await this.trustFolder(machine, folder, lead);
     this.pending.push({ id, name, words, title, by, naming, machine, recipe: recipe.id, area: recipe.area, lead: lead.id, reply, before: new Set(spaces().map((s) => s.id)), at: Date.now(), found: false });
     run("space.new", {
       name,
@@ -1058,6 +1059,15 @@ export default class AgentTasks extends View {
   async makeFolder(machine, dir) {
     const r = await exec("sh", ["-c", model.MKDIR_SCRIPT, "mk", dir], { on: machine, timeout: 15000 }).catch(() => null);
     return r?.code === 0 && r.stdout.trim() ? r.stdout.trim() : null;
+  }
+
+  // agy stops on its trust question in a folder its settings don't list: the folder is listed first,
+  // on the agent's machine (model.TRUST_SCRIPT). When it can't be, a toast says why; the start goes on.
+  async trustFolder(machine, folder, agent) {
+    if (!model.needsTrust(agent.argv)) return;
+    const r = await exec("sh", ["-c", model.TRUST_SCRIPT, "trust", folder], { on: machine, timeout: 15000 }).catch(() => null);
+    const why = model.trustWhy(r?.code === 0 ? r.stdout.trim() : "failed", machine ?? here());
+    if (why) notify({ title: "Antigravity will ask to trust its folder", body: why, level: "warning" });
   }
 
   // The workers' command for a lead on that machine: the path of a small script that runs the
@@ -1151,6 +1161,7 @@ export default class AgentTasks extends View {
       if (there && there.code !== 0) return fail(cx, `${known[0]} does not exist on ${machine ?? "this computer"}`);
       const folder = known.length ? (there?.stdout || known[0]) : await this.makeFolder(machine, dir);
       if (!folder) return fail(cx, `its folder could not be made in ${dir}`);
+      await this.trustFolder(machine, folder, agent);
       const argv = model.withEnv({ TOWER_TASK: item.taskId, TOWER_WORKER: worker }, agent.argv);
       const task = model.joinMessage(recipe, this.config, item, as, words, skill);
       const tab = as === "lead" ? { name: model.LEAD_TAB } : {};
@@ -1238,6 +1249,7 @@ export default class AgentTasks extends View {
       const folder = (own ? model.eyeFolder(this.config, own, dir) : this.config.eye.folder ?? `${dir}/eye`).replace(/^~(?=\/|$)/, home());
       const name = own ? `Eye · ${model.areaLabel(this.config, own)}` : "Eye";
       await exec("mkdir", ["-p", folder]).catch(() => null);
+      await this.trustFolder(null, folder, agent);
       // The start command and the settings go in its environment, not in the message you read.
       const argv = model.withEnv({
         TOWER_NEW: `${appHome()}/mods/agent-tower/tower-new`,

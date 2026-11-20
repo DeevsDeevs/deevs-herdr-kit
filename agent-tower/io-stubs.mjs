@@ -32,6 +32,12 @@ export const exec = (cmd, args = [], opts = {}) => {
     const first = args.slice(3).find((d) => !fx().gone?.includes(d));
     return Promise.resolve(first ? { code: 0, stdout: first, stderr: "" } : { code: 1, stdout: "", stderr: "" });
   }
+  // agy's trust step (model.TRUST_SCRIPT): fx().trusted gets [machine, folder, starts run so far];
+  // fx().trustWord is its answer (default added).
+  if (cmd === "sh" && args[2] === "trust") {
+    (fx().trusted ??= []).push([opts.on ?? null, args[3], fx().runs?.length ?? 0]);
+    return Promise.resolve({ code: 0, stdout: `${fx().trustWord ?? "added"}\n`, stderr: "" });
+  }
   // The namer (main.js askNamer): fx().namer(prompt) gives its answer, or a promise of one.
   if (cmd === "sh" && args[1] === '"$@" </dev/null' && fx().namer) {
     const prompt = args.find((a) => a.includes("<task>"));

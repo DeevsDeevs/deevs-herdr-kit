@@ -472,6 +472,46 @@ const newSpace = (fx) => fx.runs.filter((r) => r[0] === "space.new").at(-1)?.[1]
   await batch([`${INBOX}/req-e.json`]);
   assert.match(answered(fx, "req-e"), /the title is empty/);
 }
+// Antigravity: a lead started as agy has its folder listed in agy's trustedWorkspaces on its machine
+// before its space starts, and its first message comes after -i (agy refuses a bare one). agy never
+// ran there: a toast says so and the start goes on. Claude: no trust step. A new member as agy too.
+{
+  const fx = world();
+  const { v, cx, tick, batch } = await copy();
+  Object.assign(fx, { runs: [], made: [], hcCalls: [], trusted: [], notes: [] });
+  fx.files[`${INBOX}/req-agy.json`] = JSON.stringify({ recipe: "personal-lead", words: "a made-up pond survey", title: "Pond survey", agent: "agy", at: clock });
+  await batch([`${INBOX}/req-agy.json`]);
+  await settle();
+  const args = newSpace(fx);
+  assert.deepEqual(fx.trusted, [[null, args.folder, 0]], "listed on its machine, in its folder, before the start");
+  assert.deepEqual(args.argv.slice(-2), ["agy", "-i"], args.argv.join(" "));
+  assert.ok(args.task.endsWith(": a made-up pond survey"), args.task);
+  assert.deepEqual(fx.notes, []);
+  Object.assign(fx, { trusted: [], trustWord: "absent" });
+  fx.files[`${INBOX}/req-agy2.json`] = JSON.stringify({ recipe: "personal-lead", words: "made-up words", title: "Moth count", agent: "agy", at: clock });
+  await batch([`${INBOX}/req-agy2.json`]);
+  await settle();
+  assert.equal(newSpace(fx).name, "Moth count", "the start goes on");
+  assert.ok(fx.notes.some((n) => /trust/.test(n.title) && /has not run/.test(n.body)), JSON.stringify(fx.notes));
+  Object.assign(fx, { trusted: [], trustWord: "added" });
+  fx.files[`${INBOX}/req-claude.json`] = JSON.stringify({ recipe: "personal-lead", words: "made-up fern words", title: "Fern list", at: clock });
+  await batch([`${INBOX}/req-claude.json`]);
+  await settle();
+  assert.equal(newSpace(fx).name, "Fern list");
+  assert.deepEqual(fx.trusted, [], "no trust step for Claude");
+  // A worker added to a task as agy: its folder is listed before its tab starts.
+  const lead = showLead(fx, "t9", "sp9", "tb9", args);
+  await tick(1600);
+  took(fx, lead);
+  v.render(cx);
+  fx.runs = [];
+  fx.files[`${INBOX}/req-join-agy.json`] = JSON.stringify({ recipe: "personal-lead", words: "made-up worker words", task: lead.labels["task.id"], as: "worker", agent: "agy", at: clock });
+  await batch([`${INBOX}/req-join-agy.json`]);
+  await settle();
+  const tab = fx.runs.find((r) => r[0] === "tab.new")?.[1];
+  assert.ok(tab && tab.argv.at(-1) === "-i", `${answered(fx, "req-join-agy")} ${JSON.stringify(fx.runs)}`);
+  assert.deepEqual(fx.trusted, [[null, tab.folder, 0]]);
+}
 // Without a title, the start waits for the namer: no space before its answer, then the space and the
 // folder take its name (task.by=llm). tower-new's request is answered at once, before the wait (it
 // gives up after 25 s, and an Eye told "nothing was started" would start the task twice).
