@@ -863,12 +863,21 @@ come from the app's program table.
   that outlives a render unless a dead render can't keep it.** Herdr stops a render past
   50 ms (a timer, event or task past 500 ms) with QuickJS's interrupt, which no `catch` or
   `finally` sees, and an async function cut that way never settles its promise. So no
-  correctness rests on code after a body: a busy mark is the time it was set and lapses
-  (`model.held`), the model pass works on its own copy of the change map, the lease
-  keeper's chain starts again once stuck longer than a lease. The one-second tick drops
-  render state it finds between renders and, with `"perf": true`, logs
-  `{at, what: "render cut off", left, count}`. `cutoff.test.mjs` cuts runs off with Node's
-  `vm` timeout, which skips `catch` and `finally` the same way.
+  correctness rests on code after a point where a cut can fall: a busy mark (and each
+  `starting` entry) is the time it was set and lapses (`model.held`; 10 minutes for the
+  inbox, names, machines and reconnect, whose hc calls can hang), and a run clears it only
+  while it is still its own, so a late finisher leaves a newer run's mark alone. The model
+  pass works on its own copy of the change map; a value and what is derived from it go in
+  one assign, the derived part first; `track` and the recorder's step stay "owed" until
+  they publish, so a cut one is redone by the next. The lease keeper's chain starts again
+  once stuck longer than a lease, and `held()` is false while a step is pending past the
+  lease. A loop that must live for good (the inbox watch, the keys) runs each body with
+  `apart`, in a job of its own, and never awaits it. `finally` stays where it was: it
+  still cleans up after an ordinary throw, which is not a cut. A frame or model pass found
+  at a render's start or by the one-second tick was left by a cut: dropped and, with
+  `"perf": true`, logged once as `{at, what: "render cut off", left, count}`.
+  `cutoff.test.mjs` cuts runs off with Node's `vm` timeout, which skips `catch` and
+  `finally` the same way, and stands an ordinary throw in where a job must stop half-way.
 - The row, group label, tree lines, status marks, fold chip, rail test, repeat notes,
   avatar colours, machine line (Copy, Connect) and menu are adapted from Herdr's `agents`,
   `spaces` and `menu` mods (Apache-2.0, see `NOTICE`).

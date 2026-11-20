@@ -52,7 +52,7 @@ export const lastLines = (text, n = NOTE_LINES) => text.replace(/\s+$/, "").spli
 export function load(ui) {
   const s = ui.state;
   if (held(s.reading) || (s.at && ui.now - s.at < READ_MS)) return null;
-  s.reading = Date.now();
+  const mine = (s.reading = Date.now());
   // A read that fails (or a throw anywhere here) must not stop the next one.
   return (async () => {
     try {
@@ -61,13 +61,12 @@ export function load(ui) {
       const notesPath = own.notes ? own.notes.replace(/^~(?=\/)/, home()) : `${ui.towerDir}/${NOTES}`;
       const text = await readTextFile(notesPath).catch(() => null);
       const changed = !s.at || raw !== s.raw || notesPath !== s.notesPath || text !== s.text;
-      Object.assign(s, { at: Date.now(), raw, own, notesPath, text });
-      if (changed) {
-        s.notes = text == null ? null : lastLines(text);
-        ui.notify();
-      }
+      // The notes before the text they come from, in one assign: stopped between, the next read redoes both.
+      const notes = changed ? (text == null ? null : lastLines(text)) : s.notes;
+      Object.assign(s, { notes, at: Date.now(), raw, own, notesPath, text });
+      if (changed) ui.notify();
     } finally {
-      s.reading = null;
+      if (s.reading === mine) s.reading = null;
     }
   })().catch(() => null);
 }

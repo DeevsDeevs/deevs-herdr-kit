@@ -1094,7 +1094,7 @@ export function leaseKeeper({ path, id, read, write, ms = LEASE_MS, now = () => 
   // A step Herdr cut off (500 ms for a task) never settles, and every step after it would wait for
   // good: a chain busy longer than a lease starts again.
   const step = (f) => {
-    if (queuedAt != null && now() - queuedAt > ms) {
+    if (queuedAt != null && (now() - queuedAt > ms || now() < queuedAt)) {
       chain = Promise.resolve();
       queuedAt = null;
     }
@@ -1114,7 +1114,10 @@ export function leaseKeeper({ path, id, read, write, ms = LEASE_MS, now = () => 
     }
   };
   return {
-    held: () => held,
+    // Not while a step is pending past the lease since the last take or renewal: a renewal stuck (cut
+    // off) never says otherwise, and by then another copy may hold the file. With nothing pending (a
+    // computer that slept), it holds until its next renewal says otherwise.
+    held: () => held && (queuedAt == null || (now() - at >= 0 && now() - at < ms)),
     // A renewal is due (or this copy doesn't hold it).
     due: (every = LEASE_RENEW_MS) => !held || now() - at >= every,
     // Takes a free or stale lease, or renews this copy's: whether this copy holds it now.
@@ -1629,9 +1632,11 @@ export function taskModelOnce(ctx, memo) {
 export function taskModel({ terms, listed, spaces: spaceList, config, changes, seen = {}, now, titles = {}, reach = [], eye = null }) {
   const mine = new Map(changes);
   changedMemo = { changes: mine, map: new WeakMap() };
-  const m = taskModelPass({ terms, listed, spaceList, config, changes: mine, seen, now, titles, reach, eye });
-  changedMemo = null;
-  return m;
+  try {
+    return taskModelPass({ terms, listed, spaceList, config, changes: mine, seen, now, titles, reach, eye });
+  } finally {
+    changedMemo = null; // an ordinary throw; a cut skips this, and the copy above makes that harmless
+  }
 }
 // A busy mark is the time it was set, and lapses after ms (default BUSY_MS): a run cut off before it
 // cleared its mark (a render at 50 ms, a timer or task at 500 ms; nothing after the cut runs) can't keep it.

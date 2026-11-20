@@ -54,25 +54,27 @@ const run = (command, args) => {
   return hostRun(command, args);
 };
 // Each render starts its own frame (were one ever nested, the outer would then read straight through).
+// finally only covers an ordinary throw; a cut skips it, which the frame's age and the tick cover.
 function inFrame(draw) {
-  // A frame still here at a render's start is a cut-off render's (or a nested one's: none today).
-  if (frame) perfLog.cutOff(["frame"], ++cutOffs);
+  // A frame (or model pass) still here at a render's start is a cut-off render's: counted once.
+  noteCutOff();
   const mine = { at: Date.now(), reads: new Map(), depth: 0, carried: 0 };
   frame = mine;
-  const out = draw();
-  if (frame === mine) frame = null;
-  return out;
+  try {
+    return draw();
+  } finally {
+    if (frame === mine) frame = null;
+  }
 }
-// Render state found outside a render (the tick runs between renders) was left by a cut-off one:
-// dropped, and counted. What was left, or null.
+// Render state found outside a render or at a render's start was left by a cut-off one: dropped,
+// and logged once.
 let cutOffs = 0;
-function clearCutOff() {
+function noteCutOff() {
   const left = [frame && "frame", model.passLeft() && "model pass"].filter(Boolean);
-  if (!left.length) return null;
+  if (!left.length) return;
   frame = null;
   model.clearPass();
-  cutOffs++;
-  return left;
+  perfLog.cutOff(left, ++cutOffs);
 }
 
 // The perf log (off unless the settings say "perf": true), made again whenever the settings are read.
@@ -100,13 +102,22 @@ function timedRender(view, draw) {
   f.carried = 0;
   f.depth++;
   const t0 = perf.now();
-  const out = draw();
-  f.depth--;
+  let out;
+  try {
+    out = draw();
+  } finally {
+    f.depth--;
+  }
   const mine = f.carried + perf.elements();
   perfLog.render(view, perf.now() - t0, mine);
   f.carried = f.depth ? outer + mine : 0;
   return out;
 }
+// Runs f in a job of its own, for a loop that must outlive it: by then the loop waits at its next
+// await, so a cut inside f (no catch or finally runs, its promise never settles) can't end the loop.
+const apart = (f) => {
+  Promise.resolve().then(f).catch(() => null);
+};
 import { chrome, statusMark, markSlot, rowMark, programIcon, machineChip, BADGE, RANK, WORD } from "./marks.js";
 
 const START_GIVE_UP_MS = 60 * 1000;
@@ -656,7 +667,7 @@ export default class AgentTasks extends View {
     this.pending = [];
     this.busy = null; // since when a send to the Eye or a start from the composer is in flight
     this.chosen = null; // the chip picked since the composer opened
-    this.starting = new Set(); // names whose start is between the checks and space.new
+    this.starting = new Map(); // name -> since when its start is between the checks and space.new (model.held)
     this.skillAt = new Map(); // machine -> Promise<whether the skill is there>
     this.looker = null;
     // Explicit folds and opens, by group id or item key; an item's tree otherwise opens only while
@@ -744,8 +755,7 @@ export default class AgentTasks extends View {
     this.trackTick(cx, false);
     cx.timer.every(1000, (cx) => {
       // Between renders: render state still set was left by a cut-off render (the second line after liveFrame).
-      const left = clearCutOff();
-      if (left) perfLog.cutOff(left, cutOffs);
+      noteCutOff();
       this.trackTick(cx);
     });
     this.refreshMachines(cx);
@@ -775,9 +785,11 @@ export default class AgentTasks extends View {
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
-        if (c === "search" && (props()?.overlay || !sidebarHidden())) this.openSearch(cx);
-        // In the whole-window shape the stage takes the view and area keys.
-        else if (!props()?.overlay && !sidebarHidden()) this.viewKey(c);
+        apart(() => {
+          if (c === "search" && (props()?.overlay || !sidebarHidden())) this.openSearch(cx);
+          // In the whole-window shape the stage takes the view and area keys.
+          else if (!props()?.overlay && !sidebarHidden()) this.viewKey(c);
+        });
       }
     });
   }
@@ -786,7 +798,7 @@ export default class AgentTasks extends View {
   // here, and the other copies follow (one shared value, only on a change).
   checkSettings(cx) {
     if (model.held(this.checkingSettings)) return;
-    this.checkingSettings = Date.now();
+    const mine = (this.checkingSettings = Date.now());
     cx.spawn(async (cx) => {
       try {
         const text = await readTextFile(settingsFile ?? `${towerDir()}/config.json`).catch(() => null);
@@ -796,7 +808,7 @@ export default class AgentTasks extends View {
         setShared(CONFIG_AT, this.configAt);
         cx.notify();
       } finally {
-        this.checkingSettings = null;
+        if (this.checkingSettings === mine) this.checkingSettings = null;
       }
     });
   }
@@ -804,7 +816,7 @@ export default class AgentTasks extends View {
   // A hung machine link can hang `hc machine ls`; never stack a second one behind it.
   refreshMachines(cx) {
     if (model.held(this.refreshingMachines, 10 * 60000)) return;
-    this.refreshingMachines = Date.now();
+    const mine = (this.refreshingMachines = Date.now());
     cx.spawn(async (cx) => {
       try {
         const r = await hc(["machine", "ls", "--json"]);
@@ -817,7 +829,7 @@ export default class AgentTasks extends View {
           }
         }
       } catch {}
-      this.refreshingMachines = null;
+      if (this.refreshingMachines === mine) this.refreshingMachines = null;
     });
   }
 
@@ -911,28 +923,32 @@ export default class AgentTasks extends View {
     const words = model.oneLine(this.input.value());
     const recipe = this.chosenRecipe(this.shownArea()?.id);
     if (!words || !recipe) return;
-    this.busy = Date.now();
+    const mine = (this.busy = Date.now());
+    // Only this start's mark: one that lapsed and was followed by another leaves that one alone.
+    const free = () => {
+      if (this.busy === mine) this.busy = null;
+    };
     cx.notify();
     // "in <title>": a new lead or worker inside that task instead of a new task.
     const into = this.intoItem();
     if (into) {
       return this.joinTask(cx, into, recipe, words, this.intoAs === "lead" ? this.leadFor(recipe).id : null, this.intoAs, {
         launched: (cx) => {
-          this.busy = null;
+          free();
           this.closeComposer(cx);
         },
         reply: (a) => {
-          if (!a.ok) this.busy = null;
+          if (!a.ok) free();
         },
       });
     }
     this.startTask(cx, recipe, words, null, {
       launched: (cx) => {
-        this.busy = null;
+        free();
         this.closeComposer(cx);
       },
       reply: (a) => {
-        if (!a.ok) this.busy = null;
+        if (!a.ok) free();
       },
     });
   }
@@ -951,13 +967,14 @@ export default class AgentTasks extends View {
   // accepted(cx, id) runs once the start goes ahead (its machine answers): from then on the only
   // refusal left is a folder that can't be made, said in a toast.
   startTask(cx, recipe, words, agentId, { title = null, by = null, reply = () => {}, launched = () => {}, accepted = () => {} } = {}) {
-    if (this.pending.some((p) => !p.eye && p.words === words) || this.starting.has(`words:${words}`)) {
+    if (this.pending.some((p) => !p.eye && p.words === words) || model.held(this.starting.get(`words:${words}`))) {
       notify({ title: "That task is still starting", body: "Wait for it, or use other words.", level: "warning" });
       reply({ ok: false, why: "a task with these words is still starting" });
       return;
     }
     const machine = recipe.machine ?? null;
-    this.starting.add(`words:${words}`);
+    const mine = Date.now();
+    this.starting.set(`words:${words}`, mine);
     let name = null;
     cx.spawn(async (cx) => {
       // The settings as they are now: a role or recipe changed since Herdr started counts.
@@ -983,13 +1000,12 @@ export default class AgentTasks extends View {
         // findLead tells two starts on one machine apart by name, so a second one is "<name> 2".
         const base = title ? model.plainName(title) : model.NEW_TASK;
         name = base;
-        for (let n = 2; this.pending.some((p) => p.name === name) || this.starting.has(name); n++) name = `${base} ${n}`;
-        this.starting.add(name);
+        for (let n = 2; this.pending.some((p) => p.name === name) || model.held(this.starting.get(name)); n++) name = `${base} ${n}`;
+        this.starting.set(name, mine);
         const skill = await this.skillOn(machine);
         if (await this.launch(cx, recipe, words, name, agentId, reply, skill, { id, title, by, naming: title ? null : naming })) launched(cx, id);
       }
-      this.starting.delete(name);
-      this.starting.delete(`words:${words}`);
+      for (const k of [name, `words:${words}`]) if (this.starting.get(k) === mine) this.starting.delete(k);
       cx.notify();
     });
   }
@@ -1209,7 +1225,8 @@ export default class AgentTasks extends View {
     if (!area || this.eyeStarting(area) || model.eyeOff(this.config ?? liveConfig, area)) return reply?.({ ok: false, why: "it is starting already, or the area has no Eye" });
     const key = eyeKey(area);
     const own = EYE_PER_AREA ? area : null;
-    this.starting.add(`Eye:${key}`);
+    const mine = Date.now();
+    this.starting.set(`Eye:${key}`, mine);
     markEyeStarting(key, true);
     cx.spawn(async (cx) => {
       // The settings as they are now (you may have switched its agent since Herdr started).
@@ -1231,7 +1248,7 @@ export default class AgentTasks extends View {
       this.pending.push({ id: model.newId(), eye: key, eyeArea: own, name, words: name, machine: null, before: new Set(spaces().map((s) => s.id)), at: Date.now(), found: false, reply });
       run("space.new", { name, folder, machine: "", argv, task: model.eyeMessage(skill ? this.config : { ...this.config, skill: null }, own) });
       this.looker ??= cx.timer.every(1500, (cx) => this.lookForLeads(cx));
-      this.starting.delete(`Eye:${key}`);
+      if (this.starting.get(`Eye:${key}`) === mine) this.starting.delete(`Eye:${key}`);
       cx.notify();
     });
   }
@@ -1256,11 +1273,11 @@ export default class AgentTasks extends View {
     if (!text || !eye || model.held(this.busy)) return;
     if (model.eyeAgent(eye, Date.now(), this.changes ?? new Map()) !== "ok") return;
     if (model.eyeWait(eye, new Map(agents().map((a) => [a.address, a.status]))) === "open") return;
-    this.busy = Date.now();
+    const mine = (this.busy = Date.now());
     cx.notify();
     cx.spawn(async (cx) => {
       const r = await hc(["send", "--", eye.address, text]).catch((e) => ({ code: 1, stderr: String(e) }));
-      this.busy = null;
+      if (this.busy === mine) this.busy = null;
       if (r.code !== 0) notify({ title: "Not sent to the Eye. Your text is kept.", body: model.errorWords(r), level: "error" });
       else {
         this.eyeInput.set_value("");
@@ -1290,7 +1307,7 @@ export default class AgentTasks extends View {
         // Only the requests in the batch are read; a batch with none (a removal, a stray file) does nothing.
         const batch = model.inboxBatch(paths, this.inbox);
         if (batch && !batch.length) continue;
-        await this.readInbox(cx, batch);
+        apart(() => this.readInbox(cx, batch));
       }
     });
   }
@@ -1300,11 +1317,13 @@ export default class AgentTasks extends View {
   async readInbox(cx, paths = null) {
     this.inboxAll ||= paths == null;
     this.inboxPaths = new Set([...(this.inboxPaths ?? []), ...(paths ?? [])]);
-    if (model.held(this.readingInbox)) {
+    if (model.held(this.readingInbox, 10 * 60000)) {
       this.readAgain = true;
+      // The tick reads again too: a pass cut off never takes readAgain, and its mark lapses.
+      this.inboxMissed = true;
       return;
     }
-    this.readingInbox = Date.now();
+    const mine = (this.readingInbox = Date.now());
     try {
       do {
         this.readAgain = false;
@@ -1314,7 +1333,7 @@ export default class AgentTasks extends View {
         await this.readInboxOnce(cx, want);
       } while (this.readAgain);
     } finally {
-      this.readingInbox = null;
+      if (this.readingInbox === mine) this.readingInbox = null;
     }
   }
 
@@ -1362,9 +1381,9 @@ export default class AgentTasks extends View {
       const id = name.slice(0, -5);
       const answer = (a) => this.answerRequest(id, a);
       const drop = () => exec("rm", ["-f", path]).catch(() => null);
+      // Taken by an earlier pass, which answers it: an answer here could overwrite its "starting".
       if (this.handled.has(id)) {
         await drop();
-        answer({ ok: false, why: "already handled" });
         continue;
       }
       this.handled.add(id);
@@ -1438,7 +1457,7 @@ export default class AgentTasks extends View {
   // The inbox holder sets the names that are ours to set, every 2 s. A machine whose layout isn't
   // ready waits; each name is tried once a minute, so a rename Herdr refuses isn't asked again and again.
   nameTick(cx) {
-    if (!this.configLoaded || !this.items || model.held(this.namingNow) || !this.inboxKeeper?.held()) return;
+    if (!this.configLoaded || !this.items || model.held(this.namingNow, 10 * 60000) || !this.inboxKeeper?.held()) return;
     const off = new Set(machines().filter((m) => m.layout !== "ready").map((m) => m.name));
     const now = Date.now();
     this.namesTried ??= new Map();
@@ -1454,13 +1473,14 @@ export default class AgentTasks extends View {
     if (!todo.length && !putBack.length) return;
     for (const c of todo) this.namesTried.set(`${c.id}=${c.to}`, now);
     for (const b of putBack) this.namesTried.set(`${b.address}=${b.pairs[0]}`, now);
-    this.namingNow = Date.now();
+    // A stuck machine link can hang the labels: no second batch for 10 minutes, as for machines.
+    const mine = (this.namingNow = Date.now());
     cx.spawn(async () => {
       try {
         for (const b of putBack) await hc(["label", b.address, ...b.pairs]).catch(() => null);
         await this.setNames(todo);
       } finally {
-        this.namingNow = null;
+        if (this.namingNow === mine) this.namingNow = null;
       }
     });
   }
@@ -1821,14 +1841,14 @@ export default class AgentTasks extends View {
   // Whether the shown area's Eye is starting (another area's start doesn't count).
   eyeStarting(area = this.shownArea()?.id) {
     const key = eyeKey(area);
-    return this.pending.some((p) => p.eye === key) || this.starting.has(`Eye:${key}`)
+    return this.pending.some((p) => p.eye === key) || model.held(this.starting.get(`Eye:${key}`))
       || Date.now() - (shared(EYE_STARTING)?.[key] ?? 0) < START_GIVE_UP_MS;
   }
 
   // What starting an Eye needs in a copy other than the list (the stage, the bar alone).
   initEyeStart() {
     this.pending ??= [];
-    this.starting ??= new Set();
+    this.starting ??= new Map();
     this.skillAt ??= new Map();
     this.reach ??= [];
   }
@@ -2574,7 +2594,7 @@ export default class AgentTasks extends View {
     const name = machine.name;
     if (model.held(this.reconnecting[name]?.busy, 10 * 60000)) return;
     const state = this.reconnecting[name] ??= { machine, removed: false };
-    state.busy = Date.now();
+    const mine = (state.busy = Date.now());
     state.error = null;
     cx.notify();
     cx.spawn(async (cx) => {
@@ -2594,10 +2614,9 @@ export default class AgentTasks extends View {
         const args = ["machine", "add", ...(machine.via ? ["--via", machine.target] : [machine.target]), "--name", name];
         if (machine.session) args.push("--session", machine.session);
         await ask(args);
-        delete this.reconnecting[name];
+        if (state.busy === mine) delete this.reconnecting[name];
       } catch (e) {
-        state.error = String(e.message ?? e);
-        state.busy = null;
+        if (state.busy === mine) Object.assign(state, { error: String(e.message ?? e), busy: null });
       }
       this.refreshMachines(cx);
       cx.notify();
@@ -3021,16 +3040,21 @@ export default class AgentTasks extends View {
     this.recKeeper = model.leaseKeeper({ path: `${towerDir()}/recorder.lease`, id: this.id, read: (p) => readTextFile(p), write: writeTextFile,
       ms: model.REC_LEASE_MS });
     // Every 20 s: the holder renews (a write, no read); a copy without it looks whether it is free.
+    // Held and loaded, or loading for under a minute: only renew. Held with a load that never ended
+    // (cut off): taken again, which loads again.
     const tick = () => {
-      if (this.recKeeper.held()) {
+      if (this.recKeeper.held() && (this.recReady || model.held(this.recLoading, 60000))) {
         this.recKeeper.take();
         return;
       }
       this.recKeeper.take().then(async (ok) => {
-        if (!ok) return;
+        if (!ok || model.held(this.recLoading, 60000)) return;
         // Taken back: nothing goes into the old record while the files are read again.
+        const mine = (this.recLoading = Date.now());
         this.recReady = false;
         await this.loadRecord();
+        if (this.recLoading !== mine) return;
+        this.recLoading = null;
         this.recReady = true;
         cx.notify();
       });
@@ -3110,7 +3134,7 @@ export default class AgentTasks extends View {
   // its budget. Only the lease holder; a failure leaves events.json as it was, to try next hour.
   async movePast() {
     if (!this.liveKeys || model.held(this.moving) || !this.holdsRecorder()) return;
-    this.moving = Date.now();
+    const mine = (this.moving = Date.now());
     const dir = recDir();
     try {
       const now = Date.now();
@@ -3195,7 +3219,7 @@ export default class AgentTasks extends View {
       if (!this.moveFailed) console.log(`agent-tower: timeline: moving the past into ${dir}/tasks failed, events.json keeps it: ${e?.message ?? e}`);
       this.moveFailed = true;
     } finally {
-      this.moving = null;
+      if (this.moving === mine) this.moving = null;
     }
   }
 
@@ -3225,16 +3249,21 @@ export default class AgentTasks extends View {
     }
     let tell = false;
     let changed = false;
+    // Set before the map is touched and cleared once it is published: a track cut off in between
+    // (the map moved, the version or CHANGES_V not) is published by the next one.
+    const owed = this.changesOwed === true;
+    this.changesOwed = true;
     const v = shared(CHANGES_V) ?? null;
     if (v != null && v !== this.changesSeenV && !String(v).startsWith(`${this.id}:`)) ({ changed, tell } = model.mergeChanges(this.changes, sharedOr(CHANGES)));
     this.changesSeenV = v;
-    const tracked = model.trackChanges(this.changes, terms, now, this.reach);
+    const tracked = model.trackChanges(this.changes, terms, now, this.reach) || owed;
     // A new version for every writing, a correction too: readers convert the map only when it moves.
     if (tracked || changed || tell) this.changesVersion++;
     if (tracked || tell) {
       setShared(CHANGES, Object.fromEntries(this.changes));
       setShared(CHANGES_V, (this.changesSeenV = `${this.id}:${this.changesVersion}`));
     }
+    this.changesOwed = false;
     // A change another copy saw first is still news to this copy's recorder.
     const moved = tracked || changed;
     if (moved && cx) cx.notify();
@@ -3292,11 +3321,16 @@ export default class AgentTasks extends View {
     }
     // The model was reused (nothing it reads changed) and the look is the same: nothing to record.
     if (all === this.recordedAll && look === this.recordedLook) return;
+    this.liveKeys = new Set(all.map((i) => i.key));
+    // Marked recorded only after the step: a step cut off (a draw's 50 ms) is taken again, and what
+    // it had pushed already is still written (owed).
+    const owed = this.recStepOwed === true;
+    this.recStepOwed = true;
+    const { dirty, toRead } = model.recordStep(this.rec, { terms, all, now, reach, look });
+    if (dirty || owed) this.recDirty = true;
     this.recordedAll = all;
     this.recordedLook = look;
-    this.liveKeys = new Set(all.map((i) => i.key));
-    const { dirty, toRead } = model.recordStep(this.rec, { terms, all, now, reach, look });
-    if (dirty) this.recDirty = true;
+    this.recStepOwed = false;
     for (const r of toRead) this.readScreen(r, cx);
   }
 
@@ -3317,7 +3351,7 @@ export default class AgentTasks extends View {
     // is not rewritten.
     if (force) this.recDirty = true;
     if (!this.recDirty && !this.screensDirty) return;
-    this.flushing = Date.now();
+    const mine = (this.flushing = Date.now());
     try {
       const news = Boolean(this.screensDirty || this.recDirty);
       if (this.recDirty) {
@@ -3354,7 +3388,7 @@ export default class AgentTasks extends View {
       // Both writes failed (another writer between our read and write): next tick tries again.
       this.recDirty = true;
     } finally {
-      this.flushing = null;
+      if (this.flushing === mine) this.flushing = null;
     }
   }
 
@@ -3686,9 +3720,11 @@ export default class AgentTasks extends View {
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
-        // Only the stage that follows the view takes keys (a pinned one, the watchlist, never).
-        if (sidebarHidden() && !props().view) this.viewKey(c);
-        cx.notify();
+        apart(() => {
+          // Only the stage that follows the view takes keys (a pinned one, the watchlist, never).
+          if (sidebarHidden() && !props().view) this.viewKey(c);
+          cx.notify();
+        });
       }
     });
   }

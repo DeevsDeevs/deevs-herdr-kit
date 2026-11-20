@@ -243,8 +243,8 @@ export default class AgentTowerPanel extends View {
     const item = this.item(key);
     const state = (item.machines[mk(m)] ??= { fails: 0 });
     state.signature = signature;
-    state.reading = Date.now();
-    this.inflight.set(mk(m), state.reading);
+    const mine = (state.reading = Date.now());
+    this.inflight.set(mk(m), mine);
     // hc ls --all lists every machine: once per round, with the lead's read or, after it ended, the first member's.
     // Ended members (hc ls --all) every LIST_EVERY_MS, and at once when a member that was live at the
     // last list has gone: Herdr drops an ended terminal, and only this list still has it.
@@ -292,8 +292,9 @@ export default class AgentTowerPanel extends View {
         state.failedAt = Date.now();
         state.error = String(e?.message ?? e).replace(/^Error: /, "");
       }
-      state.reading = null;
-      this.inflight.delete(mk(m));
+      // Only this read's marks: a newer read started after this one lapsed keeps its own.
+      if (state.reading === mine) state.reading = null;
+      if (this.inflight.get(mk(m)) === mine) this.inflight.delete(mk(m));
       cx.notify();
     });
   }
@@ -385,15 +386,16 @@ export default class AgentTowerPanel extends View {
     if (kept != null) return kept;
     const stamp = shared(RECORDED) ?? null;
     if (this.screens && this.screens.stamp === stamp) return null;
-    if (this.screensReading === stamp) return undefined;
-    this.screensReading = stamp;
+    // A read of this stamp under way, for at most 30 s (one cut off never ends).
+    if (this.screensReading?.stamp === stamp && panel.held(this.screensReading.at, 30000)) return undefined;
+    const mine = (this.screensReading = { stamp, at: Date.now() });
     cx.spawn(async (cx) => {
       let map = {};
       try {
         map = JSON.parse((await readTextFile(`${towerDir()}/timeline/screens.json`)) ?? "{}") ?? {};
       } catch {}
       this.screens = { stamp, map };
-      this.screensReading = null;
+      if (this.screensReading === mine) this.screensReading = null;
       cx.notify();
     });
     return undefined;
