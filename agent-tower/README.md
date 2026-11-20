@@ -127,8 +127,9 @@ The Eye on Codex, leads on Opus, workers on Sonnet:
   the lead's and workers' transcripts under `~/.claude`, `~/.codex`, `~/.pi` or, for agy,
   `~/.gemini/antigravity-cli/brain/<conversation>/.system_generated/logs/transcript.jsonl` (found
   with `ps` and `lsof` or `/proc`; agy's conversation database is never opened, and an idle agy is
-  matched by its run line's first message, `history.jsonl` telling whether it left that
-  conversation), runs `git` in their folders, `gh pr view` there when `gh` is
+  matched by the message it was started with, the conversation's whole first message, begun
+  after that agy started (`ps`); `history.jsonl` tells its folder and whether it left that
+  conversation; transcripts last written before it started are not opened), runs `git` in their folders, `gh pr view` there when `gh` is
   installed, and `node ~/.agents/skills/chains/chain.mjs` for the newest chain link.
 - **Starting:** new spaces with the recipe's agent (default `claude --model fable
   --permission-mode auto` for leads and the Eye; workers `claude --model opus`). Nothing starts by itself, the Eye included. Closing ends only

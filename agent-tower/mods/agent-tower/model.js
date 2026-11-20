@@ -1242,8 +1242,11 @@ export function skillCheck(skill, eye = false) {
 // agy worker's folder, or the argv as text when the script could not be written.
 export function firstMessage(recipe, config, id, words, skillHere = Boolean(config.skill), over = null, worker = null) {
   const rules = [...(recipe.rules ?? []), ...(over ? [over] : [])];
-  const argv = shellQuote(workerAgent(config, recipe).argv);
-  const workers = `Start workers with: ${worker && worker !== argv ? shellQuote([worker]) : argv}`;
+  const agent = workerAgent(config, recipe);
+  const argv = shellQuote(agent.argv);
+  // The script (it trusts an agy worker's folder) exists only on the lead's machine: elsewhere the argv.
+  const script = worker && worker !== argv && needsTrust(agent.argv);
+  const workers = `Start workers with: ${script ? `${shellQuote([worker])} (on another machine: ${argv})` : argv}`;
   if (config.skill && skillHere) return [...rules, `Lead task ${id} with the ${config.skill} skill (questions to me go through task.ask): ${words}`].join("\n");
   const body = [config.contract.replaceAll("{id}", id).replaceAll("{worker-skill}", config.skill ? `; use the ${config.skill} skill if you have it` : ""), workers];
   return [...rules, ...body, `Task: ${words}`].join("\n");
