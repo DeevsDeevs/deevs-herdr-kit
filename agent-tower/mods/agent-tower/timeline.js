@@ -279,7 +279,8 @@ export function backfill(dir, lanes, firstAtOf, now, onLoad) {
     byMachine.get(m).push(l);
   }
   for (const [m, list] of byMachine) {
-    fill.running.set(m, Date.now());
+    const mine = Date.now();
+    fill.running.set(m, mine);
     for (const l of list) fill.asked.add(backfillKey(l));
     // Back to the oldest lane's start: at most a day for live agents, a week with ended ones (hc
     // forgets them a day after they end). read.py reads backwards from the end until it passes that.
@@ -298,7 +299,10 @@ export function backfill(dir, lanes, firstAtOf, now, onLoad) {
           }
           const ask = turnsAsk(l, got, now);
           if (ask) terminals.push(ask);
-          else fill.cache[backfillKey(l)] = { at: now, missing: true, gone: true };
+          else {
+            fill.version++; // before the write: a job cut after it can't leave readers on the old version
+            fill.cache[backfillKey(l)] = { at: now, missing: true, gone: true };
+          }
         }
         const script = terminals.length ? await readTextFile(`${appHome()}/mods/agent-tower-panel/read.py`) : null;
         if (!script) {
@@ -309,6 +313,7 @@ export function backfill(dir, lanes, firstAtOf, now, onLoad) {
         // When the answer came, on the clock the view draws by.
         const readAt = now + (Date.now() - t0);
         const out = JSON.parse(r.stdout);
+        fill.version++;
         for (const t of terminals) {
           const T = out.turns?.terminals?.[t.key];
           fill.cache[t.key] = T?.path && Number.isFinite(out.now) ? toLocal(T, out.now, readAt) : { at: readAt, missing: true };
@@ -322,7 +327,7 @@ export function backfill(dir, lanes, firstAtOf, now, onLoad) {
           onLoad?.();
         } catch {}
       } finally {
-        fill.running.delete(m);
+        if (fill.running.get(m) === mine) fill.running.delete(m);
       }
     })();
   }
@@ -352,7 +357,8 @@ export function findForgotten(dir, { machines, ids, now, since_s, onLoad }) {
     const want = ids.filter((id) => !lost.has(`${m}|${id}`));
     if (!want.length || model.held(fill.running.get(`tasks|${m}`))) continue;
     for (const id of want) lost.add(`${m}|${id}`);
-    fill.running.set(`tasks|${m}`, Date.now());
+    const mine = Date.now();
+    fill.running.set(`tasks|${m}`, mine);
     const have = {};
     for (const e of Object.values(fill.cache)) if (e?.session && e.path && (e.machine ?? "") === m) have[e.path] = [e.mtime, e.size];
     const t0 = Date.now();
@@ -365,6 +371,7 @@ export function findForgotten(dir, { machines, ids, now, since_s, onLoad }) {
         const out = JSON.parse(r.stdout);
         if (!Number.isFinite(out.now)) return;
         const at = (sec) => readAt - (out.now - sec) * 1000;
+        fill.version++;
         for (const T of out.tasks ?? []) {
           if (!T?.session || !T.task) continue;
           const key = `transcript:${T.program ?? "agent"}:${T.session}`;
@@ -380,7 +387,7 @@ export function findForgotten(dir, { machines, ids, now, since_s, onLoad }) {
       } catch {
         // Asked again after Herdr restarts.
       } finally {
-        fill.running.delete(`tasks|${m}`);
+        if (fill.running.get(`tasks|${m}`) === mine) fill.running.delete(`tasks|${m}`);
       }
     })();
   }
@@ -646,13 +653,12 @@ const store = { h: EMPTY, stamp: undefined, loading: null, at: 0, version: 0 };
 export function history(dir, onLoad, now = Date.now()) {
   const stamp = shared(RECORDED) ?? null;
   if ((stamp !== store.stamp || now - store.at > 60e3) && !model.held(store.loading) && dir) {
-    store.loading = Date.now();
+    const mine = (store.loading = Date.now());
     store.at = now;
     readTextFile(`${dir}/timeline/events.json`).catch(() => null).then((text) => {
-      store.h = text ? parseHistory(text) : EMPTY;
-      store.stamp = stamp;
-      store.version++;
-      store.loading = null;
+      const h = text ? parseHistory(text) : EMPTY;
+      Object.assign(store, { h, stamp, version: store.version + 1 });
+      if (store.loading === mine) store.loading = null;
       try {
         onLoad?.();
       } catch {}
@@ -783,27 +789,26 @@ export function longPast(dir, { start, now, long, onLoad, read = readTextFile, p
   // least every 5 minutes for any other writer. An unchanged index changes nothing.
   const stamp = shared(RECORDED) ?? null;
   if (!model.held(past.loading) && (!past.index || stamp !== past.stamp || now - past.at > PAST_RELOAD_MS)) {
-    past.loading = Date.now();
+    const mine = (past.loading = Date.now());
     past.at = now;
     past.stamp = stamp;
     Promise.resolve().then(() => read(`${dir}/timeline/index.json`)).catch(() => null).then((text) => {
-      past.loading = null;
+      if (past.loading === mine) past.loading = null;
       if (past.index && text === past.indexText) return;
-      const gapsBefore = gapsKey(past.index?.gaps);
-      past.index = parseIndex(text);
-      past.indexText = text;
-      // New gaps: the files already loaded are cut again, here in the job, not in a render.
-      if (gapsKey(past.index.gaps) !== gapsBefore) {
+      const index = parseIndex(text);
+      // New gaps: the files already loaded are cut again, here in the job, not in a render. The new
+      // index is kept only after that, so a job cut off on the way is done again on the next reload.
+      if (gapsKey(index.gaps) !== gapsKey(past.index?.gaps)) {
         for (const f of Object.values(past.files)) {
           if (!f.data) continue;
-          prepareFile(f.data, past.index.gaps);
+          prepareFile(f.data, index.gaps);
           fileMarks.delete(f.data);
           try {
             past.prepare?.(f.data);
           } catch {}
         }
       }
-      past.version++;
+      Object.assign(past, { index, indexText: text, version: past.version + 1 });
       loaded();
     });
   }
@@ -813,7 +818,8 @@ export function longPast(dir, { start, now, long, onLoad, read = readTextFile, p
     let f = past.files[key];
     // Any rewrite shows in the entry (bytes at least): read the file again then, not only on a new until.
     const sig = `${e.until}|${e.bytes ?? ""}|${e.thinned ?? ""}|${e.ended ?? ""}`;
-    if (!f || (f.sig !== sig && !model.held(f.loading))) {
+    // A load still marked but lapsed was cut off: it is read again too.
+    if (!f || ((f.sig !== sig || f.loading != null) && !model.held(f.loading))) {
       f = past.files[key] = { sig, loading: Date.now(), data: f?.data ?? null };
       const mine = f;
       Promise.resolve().then(() => read(`${dir}/timeline/${e.file}`)).catch(() => null).then((text) => {
