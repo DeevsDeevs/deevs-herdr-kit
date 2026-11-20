@@ -512,6 +512,22 @@ const newSpace = (fx) => fx.runs.filter((r) => r[0] === "space.new").at(-1)?.[1]
   assert.ok(tab && tab.argv.at(-1) === "-i", `${answered(fx, "req-join-agy")} ${JSON.stringify(fx.runs)}`);
   assert.deepEqual(fx.trusted, [[null, tab.folder, 0]]);
 }
+// Without the skill, an agy lead's workers: its first message names the worker script written on its
+// machine ($TOWER_WORKER), whose first line trusts the worker's folder, not the bare argv.
+{
+  const config = JSON.stringify({ skill: null, recipes: [{ id: "personal-lead", label: "A lead here", area: "personal", lead: "agy", worker: "agy" }] });
+  const fx = world({ [`${TOWER}/config.json`]: config });
+  const { batch } = await copy();
+  Object.assign(fx, { runs: [], made: [], hcCalls: [], trusted: [], notes: [], scripts: [] });
+  fx.files[`${INBOX}/req-agy-noskill.json`] = JSON.stringify({ recipe: "personal-lead", words: "a made-up heron count", title: "Heron count", at: clock });
+  await batch([`${INBOX}/req-agy-noskill.json`]);
+  await settle();
+  const args = newSpace(fx);
+  const [[, path, script]] = fx.scripts;
+  assert.ok(args.task.split("\n").includes(`Start workers with: ${path}`), args.task);
+  assert.ok(args.argv.includes(`TOWER_WORKER=${path}`), args.argv.join(" "));
+  assert.ok(script.includes("trust") && script.endsWith(`exec agy -i "$@"\n`), script);
+}
 // Without a title, the start waits for the namer: no space before its answer, then the space and the
 // folder take its name (task.by=llm). tower-new's request is answered at once, before the wait (it
 // gives up after 25 s, and an Eye told "nothing was started" would start the task twice).

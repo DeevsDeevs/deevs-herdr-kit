@@ -63,5 +63,17 @@ const out = execFileSync(join(bin, "worker-agy"), ["a brief, with 'quotes'"], { 
 assert.equal(out, "[-i][a brief, with 'quotes']");
 assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).trustedWorkspaces, [sub]);
 assert.equal(model.workerScript(["claude"]), '#!/bin/sh\nexec claude "$@"\n', "other agents' scripts unchanged");
+
+// A lead without the skill is told to start workers with the worker script ($TOWER_WORKER), which
+// trusts an agy worker's folder; with no script (it could not be written), the argv as before.
+const noSkill = { ...def, skill: null, roles: { ...def.roles, worker: "agy" } };
+const workersLine = (worker) => model.firstMessage(def.recipes[1], noSkill, "k1", "made-up words", false, null, worker).split("\n").at(-2);
+assert.equal(workersLine("/made/up/bin/worker-agy"), "Start workers with: /made/up/bin/worker-agy");
+assert.equal(workersLine("/made up/bin/worker-agy"), "Start workers with: '/made up/bin/worker-agy'");
+assert.equal(workersLine("agy -i"), "Start workers with: agy -i");
+assert.equal(workersLine(null), "Start workers with: agy -i");
+const lead = { address: "t1", state: "live", program: { agent: true }, labels: { "task.id": "k1", "task.title": "Pond survey" } };
+const joined = model.joinMessage(def.recipes[1], noSkill, { taskId: "k1", lead, live: [lead] }, "lead", "made-up words", false, "/made/up/bin/worker-agy");
+assert.ok(joined.includes("\nStart workers with: /made/up/bin/worker-agy\n"), joined);
 rmSync(home, { recursive: true, force: true });
 console.log("ok agy");
