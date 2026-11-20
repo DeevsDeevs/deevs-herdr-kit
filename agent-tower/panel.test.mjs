@@ -94,7 +94,9 @@ assert.deepEqual(panel.checkedOf(away, new Set(), "", NOW), { text: "checked 1m 
 // The lead's machine down: its state line says so in red, the footer doesn't repeat it.
 assert.equal(panel.checkedOf({ vps: { at: NOW - 60 * M } }, new Set(["vps"]), "vps", NOW).warn, false);
 // Reading, never read and failed since the last good read.
-assert.equal(panel.checkedOf({ "": { at: NOW - M, reading: true } }, new Set(), "", NOW).text, "checking…");
+assert.equal(panel.checkedOf({ "": { at: NOW - M, reading: NOW - 1000 } }, new Set(), "", NOW).text, "checking…");
+// A read mark a cut-off run left behind lapses: no "checking…" for good.
+assert.equal(panel.checkedOf({ "": { at: NOW - M, reading: NOW - 3 * M } }, new Set(), "", NOW).text, "checked 1m ago");
 assert.deepEqual(panel.checkedOf({ "": { fails: 1, failedAt: NOW } }, new Set(), "", NOW), { text: "couldn't check", warn: true, reading: false });
 assert.equal(panel.checkedOf({ "": { at: NOW - M, failedAt: NOW } }, new Set(), "", NOW).warn, true);
 // A machine that came back is read again at once: a changed signature makes the read due.

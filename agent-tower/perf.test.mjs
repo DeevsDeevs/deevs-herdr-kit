@@ -283,7 +283,7 @@ const files = globalThis.__fx.files;
 globalThis.__fx.files = new Proxy(files, { get: (o, k) => { if (k === "/t/watchlist.json") throw new Error("read failed"); return o[k]; } });
 ui.now += 20000;
 await w.load(ui);
-assert.equal(ui.state.reading, false, "a failed load is over");
+assert.equal(ui.state.reading, null, "a failed load is over");
 globalThis.__fx.files = { ...files, "/t/investing-notes.md": "after\n" };
 ui.now += 20000;
 await w.load(ui);

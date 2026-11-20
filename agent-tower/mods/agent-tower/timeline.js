@@ -215,7 +215,8 @@ function rebuiltOnce(entry, from, until) {
 }
 
 // The cache, read once, written by whichever copy ran read.py; a write someone else beat is merged.
-const fill = { cache: null, text: null, loading: false, asked: new Set(), running: new Set(), version: 0 };
+// loading and each running read: since when (model.held), so one a cut-off run left lapses.
+const fill = { cache: null, text: null, loading: null, asked: new Set(), running: new Map(), version: 0 };
 const fillFile = (dir) => `${dir}/timeline/backfill.json`;
 // Herdr refuses a file over 1 MiB to read and to write (a write reads first): one found over it is
 // read through cat (exec takes 8 MiB) and moved aside to <file>.big, so the next write makes it anew
@@ -251,8 +252,8 @@ function saveFill(dir, now, tries = 2) {
 export function backfill(dir, lanes, firstAtOf, now, onLoad) {
   if (!dir) return {};
   if (!fill.cache) {
-    if (!fill.loading) {
-      fill.loading = true;
+    if (!model.held(fill.loading)) {
+      fill.loading = Date.now();
       readFill(fillFile(dir)).then(({ text, big }) => {
         fill.text = big ? null : text;
         try {
@@ -273,12 +274,12 @@ export function backfill(dir, lanes, firstAtOf, now, onLoad) {
   const byMachine = new Map();
   for (const l of want) {
     const m = l.machine ?? "";
-    if (fill.running.has(m)) continue;
+    if (model.held(fill.running.get(m))) continue;
     if (!byMachine.has(m)) byMachine.set(m, []);
     byMachine.get(m).push(l);
   }
   for (const [m, list] of byMachine) {
-    fill.running.add(m);
+    fill.running.set(m, Date.now());
     for (const l of list) fill.asked.add(backfillKey(l));
     // Back to the oldest lane's start: at most a day for live agents, a week with ended ones (hc
     // forgets them a day after they end). read.py reads backwards from the end until it passes that.
@@ -349,9 +350,9 @@ export function findForgotten(dir, { machines, ids, now, since_s, onLoad }) {
   if (!dir || !fill.cache) return;
   for (const m of machines) {
     const want = ids.filter((id) => !lost.has(`${m}|${id}`));
-    if (!want.length || fill.running.has(`tasks|${m}`)) continue;
+    if (!want.length || model.held(fill.running.get(`tasks|${m}`))) continue;
     for (const id of want) lost.add(`${m}|${id}`);
-    fill.running.add(`tasks|${m}`);
+    fill.running.set(`tasks|${m}`, Date.now());
     const have = {};
     for (const e of Object.values(fill.cache)) if (e?.session && e.path && (e.machine ?? "") === m) have[e.path] = [e.mtime, e.size];
     const t0 = Date.now();
@@ -641,17 +642,17 @@ export function momentOf(key, address, st, h) {
 
 // The recorded file, loaded again on each write the recorder announces (shared RECORDED), and at
 // least once a minute, since another window's recorder announces nothing here. One cache for every copy.
-const store = { h: EMPTY, stamp: undefined, loading: false, at: 0, version: 0 };
+const store = { h: EMPTY, stamp: undefined, loading: null, at: 0, version: 0 };
 export function history(dir, onLoad, now = Date.now()) {
   const stamp = shared(RECORDED) ?? null;
-  if ((stamp !== store.stamp || now - store.at > 60e3) && !store.loading && dir) {
-    store.loading = true;
+  if ((stamp !== store.stamp || now - store.at > 60e3) && !model.held(store.loading) && dir) {
+    store.loading = Date.now();
     store.at = now;
     readTextFile(`${dir}/timeline/events.json`).catch(() => null).then((text) => {
       store.h = text ? parseHistory(text) : EMPTY;
       store.stamp = stamp;
       store.version++;
-      store.loading = false;
+      store.loading = null;
       try {
         onLoad?.();
       } catch {}
@@ -764,13 +765,14 @@ export function prepareFile(file, gaps = []) {
   return file;
 }
 
-const past = { dir: null, index: null, at: 0, loading: false, files: {}, version: 0 };
+// loading (here and per file): since when (model.held), so one a cut-off run left lapses.
+const past = { dir: null, index: null, at: 0, loading: null, files: {}, version: 0 };
 const gapsKey = (gaps) => (gaps ?? []).map((g) => `${g.m}:${g.from}-${g.to}`).join(",");
 // {index, files: {task key: parsed file}}: the index always (small; "N ended" needs it), the task
 // files only at Week and Month, and only those overlapping [start, now]. read: the files' reader.
 export function longPast(dir, { start, now, long, onLoad, read = readTextFile, prepare = null }) {
   if (!dir) return { index: null, files: {} };
-  if (past.dir !== dir) Object.assign(past, { dir, index: null, at: 0, loading: false, files: {}, version: past.version + 1 });
+  if (past.dir !== dir) Object.assign(past, { dir, index: null, at: 0, loading: null, files: {}, version: past.version + 1 });
   const loaded = () => {
     try {
       onLoad?.();
@@ -780,12 +782,12 @@ export function longPast(dir, { start, now, long, onLoad, read = readTextFile, p
   // Read again on each recorder write (the hourly move rewrites the index and announces it so), and at
   // least every 5 minutes for any other writer. An unchanged index changes nothing.
   const stamp = shared(RECORDED) ?? null;
-  if (!past.loading && (!past.index || stamp !== past.stamp || now - past.at > PAST_RELOAD_MS)) {
-    past.loading = true;
+  if (!model.held(past.loading) && (!past.index || stamp !== past.stamp || now - past.at > PAST_RELOAD_MS)) {
+    past.loading = Date.now();
     past.at = now;
     past.stamp = stamp;
     Promise.resolve().then(() => read(`${dir}/timeline/index.json`)).catch(() => null).then((text) => {
-      past.loading = false;
+      past.loading = null;
       if (past.index && text === past.indexText) return;
       const gapsBefore = gapsKey(past.index?.gaps);
       past.index = parseIndex(text);
@@ -811,8 +813,8 @@ export function longPast(dir, { start, now, long, onLoad, read = readTextFile, p
     let f = past.files[key];
     // Any rewrite shows in the entry (bytes at least): read the file again then, not only on a new until.
     const sig = `${e.until}|${e.bytes ?? ""}|${e.thinned ?? ""}|${e.ended ?? ""}`;
-    if (!f || (f.sig !== sig && !f.loading)) {
-      f = past.files[key] = { sig, loading: true, data: f?.data ?? null };
+    if (!f || (f.sig !== sig && !model.held(f.loading))) {
+      f = past.files[key] = { sig, loading: Date.now(), data: f?.data ?? null };
       const mine = f;
       Promise.resolve().then(() => read(`${dir}/timeline/${e.file}`)).catch(() => null).then((text) => {
         const data = parseTaskFile(text);
@@ -822,7 +824,7 @@ export function longPast(dir, { start, now, long, onLoad, read = readTextFile, p
             past.prepare?.(data);
           } catch {}
         }
-        Object.assign(mine, { loading: false, data });
+        Object.assign(mine, { loading: null, data });
         past.version++;
         loaded();
       });
