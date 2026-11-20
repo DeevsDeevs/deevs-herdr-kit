@@ -1238,9 +1238,12 @@ export function skillCheck(skill, eye = false) {
 // skillHere: whether the skill is on the lead's machine. The full contract's brief line names
 // the configured skill ("use the <skill> skill if you have it"), or leaves that out with none.
 // over: a line after the recipe's rules (a new lead taking over a task, joinMessage).
-export function firstMessage(recipe, config, id, words, skillHere = Boolean(config.skill), over = null) {
+// worker: what $TOWER_WORKER holds (main.js workerCommand): the worker script, which also trusts an
+// agy worker's folder, or the argv as text when the script could not be written.
+export function firstMessage(recipe, config, id, words, skillHere = Boolean(config.skill), over = null, worker = null) {
   const rules = [...(recipe.rules ?? []), ...(over ? [over] : [])];
-  const workers = `Start workers with: ${shellQuote(workerAgent(config, recipe).argv)}`;
+  const argv = shellQuote(workerAgent(config, recipe).argv);
+  const workers = `Start workers with: ${worker && worker !== argv ? shellQuote([worker]) : argv}`;
   if (config.skill && skillHere) return [...rules, `Lead task ${id} with the ${config.skill} skill (questions to me go through task.ask): ${words}`].join("\n");
   const body = [config.contract.replaceAll("{id}", id).replaceAll("{worker-skill}", config.skill ? `; use the ${config.skill} skill if you have it` : ""), workers];
   return [...rules, ...body, `Task: ${words}`].join("\n");
@@ -1348,7 +1351,7 @@ export function joinPlace(item) {
 
 // The first message of a new lead in a task (it takes over from the one before), or of a worker
 // added from the list. With the skill, one line; without, the full contract as for a start.
-export function joinMessage(recipe, config, item, as, words, skillHere = Boolean(config.skill)) {
+export function joinMessage(recipe, config, item, as, words, skillHere = Boolean(config.skill), worker = null) {
   const id = item.taskId;
   const title = titleOf(item);
   if (as === "worker") {
@@ -1362,7 +1365,7 @@ export function joinMessage(recipe, config, item, as, words, skillHere = Boolean
     ].join("\n");
   }
   const over = `You are the new lead of task ${id}, "${title}", taking over from its earlier lead: its terminals and its chain say where it stands.`;
-  return firstMessage(recipe, config, id, words, skillHere, over);
+  return firstMessage(recipe, config, id, words, skillHere, over, worker);
 }
 
 // One label call for the new member; the old lead's is oldLeadPairs.

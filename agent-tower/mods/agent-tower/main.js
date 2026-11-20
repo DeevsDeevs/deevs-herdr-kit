@@ -1049,7 +1049,7 @@ export default class AgentTasks extends View {
       machine: machine ?? "",
       // Its task id and its workers' command in its environment (the skill reads them there).
       argv: model.withEnv({ TOWER_TASK: id, TOWER_WORKER: worker }, lead.argv),
-      task: model.firstMessage(recipe, this.config, id, words, skill),
+      task: model.firstMessage(recipe, this.config, id, words, skill, null, worker),
     });
     this.looker ??= cx.timer.every(1500, (cx) => this.lookForLeads(cx));
     return id;
@@ -1163,7 +1163,7 @@ export default class AgentTasks extends View {
       if (!folder) return fail(cx, `its folder could not be made in ${dir}`);
       await this.trustFolder(machine, folder, agent);
       const argv = model.withEnv({ TOWER_TASK: item.taskId, TOWER_WORKER: worker }, agent.argv);
-      const task = model.joinMessage(recipe, this.config, item, as, words, skill);
+      const task = model.joinMessage(recipe, this.config, item, as, words, skill, worker);
       const tab = as === "lead" ? { name: model.LEAD_TAB } : {};
       const space = item.space && (item.space.machine ?? null) === machine ? spaces().find((s) => s.id === item.space.id) : null;
       if (space) {

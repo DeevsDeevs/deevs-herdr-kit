@@ -2,7 +2,7 @@
 // budget, report matching, read timing, and read.py on a made-up transcript and a real git repo.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, readdirSync, symlinkSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, readdirSync, symlinkSync, utimesSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as panel from "./mods/agent-tower-panel/panel.js";
@@ -349,6 +349,78 @@ r.open_prefetch([p for root in (100, 200) for p in r.tree(root)])
 print(json.dumps([r.find_transcript(100, ["codex"], None), r.find_transcript(200, ["pi"], None), calls]))
 `], { encoding: "utf8" }).trim();
 assert.deepEqual(JSON.parse(batched), ["/home/me/.codex/sessions/2026/11/15/a.jsonl", "/home/me/.pi/agent/sessions/--home-me--/b.jsonl", ["ps", "lsof"]]);
+
+// Antigravity (agy): its transcript is brain/<conversation>/.system_generated/logs/transcript.jsonl.
+// While it works, agy holds conversations/<conversation>.db open: that names it. Idle, it closes it:
+// then the conversation whose first message is on the terminal's run line, only in a process that
+// is agy, only when exactly one fits, and not after /clear or another conversation in its folder.
+{
+  const me = mkdtempSync(join(tmpdir(), "tower-agy-"));
+  const agyHome = join(me, ".gemini/antigravity-cli");
+  const step = (i, type, s, more = {}) => ({ step_index: i, source: type === "USER_INPUT" ? "USER_EXPLICIT" : "MODEL", type, status: "DONE", created_at: at(s), ...more });
+  const asked = (text) => `<USER_REQUEST>\n${text}\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: made up.\n</ADDITIONAL_METADATA>`;
+  const conversation = (id, steps) => {
+    const logs = join(agyHome, "brain", id, ".system_generated/logs");
+    execFileSync("mkdir", ["-p", logs]);
+    writeFileSync(join(logs, "transcript.jsonl"), steps.map((l) => JSON.stringify(l)).join("\n") + "\n");
+    return join(logs, "transcript.jsonl");
+  };
+  const briefs = { a: "Count the herons by the pond. You are a worker on task k1.", b: "Map the reeds.", c: "List the moths.", d: "Sort the shells.", twin: "Same made-up brief." };
+  conversation("aaaa-1", [
+    step(0, "USER_INPUT", 900, { content: asked(briefs.a) }),
+    step(1, "PLANNER_RESPONSE", 800, { content: "Starting.", tool_calls: [{ name: "run_command", args: {} }] }),
+    step(2, "GENERIC", 790, { content: "Created At: made up" }),
+    step(3, "PLANNER_RESPONSE", 600, { content: "Counted twelve herons.\n\nShall I go on?" }),
+    step(4, "USER_INPUT", 300, { content: asked('<hc from="t2 k1-count">Wrote it. /made/up/r.md</hc>') }),
+    step(5, "PLANNER_RESPONSE", 200, { content: "", tool_calls: [{ name: "run_command", args: {} }] }),
+  ]);
+  conversation("bbbb-2", [step(0, "USER_INPUT", 500, { content: asked(briefs.b) }), step(1, "PLANNER_RESPONSE", 400, { content: "Reeds mapped." })]);
+  conversation("cccc-3", [step(0, "USER_INPUT", 500, { content: asked(briefs.c) }), step(1, "PLANNER_RESPONSE", 400, { content: "Moths listed." })]);
+  const shells = conversation("dddd-4", [step(0, "USER_INPUT", 500, { content: asked(briefs.d) }), step(1, "PLANNER_RESPONSE", 400, { content: "Shells sorted." })]);
+  for (const id of ["eeee-5", "ffff-6"]) conversation(id, [step(0, "USER_INPUT", 500, { content: asked(briefs.twin) }), step(1, "PLANNER_RESPONSE", 400, { content: "Twin." })]);
+  const old = new Date(Date.now() - 400000);
+  utimesSync(shells, old, old);
+  writeFileSync(join(agyHome, "history.jsonl"), [
+    { display: "/clear", timestamp: Date.now() - 100000, workspace: "/made/up/moths", conversationId: "cccc-3" },
+    { display: "made-up typed words", timestamp: Date.now() - 100000, workspace: "/made/up/shells", conversationId: "gggg-7" },
+  ].map((l) => JSON.stringify(l)).join("\n") + "\n");
+  const read = (cases) => JSON.parse(execFileSync("python3", ["-c", `
+import importlib.util, json, os, sys
+cases = json.loads(sys.argv[1])
+sys.argv = ["read.py", "{}"]
+spec = importlib.util.spec_from_file_location("read", ${JSON.stringify(new URL("./mods/agent-tower-panel/read.py", import.meta.url).pathname)})
+r = importlib.util.module_from_spec(spec); spec.loader.exec_module(r)
+r.os.path.isdir = lambda p: False if p == "/proc" else os.path.isdir(p)
+class Out:
+    def __init__(self, text): self.stdout = text
+def fake(cmd, *a, **k):
+    if cmd[0] == "ps": return Out("100 1 sh\\n101 100 agy\\n200 1 /made/up/bin/agy\\n300 1 codex\\n400 1 agy\\n")
+    if cmd[0] == "lsof": return Out("p101\\nn${agyHome}/conversations/aaaa-1.db\\nn${agyHome}/conversation_summaries.db\\np400\\nn${agyHome}/conversations/hhhh-8.db\\n")
+    raise AssertionError(cmd)
+r.subprocess.run = fake
+r.open_prefetch([p for c in cases if c["pid"] for p in r.tree(c["pid"])])
+print(json.dumps([r.agent(c, True) for c in cases]))
+`, JSON.stringify(cases)], { encoding: "utf8", env: { ...process.env, HOME: me } }));
+  const run = (brief) => ["/made/up/bin/worker-agy", brief];
+  const [busy, idle, notAgy, cleared, switched, twins, unwritten] = read([
+    { pid: 100, argv: ["agy", "-i", "words typed later"], cwd: "/made/up/pond" },
+    { pid: 200, argv: run(briefs.b), cwd: "/made/up/reeds" },
+    { pid: 300, argv: ["codex", briefs.b], cwd: "/made/up/reeds" },
+    { pid: 200, argv: run(briefs.c), cwd: "/made/up/moths" },
+    { pid: 200, argv: run(briefs.d), cwd: "/made/up/shells" },
+    { pid: 200, argv: run(briefs.twin), cwd: "/made/up/twins" },
+    { pid: 400, argv: run(briefs.b), cwd: "/made/up/reeds" },
+  ]);
+  assert.equal(busy.last.text, "Counted twelve herons.\n\nShall I go on?", "busy: the conversation it holds open");
+  assert.ok(Math.abs(busy.last.ago_s - 600) < 5 && Math.abs(busy.turn_ago_s - 300) < 5, JSON.stringify(busy));
+  assert.equal(busy.open_tool, true);
+  assert.equal(busy.prompt.text, '<hc from="t2 k1-count">Wrote it. /made/up/r.md</hc>', "the request without agy's wrapping");
+  assert.deepEqual(busy.reports.map((x) => [x.from, x.text]), [["t2 k1-count", "Wrote it. /made/up/r.md"]]);
+  assert.equal(idle.last.text, "Reeds mapped.", "idle: the conversation started with its run line's brief");
+  assert.deepEqual([notAgy.found, cleared.found, switched.found, twins.found, unwritten.found], [false, false, false, false, false],
+    "never: a process that is not agy, a conversation left by /clear or for another in its folder, two that fit, one not written yet");
+  rmSync(me, { recursive: true, force: true });
+}
 
 // read.py turns (Timeline's backfill): start, end, how each turn ended, its question-tool waits.
 const tl = [

@@ -473,7 +473,9 @@ come from the app's program table.
     skill (questions to me go through task.ask): <your words>`; the skill reads the task id and the workers' command from
     `$TOWER_TASK` and `$TOWER_WORKER`;
   - without (`"skill": null`): the contract from the settings with `{id}` filled in, then
-    `Start workers with: <worker argv, shell-quoted>` and "Task: <your words>". The skill itself is written elsewhere. In the contract,
+    `Start workers with: <$TOWER_WORKER's script path, shell-quoted>` (the same script the skill
+    uses, so an agy worker's folder is trusted first; the worker argv, shell-quoted, when the
+    script could not be written) and "Task: <your words>". The skill itself is written elsewhere. In the contract,
     `{worker-skill}` (the end of a brief) becomes "; use the <skill> skill if you have it"
     with the configured skill's name, and nothing when no skill is configured.
   - The skill form is used only where the skill is: before a start the mod runs
@@ -1191,7 +1193,17 @@ Top to bottom:
   It reads:
   - The lead's transcript, last 2 MB, found as agent-images does: the last message, when
     the turn started, the last compaction, how long the file has been quiet, whether a tool
-    call is open, and `<hc from>` reports. Claude Code, Codex and pi records are all parsed.
+    call is open, and `<hc from>` reports. Claude Code, Codex, pi and Antigravity (agy) records
+    are all parsed.
+  - agy's transcript is `~/.gemini/antigravity-cli/brain/<conversation>/.system_generated/logs/transcript.jsonl`,
+    one record per step (`USER_INPUT`, `PLANNER_RESPONSE` with its words and tool calls, `GENERIC`
+    for a tool's output, times in `created_at`). Which conversation: while agy works it holds
+    `conversations/<conversation>.db` open (seen in `/proc` or `lsof`; the database itself is never
+    opened); if that conversation's transcript is not written yet, nothing. Idle, agy closes it:
+    then, only in a process tree that runs agy, the one conversation whose first message is on the
+    terminal's run line (`agy -i "<brief>"`), and nothing when none or several fit, when
+    `history.jsonl` shows `/clear` (or `/new`, `/resume`) typed in it, or another conversation
+    typed into in the same folder since.
   - How long each worker's own transcript has been quiet.
   - Git status and the last commit for every member's folder.
   - `gh pr view`, reduced to counts and the URL. It runs only on a non-default branch with

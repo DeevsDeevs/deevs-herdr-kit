@@ -22,21 +22,35 @@ MESSAGE_MAX = 4000
 REPORT_MAX = 600
 PROMPT_MAX = 300
 HC_FROM = re.compile(r'<hc from="([^"]+)"[^>]*>(.*?)(?:</hc>|$)', re.S)
+# Antigravity (agy) keeps its conversation's database open while it runs; the transcript of that
+# conversation is a JSONL file beside it, under brain/<id>.
+AGY_CONVERSATION = re.compile(r"^(.*/antigravity-cli)/conversations/([^/]+)\.db$")
+AGY_REQUEST = re.compile(r"<USER_REQUEST>\n?(.*?)\n?</USER_REQUEST>", re.S)
+AGY_HOME = f"{HOME}/.gemini/antigravity-cli"
+# Typed into agy to leave a conversation for a new one (history.jsonl keeps the old one's id).
+AGY_LEAVE = ("/clear", "/new", "/resume")
+
+
+def held(path):
+    return path.endswith(".jsonl") or bool(AGY_CONVERSATION.match(path))
 
 
 # The process table, read once per run: one ps for every agent asked about, not one each.
 KIDS = None
+# {pid: program name}, from the same ps.
+NAMES = {}
 
 
 def tree(root):
     global KIDS
     if KIDS is None:
-        out = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True).stdout
+        out = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,comm="], capture_output=True, text=True).stdout
         KIDS = {}
         for row in out.splitlines():
-            parts = row.split()
-            if len(parts) == 2:
+            parts = row.split(None, 2)
+            if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
                 KIDS.setdefault(int(parts[1]), []).append(int(parts[0]))
+                NAMES[int(parts[0])] = os.path.basename(parts[2].strip()) if len(parts) == 3 else ""
     kids = KIDS
     pids, todo = [], [root]
     while todo:
@@ -46,7 +60,7 @@ def tree(root):
     return pids
 
 
-# Without /proc (macOS): the .jsonl files each process holds open, from one lsof for every agent's
+# Without /proc (macOS): the transcripts (held) each process holds open, from one lsof for every agent's
 # processes (open_prefetch), not one lsof per agent. {pid: [path]}.
 OPEN = {}
 
@@ -65,7 +79,7 @@ def open_prefetch(pids):
     for row in out.splitlines():
         if row.startswith("p") and row[1:].isdigit():
             pid = int(row[1:])
-        elif row.startswith("n") and row.endswith(".jsonl") and pid in OPEN:
+        elif row.startswith("n") and held(row[1:]) and pid in OPEN:
             OPEN[pid].append(row[1:])
 
 
@@ -84,12 +98,12 @@ def open_jsonl(pids):
                     path = os.readlink(fd)
                 except OSError:
                     continue
-                if path.endswith(".jsonl"):
+                if held(path):
                     yield path
     else:
         out = subprocess.run(["lsof", "-Fn", "-p", ",".join(map(str, pids))], capture_output=True, text=True, timeout=10).stdout
         for row in out.splitlines():
-            if row.startswith("n") and row.endswith(".jsonl"):
+            if row.startswith("n") and held(row[1:]):
                 yield row[1:]
 
 
@@ -109,6 +123,11 @@ def find_transcript(pid, argv, cwd):
         if hit:
             return hit[0]
     for path in open_jsonl(pids):
+        agy = AGY_CONVERSATION.match(path)
+        if agy:
+            # Not written yet in a session's first seconds: nothing, never another conversation's.
+            path = f"{agy.group(1)}/brain/{agy.group(2)}/.system_generated/logs/transcript.jsonl"
+            return path if os.path.isfile(path) else None
         if "/.codex/sessions/" in path or "/.pi/agent/sessions/" in path or "/.claude/projects/" in path:
             return path
     if "--session" in argv:
@@ -118,7 +137,51 @@ def find_transcript(pid, argv, cwd):
     name = os.path.basename(argv[0]) if argv else ""
     if name == "pi" and cwd:
         return newest(f"{HOME}/.pi/agent/sessions/--{cwd.strip('/').replace('/', '-')}--/*.jsonl")
+    if any(NAMES.get(p) in ("agy", ".agy-wrapped") for p in pids):
+        return agy_idle(argv, cwd)
     return None
+
+
+# agy's first messages, {transcript: loose text}, read once per run.
+AGY_FIRST = None
+
+
+def agy_transcript(cid):
+    return f"{AGY_HOME}/brain/{cid}/.system_generated/logs/transcript.jsonl"
+
+
+# An idle agy has closed its conversation's database: its conversation is then the one whose first
+# message is on the terminal's run line (agy -i "<brief>"), if exactly one is. None when it has left
+# that conversation since (/clear, or another conversation was typed into in its folder).
+def agy_idle(argv, cwd):
+    global AGY_FIRST
+    if AGY_FIRST is None:
+        AGY_FIRST = {}
+        for path in glob.glob(agy_transcript("*")):
+            try:
+                AGY_FIRST[path] = loose(opening(path, TASK_HEAD["agy"])[0] or "")[:100]
+            except OSError:
+                continue
+    line = loose(" ".join(argv[1:]))
+    fits = [path for path, said in AGY_FIRST.items() if said and said in line]
+    if len(fits) != 1:
+        return None
+    cid = fits[0].split("/brain/")[1].split("/")[0]
+    here = os.path.realpath(cwd) if cwd else None
+    since = os.path.getmtime(fits[0])
+    try:
+        rows = list(records(f"{AGY_HOME}/history.jsonl", 262144))
+    except OSError:
+        rows = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if row.get("conversationId") == cid and str(row.get("display") or "").strip().split(" ")[0] in AGY_LEAVE:
+            return None
+        if row.get("conversationId") not in (None, cid) and here and os.path.realpath(row.get("workspace") or "/") == here \
+                and (row.get("timestamp") or 0) / 1000 > since:
+            return None
+    return fits[0]
 
 
 def ago(stamp):
@@ -130,6 +193,11 @@ def ago(stamp):
         return max(0, NOW - datetime.datetime.fromisoformat(stamp).timestamp())
     except ValueError:
         return None
+
+
+# A record's time: "timestamp" in Claude's, Codex's and pi's transcripts, "created_at" in agy's.
+def stamp(d):
+    return ago(d.get("timestamp") or d.get("created_at"))
 
 
 def texts(content, kinds):
@@ -158,7 +226,7 @@ def records(path, tail):
 # id, ago) a call was made; ("result", call id, ago) one was answered; ("compact", ago).
 def events(d):
     kind = d.get("type")
-    at = ago(d.get("timestamp"))
+    at = stamp(d)
     # Claude Code
     if kind == "assistant" and isinstance(d.get("message"), dict):
         m = d["message"]
@@ -225,6 +293,21 @@ def events(d):
         return
     if kind == "compaction":
         yield ("compact", at)
+        return
+    # agy: one record per step. A model step holds its words and its tool calls (no call ids); the
+    # tools' output comes back as GENERIC steps.
+    if "step_index" in d:
+        if kind == "USER_INPUT":
+            text = d.get("content") or ""
+            asked = AGY_REQUEST.search(text)
+            yield ("prompt", asked.group(1) if asked else text, at)
+        elif kind == "PLANNER_RESPONSE":
+            if (d.get("content") or "").strip():
+                yield ("say", d.get("step_index"), d["content"], at)
+            for call in d.get("tool_calls") or []:
+                yield ("tool", call.get("name") if isinstance(call, dict) else None, None, at)
+        elif kind == "GENERIC" and d.get("source") == "MODEL":
+            yield ("result", None, at)
 
 
 def read_transcript(path, tail, with_text):
@@ -235,7 +318,7 @@ def read_transcript(path, tail, with_text):
     for d in records(path, tail):
         # Last moved: the newest timestamped record. Claude Code appends untimestamped ones
         # (mode, title, last-prompt) to sessions that sit idle, which would move the mtime.
-        stamped = ago(d.get("timestamp")) if isinstance(d, dict) else None
+        stamped = stamp(d) if isinstance(d, dict) else None
         if stamped is not None and (out["written_s"] is None or stamped < out["written_s"]):
             out["written_s"] = stamped
         for e in events(d):
@@ -298,11 +381,11 @@ def first_ago(path, offset):
             if not line:
                 return None
             try:
-                stamp = ago(json.loads(line).get("timestamp"))
+                at = stamp(json.loads(line))
             except (ValueError, AttributeError):
                 continue
-            if stamp is not None:
-                return stamp
+            if at is not None:
+                return at
     return None
 
 
@@ -349,7 +432,7 @@ def turns_of(path, tail):
         out.append(row)
 
     for d in records(path, tail):
-        stamped = ago(d.get("timestamp")) if isinstance(d, dict) else None
+        stamped = stamp(d) if isinstance(d, dict) else None
         if stamped is not None and (earliest is None or stamped > earliest):
             earliest = stamped
         for e in events(d):
@@ -385,7 +468,7 @@ def program_named(argv):
 
 
 def program_of(path):
-    return "codex" if "/.codex/" in path else "pi" if "/.pi/" in path else "claude"
+    return "codex" if "/.codex/" in path else "pi" if "/.pi/" in path else "agy" if "/antigravity-cli/" in path else "claude"
 
 
 def claude_dir(cwd):
@@ -422,7 +505,7 @@ def folder_transcripts(cwd, since):
 
 # The newest timestamp in a transcript's last 64 KB, as seconds ago.
 def last_ago(path):
-    stamps = [ago(d.get("timestamp")) for d in records(path, 65536) if isinstance(d, dict)]
+    stamps = [stamp(d) for d in records(path, 65536) if isinstance(d, dict)]
     stamps = [a for a in stamps if a is not None]
     return min(stamps) if stamps else None
 
@@ -503,7 +586,7 @@ def turns_request(req):
 
 TASK_NAMED = re.compile(r"\bon task `?([A-Za-z0-9_-]+)")
 # Only the start of a file is read for its first message; Codex writes its instructions first.
-TASK_HEAD = {"claude": 65536, "pi": 65536, "codex": 262144}
+TASK_HEAD = {"claude": 65536, "pi": 65536, "codex": 262144, "agy": 16384}
 TASKS_SINCE = 30 * 86400
 RUN_NAME = re.compile(r"--name[= ]+([A-Za-z0-9_.-]+)(?= |$)")
 

@@ -38,6 +38,13 @@ export const exec = (cmd, args = [], opts = {}) => {
     (fx().trusted ??= []).push([opts.on ?? null, args[3], fx().runs?.length ?? 0]);
     return Promise.resolve({ code: 0, stdout: `${fx().trustWord ?? "added"}\n`, stderr: "" });
   }
+  // The worker script (main.js workerCommand), only when fx().scripts is a list: written, its path
+  // printed (the tower folder's bin/ here, ~/.config/agent-tower/bin/ elsewhere).
+  if (cmd === "sh" && args[2] === "w" && fx().scripts) {
+    const path = `${args[4] || "/home/me/.config/agent-tower/bin"}/${args[3]}`;
+    fx().scripts.push([opts.on ?? null, path, args[5]]);
+    return Promise.resolve({ code: 0, stdout: path, stderr: "" });
+  }
   // The namer (main.js askNamer): fx().namer(prompt) gives its answer, or a promise of one.
   if (cmd === "sh" && args[1] === '"$@" </dev/null' && fx().namer) {
     const prompt = args.find((a) => a.includes("<task>"));
