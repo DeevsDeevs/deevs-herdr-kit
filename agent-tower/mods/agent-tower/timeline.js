@@ -1002,21 +1002,23 @@ function withIndexGaps(recorded, indexGaps = []) {
 // The gaps that cut one machine's lanes: every gap of the history, whatever the span start, so a
 // stretch that crosses the start is cut by a gap before it too. Those less than a pixel apart are
 // joined (what lies between could not show). Kept as the same array while they are the same, so a
-// lane's memo and cutGaps' cover hold across rebuilds. Once per machine per rebuild.
+// lane's memo and cutGaps' cover hold across rebuilds. Once per machine per rebuild. An open gap (a
+// machine not answering) runs to Infinity: nothing after its start was recorded, so it cuts the same
+// as one to now, and the list doesn't change as now moves. Its band is drawn to the now-line.
 const gapsKept = new Map();
 const closedJoined = new WeakMap();
-function gapsOnce(h, machine, now, pxMs) {
-  // The closed ones joined once per gaps list, machine and pixel size; the open ones (to now) each rebuild.
+function gapsOnce(h, machine, pxMs) {
+  // The closed ones joined once per gaps list, machine and pixel size; the open ones each rebuild.
   let byKey = closedJoined.get(h.gaps);
   if (!byKey) closedJoined.set(h.gaps, (byKey = new Map()));
   const ck = `${machine ?? ""}|${pxMs}`;
-  if (!byKey.has(ck)) byKey.set(ck, model.joinGaps(gapsFor({ gaps: h.gaps.filter((g) => g.to != null) }, machine, now), pxMs));
+  if (!byKey.has(ck)) byKey.set(ck, model.joinGaps(gapsFor({ gaps: h.gaps.filter((g) => g.to != null) }, machine, Infinity), pxMs));
   const closed = byKey.get(ck);
-  const open = gapsFor({ gaps: h.gaps.filter((g) => g.to == null) }, machine, now);
-  const openKey = open.map((g) => `${g.m}:${g.from}-${g.to}`).join(",");
+  const open = gapsFor({ gaps: h.gaps.filter((g) => g.to == null) }, machine, Infinity);
+  const openKey = open.map((g) => `${g.m}:${g.from}`).join(",");
   const m = machine ?? "";
   const was = gapsKept.get(m);
-  // Compared by value only when the file was read again, the pixel size changed or an open gap moved.
+  // Compared by value only when the file was read again, the pixel size changed or an open gap came or went.
   if (was?.closed === closed && was.openKey === openKey) return was.all;
   const all = open.length ? model.joinGaps([...closed, ...open], pxMs) : closed;
   const key = all.map((g) => `${g.m}:${g.from}-${g.to}`).join(",");
@@ -1097,7 +1099,7 @@ export function render(t, m, ui) {
     for (const lane of allLanes) {
       const gm = lane.machine ?? "";
       if (!gapsBy.has(gm)) {
-        gapsBy.set(gm, gapsOnce(h, lane.machine, now, pxMs));
+        gapsBy.set(gm, gapsOnce(h, lane.machine, pxMs));
         bandsBy.set(gm, bandsOf(gapsBy.get(gm), start));
       }
       lane.gaps = gapsBy.get(gm);
@@ -1151,7 +1153,7 @@ export function render(t, m, ui) {
     const shownGroups = view.needs ? byArea.map((g) => ({ ...g, tasks: g.tasks.filter(hasAsk) })).filter((g) => g.tasks.length) : byArea;
     const shown = shownGroups.flatMap((g) => g.tasks.flatMap((task) => [...task.lanes, ...task.folded]));
     const att = attention(h, shown, start, now);
-    const herdrBands = bandsBy.get("") ?? bandsOf(gapsOnce(h, null, now, pxMs), start);
+    const herdrBands = bandsBy.get("") ?? bandsOf(gapsOnce(h, null, pxMs), start);
     view.cache = { key: cacheKey, groups, byArea, shownGroups, shown, att, herdrBands };
   }
   const { groups, byArea, shownGroups, shown, att, herdrBands } = view.cache;

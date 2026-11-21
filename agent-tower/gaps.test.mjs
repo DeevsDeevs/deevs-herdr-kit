@@ -448,6 +448,36 @@ const now = Date.UTC(2026, 10, 15, 12);
     assert.ok(cuts >= 2, `span ${span}: bigger than a frame (${cuts} cut)`);
     assert.equal(first, ref, `span ${span}: the first finished render draws all that an uncut one does`);
   }
+
+  // Case 2: a machine not answering for 3 minutes (an open gap) while now moves 250 ms a frame, at
+  // Week and 1h: a fresh view draws over cut-off frames as soon as without it, and its lanes on that
+  // machine show nothing after the gap began.
+  const cutDraw = async (span) => {
+    const ui = uiOf(span);
+    let cuts = 0;
+    for (; cuts < 40 && !frameIn(ui); cuts++) {
+      ui.now += 250;
+      await settle();
+    }
+    return { cuts, ui };
+  };
+  const without = [await cutDraw(4), await cutDraw(0)];
+  const ev = JSON.parse(globalThis.__fx.files[evPath]);
+  const opened = fx.now - 3 * MIN;
+  ev.gaps.push({ m: "work-vps", from: opened, to: null });
+  globalThis.__fx.files[evPath] = JSON.stringify(ev);
+  globalThis.__fx.shared["agent-tower.recorded"] = "open gap";
+  await settle();
+  await settle();
+  assert.ok(watched.gaps.some((g) => g.to == null), "the open gap is loaded");
+  for (const [i, span] of [[0, 4], [1, 0]]) {
+    const { cuts, ui } = await cutDraw(span);
+    numbers.push(`Case 2 span ${span}: drawn after ${cuts} cut frames with an open gap, ${without[i].cuts} without`);
+    assert.ok(cuts < 40 && cuts <= without[i].cuts + 1, `span ${span}: drawn after ${cuts} cut frames with an open gap (${without[i].cuts} without)`);
+    const vps = ui.state.cache.shown.filter((l) => l.machine === "work-vps");
+    assert.ok(vps.some((l) => l.live), "live lanes on that machine");
+    for (const l of vps) assert.ok(l.stretches.every((st) => st.to <= opened), `${l.a}: nothing after the gap began`);
+  }
   console.log(numbers.join("\n"));
 }
 
