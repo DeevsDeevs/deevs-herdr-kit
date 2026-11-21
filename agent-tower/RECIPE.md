@@ -907,7 +907,9 @@ come from the app's program table.
   (`cutGaps`: a binary search per stretch); stretches that end before the start are left
   whole, since that span neither draws nor counts them. So a stretch crossing the start is
   the same piece in every span, and a kept lane serves only spans starting no earlier than
-  the one it was cut for. Only the span's gaps are drawn. `gaps.test.mjs` cuts a first draw
+  the one it was cut for. Only the span's gaps are drawn. An open gap (a machine not
+  answering) cuts to Infinity, not to now, so the cut list holds while now moves; its band
+  is drawn to the now-line. `gaps.test.mjs` cuts a first draw
   over frames and checks no finished lane is worked out again; `perf.test.mjs` times
   Timeline on two made-up records of a Mac that slept (175 lanes, 85 and 850 gaps): each
   frame under the record's limit, a rebuild with its lanes kept under 50 ms, a first draw
