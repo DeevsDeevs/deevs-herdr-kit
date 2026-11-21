@@ -472,34 +472,46 @@ const newSpace = (fx) => fx.runs.filter((r) => r[0] === "space.new").at(-1)?.[1]
   await batch([`${INBOX}/req-e.json`]);
   assert.match(answered(fx, "req-e"), /the title is empty/);
 }
-// Antigravity: a lead started as agy has its folder listed in agy's trustedWorkspaces on its machine
-// before its space starts, and its first message comes after -i (agy refuses a bare one). agy never
-// ran there: a toast says so and the start goes on. Claude: no trust step. A new member as agy too.
+// Antigravity: a lead started as agy trusts its folder for its session with --settings, the folder's
+// real path asked on its machine before its space starts (nothing is written there), and its first
+// message comes after -i (agy refuses a bare one). The real path can't be asked: the folder as given.
+// Claude: no step. A recipe's own --settings is left as written. A new member and an Eye as agy too.
 {
-  const fx = world();
+  const trusts = (argv, dir) => argv.join(" ").includes(` agy --settings ${JSON.stringify({ trustedWorkspaces: [dir] })} -i`);
+  const config = JSON.stringify({ recipes: [{ id: "personal-lead", label: "A lead here", area: "personal" },
+    { id: "own", label: "Own settings", area: "personal", argv: ["agy", "--settings", "/made/up/agy.json", "-i"] }] });
+  const fx = world({ [`${TOWER}/config.json`]: config });
   const { v, cx, tick, batch } = await copy();
-  Object.assign(fx, { runs: [], made: [], hcCalls: [], trusted: [], notes: [] });
+  Object.assign(fx, { runs: [], made: [], hcCalls: [], real: [], notes: [] });
   fx.files[`${INBOX}/req-agy.json`] = JSON.stringify({ recipe: "personal-lead", words: "a made-up pond survey", title: "Pond survey", agent: "agy", at: clock });
   await batch([`${INBOX}/req-agy.json`]);
   await settle();
   const args = newSpace(fx);
-  assert.deepEqual(fx.trusted, [[null, args.folder, 0]], "listed on its machine, in its folder, before the start");
-  assert.deepEqual(args.argv.slice(-2), ["agy", "-i"], args.argv.join(" "));
+  assert.deepEqual(fx.real, [[null, args.folder, 0]], "asked on its machine, for its folder, before the start");
+  assert.ok(trusts(args.argv, `/real${args.folder}`), args.argv.join(" "));
+  assert.equal(args.argv.at(-1), "-i");
   assert.ok(args.task.endsWith(": a made-up pond survey"), args.task);
   assert.deepEqual(fx.notes, []);
-  Object.assign(fx, { trusted: [], trustWord: "absent" });
+  Object.assign(fx, { real: [], noReal: true });
   fx.files[`${INBOX}/req-agy2.json`] = JSON.stringify({ recipe: "personal-lead", words: "made-up words", title: "Moth count", agent: "agy", at: clock });
   await batch([`${INBOX}/req-agy2.json`]);
   await settle();
-  assert.equal(newSpace(fx).name, "Moth count", "the start goes on");
-  assert.ok(fx.notes.some((n) => /trust/.test(n.title) && /has not run/.test(n.body)), JSON.stringify(fx.notes));
-  Object.assign(fx, { trusted: [], trustWord: "added" });
+  const moth = newSpace(fx);
+  assert.ok(moth.name === "Moth count" && trusts(moth.argv, moth.folder), moth.argv.join(" "));
+  Object.assign(fx, { real: [], noReal: false });
   fx.files[`${INBOX}/req-claude.json`] = JSON.stringify({ recipe: "personal-lead", words: "made-up fern words", title: "Fern list", at: clock });
   await batch([`${INBOX}/req-claude.json`]);
   await settle();
-  assert.equal(newSpace(fx).name, "Fern list");
-  assert.deepEqual(fx.trusted, [], "no trust step for Claude");
-  // A worker added to a task as agy: its folder is listed before its tab starts.
+  const fern = newSpace(fx);
+  assert.equal(fern.name, "Fern list");
+  assert.ok(fx.real.length === 0 && !fern.argv.includes("--settings"), "no step for Claude");
+  fx.files[`${INBOX}/req-own.json`] = JSON.stringify({ recipe: "own", words: "made-up owl words", title: "Owl list", at: clock });
+  await batch([`${INBOX}/req-own.json`]);
+  await settle();
+  const own = newSpace(fx);
+  assert.deepEqual(own.argv.slice(-4), ["agy", "--settings", "/made/up/agy.json", "-i"], own.argv.join(" "));
+  assert.equal(fx.real.length, 0);
+  // A worker added to a task as agy: its tab trusts its folder.
   const lead = showLead(fx, "t9", "sp9", "tb9", args);
   await tick(1600);
   took(fx, lead);
@@ -510,15 +522,27 @@ const newSpace = (fx) => fx.runs.filter((r) => r[0] === "space.new").at(-1)?.[1]
   await settle();
   const tab = fx.runs.find((r) => r[0] === "tab.new")?.[1];
   assert.ok(tab && tab.argv.at(-1) === "-i", `${answered(fx, "req-join-agy")} ${JSON.stringify(fx.runs)}`);
-  assert.deepEqual(fx.trusted, [[null, tab.folder, 0]]);
+  assert.deepEqual(fx.real, [[null, tab.folder, 0]]);
+  assert.ok(trusts(tab.argv, `/real${tab.folder}`), tab.argv.join(" "));
+}
+{
+  const fx = world({ [`${TOWER}/config.json`]: JSON.stringify({ roles: { eye: "agy" } }) });
+  const { batch } = await copy();
+  Object.assign(fx, { runs: [], real: [] });
+  fx.files[`${INBOX}/req-eye-agy.json`] = JSON.stringify({ eye: { do: "start", area: "personal" }, at: clock });
+  await batch([`${INBOX}/req-eye-agy.json`]);
+  await settle();
+  const eye = newSpace(fx);
+  assert.deepEqual(fx.real.map((r) => r[1]), [eye.folder]);
+  assert.ok(eye.argv.join(" ").includes(` agy --settings ${JSON.stringify({ trustedWorkspaces: [`/real${eye.folder}`] })} -i`), eye.argv.join(" "));
 }
 // Without the skill, an agy lead's workers: its first message names the worker script written on its
-// machine ($TOWER_WORKER), whose first line trusts the worker's folder, not the bare argv.
+// machine ($TOWER_WORKER), which trusts the worker's folder for its session, not the bare argv.
 {
   const config = JSON.stringify({ skill: null, recipes: [{ id: "personal-lead", label: "A lead here", area: "personal", lead: "agy", worker: "agy" }] });
   const fx = world({ [`${TOWER}/config.json`]: config });
   const { batch } = await copy();
-  Object.assign(fx, { runs: [], made: [], hcCalls: [], trusted: [], notes: [], scripts: [] });
+  Object.assign(fx, { runs: [], made: [], hcCalls: [], notes: [], scripts: [] });
   fx.files[`${INBOX}/req-agy-noskill.json`] = JSON.stringify({ recipe: "personal-lead", words: "a made-up heron count", title: "Heron count", at: clock });
   await batch([`${INBOX}/req-agy-noskill.json`]);
   await settle();
@@ -526,7 +550,7 @@ const newSpace = (fx) => fx.runs.filter((r) => r[0] === "space.new").at(-1)?.[1]
   const [[, path, script]] = fx.scripts;
   assert.ok(args.task.split("\n").includes(`Start workers with: ${path} (on another machine: agy -i)`), args.task);
   assert.ok(args.argv.includes(`TOWER_WORKER=${path}`), args.argv.join(" "));
-  assert.ok(script.includes("trust") && script.endsWith(`exec agy -i "$@"\n`), script);
+  assert.ok(script.endsWith(`exec agy --settings "{\\"trustedWorkspaces\\":[\\"$d\\"]}" -i "$@"\n`), script);
 }
 // Without a title, the start waits for the namer: no space before its answer, then the space and the
 // folder take its name (task.by=llm). tower-new's request is answered at once, before the wait (it

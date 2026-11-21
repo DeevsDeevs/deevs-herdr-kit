@@ -1,8 +1,9 @@
-// Antigravity (agy): in the agents and the picker's list, its first message after -i, and the trust
-// step (model.TRUST_SCRIPT) run for real with sh and jq on made-up settings in a made-up home.
+// Antigravity (agy): in the agents and the picker's list, its first message after -i, and its folder
+// trusted for the session with --settings (model.trustArgv, the worker script run for real with sh in
+// a made-up home: nothing written there).
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, statSync, chmodSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, chmodSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as model from "./mods/agent-tower/model.js";
@@ -13,59 +14,46 @@ assert.equal(model.leadAgent(def, def.recipes[0], "agy").id, "agy", "can be pick
 assert.equal(model.eyeAgentOf({ ...def, roles: { ...def.roles, eye: "agy" } }, "work").id, "agy", "and for an Eye");
 assert.equal(model.workerAgent({ ...def, roles: { ...def.roles, worker: "agy" } }, def.recipes[0]).id, "agy", "and for workers");
 assert.ok(model.needsTrust(["/opt/bin/agy", "-i"]) && !model.needsTrust(["claude"]));
-// Herdr appends the first message to the argv: for agy it lands right after -i.
-const argv = [...model.withEnv({ TOWER_TASK: "k1" }, def.agents.find((a) => a.id === "agy").argv), "first message"];
-assert.deepEqual(argv.slice(-3), ["agy", "-i", "first message"]);
+// --settings right after agy, so Herdr's appended first message still lands right after -i.
+const trusted = model.trustArgv(def.agents.find((a) => a.id === "agy").argv, "/made/up/pond-k1");
+const argv = [...model.withEnv({ TOWER_TASK: "k1" }, trusted), "first message"];
+assert.deepEqual(argv.slice(-5), ["agy", "--settings", '{"trustedWorkspaces":["/made/up/pond-k1"]}', "-i", "first message"]);
+// An argv that carries its own --settings is left as written; other agents too.
+for (const own of [["agy", "--settings", "/made/up/s.json", "-i"], ["agy", "--settings={}", "-i"], ["claude", "--model", "opus"]]) {
+  assert.equal(model.trustArgv(own, "/made/up/x"), own);
+  assert.equal(model.workerScript(own), `#!/bin/sh\nexec ${model.shellQuote(own)} "$@"\n`);
+}
+// The real path, as agy compares it: ~ is that machine's home, a link its target.
+const real = (dir, home) => execFileSync("sh", ["-c", model.REAL_DIR_SCRIPT, "real", dir], { env: { ...process.env, HOME: home }, encoding: "utf8" }).trim();
 
 const home = realpathSync(mkdtempSync(join(tmpdir(), "agy-test-")));
-const file = join(home, ".gemini/antigravity-cli/settings.json");
-const trust = (dir) => execFileSync("sh", ["-c", model.TRUST_SCRIPT, "trust", dir], { env: { ...process.env, HOME: home }, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
 const task = join(home, "tasks/pond-k1");
 mkdirSync(task, { recursive: true });
-// agy never ran here: no file is made.
-assert.equal(trust(task), "absent");
-assert.ok(!existsSync(join(home, ".gemini")), "nothing made");
-// Added once, at the end, other keys and order kept, mode 600; ~ is this home; a link counts as its real path.
-mkdirSync(join(home, ".gemini/antigravity-cli"), { recursive: true });
-const before = { permissions: { allow: ["command(hc)"] }, toolPermission: "always-proceed", trustedWorkspaces: ["/made/up/b", "/made/up/a"], later: 1 };
-writeFileSync(file, `${JSON.stringify(before, null, 2)}\n`);
-chmodSync(file, 0o600);
-assert.equal(trust("~/tasks/pond-k1"), "added");
-const after = JSON.parse(readFileSync(file, "utf8"));
-assert.deepEqual(Object.keys(after), Object.keys(before));
-assert.deepEqual(after, { ...before, trustedWorkspaces: ["/made/up/b", "/made/up/a", task] });
-assert.equal(statSync(file).mode & 0o777, 0o600);
-execFileSync("ln", ["-s", task, join(home, "link")]);
-assert.equal(trust(join(home, "link")), "there", "kept when present");
-assert.equal(JSON.parse(readFileSync(file, "utf8")).trustedWorkspaces.length, 3, "added once");
-// Not the JSON expected: left as it is.
-for (const text of ["{ not json", '{"trustedWorkspaces": "x"}', "[]"]) {
-  writeFileSync(file, text);
-  assert.equal(trust(task), "bad", text);
-  assert.equal(readFileSync(file, "utf8"), text);
-}
-// No list yet: one is made with the folder.
-writeFileSync(file, '{"toolPermission": "x"}\n');
-assert.equal(trust(task), "added");
-assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), { toolPermission: "x", trustedWorkspaces: [task] });
+symlinkSync(task, join(home, "link"));
+assert.equal(real("~/tasks/pond-k1", home), task);
+assert.equal(real(join(home, "link"), home), task);
 
-// The worker command for agy: its script trusts the folder it runs in, then runs agy -i "<brief>".
-writeFileSync(file, '{"trustedWorkspaces": []}\n');
+// The worker command for agy: its script runs agy --settings <its folder's real path> -i "<brief>",
+// the path JSON-quoted (a quote, a backslash, a space), and writes no settings.
 const bin = join(home, "bin");
 mkdirSync(bin);
 writeFileSync(join(bin, "agy"), '#!/bin/sh\nfor a; do printf "[%s]" "$a"; done\n');
 writeFileSync(join(bin, "worker-agy"), model.workerScript(["agy", "-i"]));
 chmodSync(join(bin, "agy"), 0o755);
 chmodSync(join(bin, "worker-agy"), 0o755);
-const sub = join(task, "survey");
+const sub = join(task, 'a "made-up" \\ survey');
 mkdirSync(sub);
-const out = execFileSync(join(bin, "worker-agy"), ["a brief, with 'quotes'"], { cwd: sub, env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}` }, encoding: "utf8" });
-assert.equal(out, "[-i][a brief, with 'quotes']");
-assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).trustedWorkspaces, [sub]);
+symlinkSync(sub, join(home, "sub-link"));
+const out = execFileSync(join(bin, "worker-agy"), ["a brief, with 'quotes'"], { cwd: join(home, "sub-link"), env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}` }, encoding: "utf8" });
+const words = out.slice(1, -1).split("][");
+assert.equal(words.length, 4, out);
+assert.deepEqual([words[0], words[2], words[3]], ["--settings", "-i", "a brief, with 'quotes'"]);
+assert.deepEqual(JSON.parse(words[1]), { trustedWorkspaces: [sub] });
+assert.ok(!existsSync(join(home, ".gemini")), "no settings written");
 assert.equal(model.workerScript(["claude"]), '#!/bin/sh\nexec claude "$@"\n', "other agents' scripts unchanged");
 
 // A lead without the skill is told to start workers with the worker script ($TOWER_WORKER), which
-// trusts an agy worker's folder; with no script (it could not be written), the argv as before.
+// trusts an agy worker's folder for its session; with no script (it could not be written), the argv as before.
 const noSkill = { ...def, skill: null, roles: { ...def.roles, worker: "agy" } };
 const workersLine = (worker) => model.firstMessage(def.recipes[1], noSkill, "k1", "made-up words", false, null, worker).split("\n").at(-2);
 assert.equal(workersLine("/made/up/bin/worker-agy"), "Start workers with: /made/up/bin/worker-agy (on another machine: agy -i)");

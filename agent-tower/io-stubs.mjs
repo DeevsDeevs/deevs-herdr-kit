@@ -32,11 +32,11 @@ export const exec = (cmd, args = [], opts = {}) => {
     const first = args.slice(3).find((d) => !fx().gone?.includes(d));
     return Promise.resolve(first ? { code: 0, stdout: first, stderr: "" } : { code: 1, stdout: "", stderr: "" });
   }
-  // agy's trust step (model.TRUST_SCRIPT): fx().trusted gets [machine, folder, starts run so far];
-  // fx().trustWord is its answer (default added).
-  if (cmd === "sh" && args[2] === "trust") {
-    (fx().trusted ??= []).push([opts.on ?? null, args[3], fx().runs?.length ?? 0]);
-    return Promise.resolve({ code: 0, stdout: `${fx().trustWord ?? "added"}\n`, stderr: "" });
+  // A folder's real path, asked for agy's --settings (model.REAL_DIR_SCRIPT): fx().real gets
+  // [machine, folder, starts run so far]; the answer is /real<folder>, or a failure with fx().noReal.
+  if (cmd === "sh" && args[2] === "real") {
+    (fx().real ??= []).push([opts.on ?? null, args[3], fx().runs?.length ?? 0]);
+    return Promise.resolve(fx().noReal ? { code: 1, stdout: "", stderr: "" } : { code: 0, stdout: `/real${args[3]}\n`, stderr: "" });
   }
   // The worker script (main.js workerCommand), only when fx().scripts is a list: written, its path
   // printed (the tower folder's bin/ here, ~/.config/agent-tower/bin/ elsewhere).
