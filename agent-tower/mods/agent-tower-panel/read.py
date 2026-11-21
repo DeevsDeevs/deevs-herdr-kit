@@ -11,6 +11,7 @@ import glob
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -151,8 +152,17 @@ def find_transcript(pid, argv, cwd):
         return newest(f"{HOME}/.pi/agent/sessions/--{cwd.strip('/').replace('/', '-')}--/*.jsonl")
     agy = [p for p in pids if NAMES.get(p) in AGY_NAMES]
     if agy:
-        return agy_idle(argv, cwd, AGES.get(agy[0]))
+        return quiet(agy_idle, argv, cwd, AGES.get(agy[0]))
     return None
+
+
+# What agy code raises (an odd record in agy's files) means nothing found: it never breaks the reply
+# for other agents.
+def quiet(f, *args):
+    try:
+        return f(*args)
+    except Exception:
+        return None
 
 
 # agy's first messages, {transcript: (loose text, seconds ago it was sent)}, read once per run.
@@ -165,6 +175,59 @@ def agy_transcript(cid):
     return f"{AGY_HOME}/brain/{cid}/.system_generated/logs/transcript.jsonl"
 
 
+def agy_cid(path):
+    return path.split("/brain/")[1].split("/")[0]
+
+
+# history.jsonl's rows (its last 256 KB), read once per run. agy writes a row per message typed after
+# the start, with its folder; never the -i first message.
+AGY_HISTORY = None
+# {conversation id: {folder as written}}
+AGY_WHERE = None
+
+
+# A history row of the shape agy writes; any other is left out.
+def agy_row(r):
+    return isinstance(r, dict) and isinstance(r.get("conversationId"), str) \
+        and (r.get("workspace") is None or isinstance(r["workspace"], str) and "\0" not in r["workspace"]) \
+        and (r.get("timestamp") is None or type(r["timestamp"]) in (int, float)) \
+        and (r.get("display") is None or isinstance(r["display"], str))
+
+
+def agy_history():
+    global AGY_HISTORY, AGY_WHERE
+    if AGY_HISTORY is None:
+        try:
+            AGY_HISTORY = [r for r in records(f"{AGY_HOME}/history.jsonl", 262144) if agy_row(r)]
+        except OSError:
+            AGY_HISTORY = []
+        AGY_WHERE = {}
+        for r in AGY_HISTORY:
+            if r.get("conversationId") and r.get("workspace"):
+                AGY_WHERE.setdefault(r["conversationId"], set()).add(r["workspace"])
+    return AGY_HISTORY
+
+
+# The one folder history.jsonl puts a conversation in (real path); None when it names none or several.
+def agy_folder(cid):
+    agy_history()
+    where = {os.path.realpath(w) for w in AGY_WHERE.get(cid, ())}
+    return where.pop() if len(where) == 1 else None
+
+
+# Whether history.jsonl puts a conversation in any folder other than `cwd`.
+def agy_elsewhere(cid, cwd):
+    agy_history()
+    return any(os.path.realpath(w) != os.path.realpath(cwd) for w in AGY_WHERE.get(cid, ()))
+
+
+# Conversations history.jsonl puts in exactly one folder, with their transcripts: the only agy
+# conversations whose folder a record says for sure.
+def agy_placed():
+    agy_history()
+    return [(cid, agy_transcript(cid)) for cid in AGY_WHERE if agy_folder(cid) and os.path.isfile(agy_transcript(cid))]
+
+
 # The message agy was started with: the word after the run line's last -i (Herdr appends a task
 # there), or the one after a Tower worker script ($TOWER_WORKER runs agy -i "$@").
 def agy_brief(argv):
@@ -174,6 +237,23 @@ def agy_brief(argv):
     if len(argv) >= 2 and os.path.basename(argv[-2]).startswith("worker-"):
         return argv[-1]
     return None
+
+
+# Whether a run line runs agy: a word before the message is agy (Herdr's wrapper, a lead's argv), or
+# it is a Tower worker script (on this machine) whose exec line runs agy. A script's name says only
+# the agent's id in the settings.
+def agy_named(argv):
+    if any(os.path.basename(w) in AGY_NAMES for w in argv[:-1]):
+        return True
+    if len(argv) < 2 or not os.path.basename(argv[-2]).startswith("worker-"):
+        return False
+    try:
+        with open(argv[-2], errors="replace") as f:
+            lines = f.read(8192).splitlines()
+        run = next(shlex.split(line) for line in lines if line.startswith("exec "))
+        return os.path.basename(run[1]) in AGY_NAMES
+    except (OSError, ValueError, StopIteration, IndexError):
+        return False
 
 
 def agy_first(path):
@@ -195,10 +275,9 @@ def agy_first(path):
 # seconds, from ps), if exactly one is. None when its folder is known and another, or when it has left
 # that conversation since (/clear, or another conversation was typed into in its folder).
 def agy_idle(argv, cwd, age):
-    brief = agy_brief(argv)
+    brief = loose(agy_brief(argv) or "")
     if not brief or age is None:
         return None
-    brief = loose(brief)
     started = NOW - age - AGY_SLACK
     fits = []
     for path in glob.glob(agy_transcript("*")):
@@ -213,16 +292,10 @@ def agy_idle(argv, cwd, age):
             fits.append(path)
     if len(fits) != 1:
         return None
-    cid = fits[0].split("/brain/")[1].split("/")[0]
+    cid = agy_cid(fits[0])
     here = os.path.realpath(cwd) if cwd else None
     since = os.path.getmtime(fits[0])
-    try:
-        rows = list(records(f"{AGY_HOME}/history.jsonl", 262144))
-    except OSError:
-        rows = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
+    for row in agy_history():
         if row.get("conversationId") == cid:
             if str(row.get("display") or "").strip().split(" ")[0] in AGY_LEAVE:
                 return None
@@ -275,6 +348,8 @@ def records(path, tail):
 # ("say", id, text, ago) an assistant's words; ("prompt", text, ago) a new turn; ("tool", name, call
 # id, ago) a call was made; ("result", call id, ago) one was answered; ("compact", ago).
 def events(d):
+    if not isinstance(d, dict):
+        return
     kind = d.get("type")
     at = stamp(d)
     # Claude Code
@@ -347,14 +422,14 @@ def events(d):
     # agy: one record per step. A model step holds its words and its tool calls (no call ids); the
     # tools' output comes back as GENERIC steps.
     if "step_index" in d:
+        text = d.get("content") if isinstance(d.get("content"), str) else ""
         if kind == "USER_INPUT":
-            text = d.get("content") or ""
             asked = AGY_REQUEST.search(text)
             yield ("prompt", asked.group(1) if asked else text, at)
         elif kind == "PLANNER_RESPONSE":
-            if (d.get("content") or "").strip():
-                yield ("say", d.get("step_index"), d["content"], at)
-            for call in d.get("tool_calls") or []:
+            if text.strip():
+                yield ("say", d.get("step_index"), text, at)
+            for call in d.get("tool_calls") if isinstance(d.get("tool_calls"), list) else []:
                 yield ("tool", call.get("name") if isinstance(call, dict) else None, None, at)
         elif kind == "GENERIC" and d.get("source") == "MODEL":
             yield ("result", None, at)
@@ -504,7 +579,7 @@ def turns_of(path, tail):
                 cur["said"], cur["said_last"] = e[2], True
             elif e[0] == "tool":
                 cur["said_last"] = False
-                if e[1] in QUESTION_TOOLS:
+                if isinstance(e[1], str) and e[1] in QUESTION_TOOLS:
                     cur["asks"].append((e[2], at))
             elif e[0] == "result" and e[1] is not None:
                 cur["answered"].setdefault(e[1], at)
@@ -545,11 +620,13 @@ def codex_in(cwd, days):
 
 
 # Every transcript written in a folder since `since` (epoch seconds): Claude's and pi's by their
-# folder-named directories, Codex's by the cwd in each recent session's first line.
+# folder-named directories, Codex's by the cwd in each recent session's first line, agy's by
+# history.jsonl (agy_placed).
 def folder_transcripts(cwd, since):
     cwd = cwd.rstrip("/") or "/"
     found = glob.glob(f"{claude_dir(cwd)}/*.jsonl") + glob.glob(f"{pi_dir(cwd)}/*.jsonl")
     found += codex_in(cwd, {time.strftime("%Y/%m/%d", time.localtime(t)) for t in (since, (since + NOW) / 2, NOW)})
+    found += [p for cid, p in quiet(agy_placed) or [] if agy_folder(cid) == os.path.realpath(cwd)]
     return sorted({p for p in found if os.path.getmtime(p) >= since}, key=os.path.getmtime)
 
 
@@ -576,6 +653,9 @@ def ended_transcript(program, cwd, created, finished, argv):
         found = glob.glob(f"{pi_dir(cwd)}/*.jsonl")
     elif program == "codex":
         found = codex_in(cwd, {time.strftime("%Y/%m/%d", time.localtime(created + d)) for d in (-86400, 0, 86400)})
+    elif program in ("agy", None):
+        # agy, or a run line that names no program (a worker script, Herdr's shell wrapper).
+        return quiet(agy_ended, argv, cwd, created, finished)
     else:
         return None
     fits = []
@@ -597,6 +677,71 @@ def ended_transcript(program, cwd, created, finished, argv):
     return fits[0][0] if len(fits) == 1 else None
 
 
+# An ended agy (its run line names agy): the one conversation whose whole first message is the run
+# line's, begun while the terminal ran and within ENDED_SLACK of its creation, last written by its end
+# (give or take ENDED_SLACK), and that history.jsonl puts in no other folder. Twins are counted among
+# every conversation written since the creation, before any other narrowing. Only those whose folder
+# was made in that start window are opened (agy_born); where that time is unknown, more than
+# AGY_OPEN_MAX candidates give nothing rather than opening them all.
+AGY_OPEN_MAX = 256
+
+
+def agy_ended(argv, cwd, created, finished):
+    brief = loose(agy_brief(argv) or "")
+    if not brief or not agy_named(argv):
+        return None
+    latest = min(created + ENDED_SLACK, finished + AGY_SLACK)
+    paths = []
+    for path in glob.glob(agy_transcript("*")):
+        try:
+            if os.path.getmtime(path) >= created - AGY_SLACK:
+                paths.append(path)
+        except OSError:
+            continue
+    born = agy_born([agy_dir(p) for p in paths])
+    paths = [p for p in paths if born.get(agy_dir(p)) is None or created - AGY_SLACK - 2 <= born[agy_dir(p)] <= latest]
+    if len(paths) > AGY_OPEN_MAX and any(born.get(agy_dir(p)) is None for p in paths):
+        return None
+    twins = []
+    for path in paths:
+        said, at = agy_first(path)
+        if said == brief and at is not None and created - AGY_SLACK <= NOW - at <= created + ENDED_SLACK:
+            twins.append((path, NOW - at))
+    if len(twins) != 1:
+        return None
+    path, began = twins[0]
+    if began > latest or os.path.getmtime(path) > finished + ENDED_SLACK:
+        return None
+    return None if cwd and agy_elsewhere(agy_cid(path), cwd) else path
+
+
+def agy_dir(path):
+    return path.split("/.system_generated/")[0]
+
+
+# {conversation folder: when it was made, epoch seconds}, None where the file system doesn't say:
+# st_birthtime on macOS, one GNU `stat` (%W) for all of them on Linux.
+def agy_born(dirs):
+    if not dirs:
+        return {}
+    try:
+        return {d: os.stat(d).st_birthtime for d in dirs}
+    except AttributeError:
+        pass
+    except OSError:
+        return {}
+    try:
+        out = subprocess.run(["stat", "-c", "%W %n", "--", *dirs], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    born = {}
+    for row in out.splitlines():
+        when, _, name = row.partition(" ")
+        if when.isdigit() and int(when) > 0:
+            born[name] = int(when)
+    return born
+
+
 def turns_entry(path, since, have, tail):
     st = os.stat(path)
     entry = {"path": path, "program": program_of(path), "mtime": st.st_mtime, "size": st.st_size}
@@ -615,7 +760,7 @@ def turns_request(req):
     since = NOW - float(req.get("since_s") or 86400)
     have = {k: list(v) for k, v in (req.get("have") or {}).items()}
     tail = int(req.get("tail") or 0)
-    terminals, folders = {}, {}
+    terminals, folders, ended = {}, {}, set()
     open_prefetch([p for spec in req.get("terminals") or [] if spec.get("pid") for p in tree(spec["pid"])])
     for spec in req.get("terminals") or []:
         argv = spec.get("argv") or []
@@ -623,9 +768,19 @@ def turns_request(req):
         if spec.get("finished_s") is not None and spec.get("created_s") is not None and spec.get("cwd") and "--session" not in argv:
             program = spec.get("program") or program_named(argv)
             path = ended_transcript(program, spec["cwd"], NOW - float(spec["created_s"]), NOW - float(spec["finished_s"]), argv)
+            ended.add(spec.get("key"))
+            # Another terminal began with the same message beside it (Timeline says so): not sure whose.
+            if spec.get("twin") and path and program_of(path) == "agy":
+                path = None
         else:
             path = find_transcript(spec.get("pid"), argv, spec.get("cwd"))
-        terminals[spec.get("key")] = turns_entry(path, since, have, tail) if path else None
+        terminals[spec.get("key")] = path
+    # An agy conversation an ended terminal shares with another terminal of the request is not its for
+    # sure. A live one keeps what it holds.
+    paths = [p for p in terminals.values() if p and program_of(p) == "agy"]
+    for key, path in terminals.items():
+        lost = key in ended and paths.count(path) > 1
+        terminals[key] = turns_entry(path, since, have, tail) if path and not lost else None
     for cwd in req.get("folders") or []:
         folders[cwd] = [turns_entry(p, since, have, tail) for p in folder_transcripts(cwd, since)]
     return {"terminals": terminals, "folders": folders}
@@ -722,12 +877,14 @@ def tasks_request(req):
     ids = set(req.get("ids") or [])
     have = {k: list(v) for k, v in (req.get("have") or {}).items()}
     paths = glob.glob(f"{HOME}/.claude/projects/*/*.jsonl") + glob.glob(f"{HOME}/.codex/sessions/*/*/*/*.jsonl") \
-        + glob.glob(f"{HOME}/.pi/agent/sessions/*/*.jsonl")
+        + glob.glob(f"{HOME}/.pi/agent/sessions/*/*.jsonl") + [p for _, p in quiet(agy_placed) or []]
     paths = [p for p in paths if os.path.getmtime(p) >= since]
     found = []
     for path in paths:
         program = program_of(path)
         text, meta = opening(path, TASK_HEAD[program])
+        if program == "agy":
+            meta = {"cwd": agy_folder(agy_cid(path)), "session": agy_cid(path)}
         named = TASK_NAMED.search(text or "")
         if not named or (ids and named.group(1) not in ids):
             continue

@@ -130,7 +130,14 @@ The Eye on Codex, leads on Opus, workers on Sonnet:
   with `ps` and `lsof` or `/proc`; agy's conversation database is never opened, and an idle agy is
   matched by the message it was started with, the conversation's whole first message, begun
   after that agy started (`ps`); `history.jsonl` tells its folder and whether it left that
-  conversation; transcripts last written before it started are not opened), runs `git` in their folders, `gh pr view` there when `gh` is
+  conversation; transcripts last written before it started are not opened). For Timeline's past
+  an ended agy (a run line naming agy, or a worker script whose `exec` line runs it) is matched
+  the same way within the time hc gives for it; only conversations whose folder was made when it
+  started are opened (`stat`). An ended agy shows nothing when another terminal started within 2
+  minutes of it on its machine with the same message (a live one keeps its conversation), or when
+  one started within 2 minutes of it there can no longer be looked up; an ended agy that wrote nothing can still be given a twin's
+  conversation when Tower never saw that twin (started outside the shown tasks). An agy conversation counts for a task or a folder only
+  when `history.jsonl` puts it in one folder, runs `git` in their folders, `gh pr view` there when `gh` is
   installed, and `node ~/.agents/skills/chains/chain.mjs` for the newest chain link.
 - **Starting:** new spaces with the recipe's agent (default `claude --model fable
   --permission-mode auto` for leads and the Eye; workers `claude --model opus`). Nothing starts by itself, the Eye included. Closing ends only

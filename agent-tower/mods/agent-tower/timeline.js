@@ -186,13 +186,19 @@ export function wantsBackfill(lane, firstAt, now) {
 
 // read.py's terminals entry for a lane. Live: its pid. Ended: hc get's argv and cwd, with created and
 // finished as seconds ago on this clock (t47's lookup). null: hc no longer lists that agent (gone, or
-// its address is another agent's now).
-export function turnsAsk(lane, got, now) {
+// its address is another agent's now). others: [{created, argv}] the machine's other lanes (argv null:
+// unknown); one created within TWIN_MS with the same message (the argv's last word), or unknown, makes
+// an ended one a twin: read.py then gives an ended agy nothing, since whose conversation it is can't be said.
+export const TWIN_MS = 120e3;
+export function turnsAsk(lane, got, now, others = []) {
   const key = backfillKey(lane);
   if (!lane.ended) return { key, pid: lane.t.pid ?? lane.t.foreground?.pid ?? null, argv: lane.t.foreground?.argv ?? lane.t.argv ?? [], cwd: lane.t.foreground?.cwd ?? lane.t.cwd ?? null };
   if (!got || got.state === "live" || got.created_ms !== lane.created) return null;
   const ago = (ms) => Math.max(0, Math.round((now - ms) / 1000));
-  return { key, pid: null, argv: got.argv ?? [], cwd: got.cwd ?? null, created_s: ago(got.created_ms), finished_s: ago(got.finished_ms ?? now) };
+  // An argv that is not a list is unknown, as null is.
+  const argv = Array.isArray(got.argv) ? got.argv : [];
+  const twin = others.some((o) => Math.abs(o.created - got.created_ms) <= TWIN_MS && (!Array.isArray(o.argv) || o.argv.at(-1) === argv.at(-1)));
+  return { key, pid: null, argv, cwd: got.cwd ?? null, created_s: ago(got.created_ms), finished_s: ago(got.finished_ms ?? now), ...(twin ? { twin } : {}) };
 }
 
 // One read.py answer for one terminal (T), on this computer's clock: readAt is when the answer came.
@@ -318,15 +324,30 @@ export function backfill(dir, lanes, firstAtOf, now, onLoad) {
     (async () => {
       try {
         const terminals = [];
-        for (const l of list) {
-          let got = null;
-          if (l.ended) {
+        const gets = new Map();
+        const get = async (l) => {
+          if (!gets.has(l.a)) {
             const r = await hc(["get", l.a, "--json"]).catch(() => null);
+            let got = null;
             try {
               got = r?.code === 0 ? JSON.parse(r.stdout) : null;
             } catch {}
+            gets.set(l.a, got);
           }
-          const ask = turnsAsk(l, got, now);
+          return gets.get(l.a);
+        };
+        for (const l of list) {
+          const got = l.ended ? await get(l) : null;
+          // Its machine's other lanes started near it, with their run lines (unknown when hc no longer has that agent).
+          const others = [];
+          if (got) {
+            for (const o of lanes) {
+              if (o.a === l.a || (o.machine ?? "") !== m || o.created == null || Math.abs(o.created - l.created) > TWIN_MS) continue;
+              const og = await get(o);
+              others.push({ created: o.created, argv: og?.created_ms === o.created ? og.argv ?? null : null });
+            }
+          }
+          const ask = turnsAsk(l, got, now, others);
           if (ask) terminals.push(ask);
           else {
             fill.version++; // before the write: a job cut after it can't leave readers on the old version
