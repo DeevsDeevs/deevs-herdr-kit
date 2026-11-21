@@ -1741,28 +1741,21 @@ const recWord = (t) => (t.status === "error" ? "blocked" : t.status ?? null);
 // 1h, nothing at longer spans) are then drawn as not recorded.
 export const GAP_JOIN_MS = 10e3;
 
-// The gaps of each machine that overlap or lie under ms apart, as one (a new object when it grew):
-// the one that covers most wins, so two writers' copies of a gap (one joined, one not) give the
-// joined one in either order. An open gap (to: null) that a closed one overlaps was closed by it
-// (someone saw the machine answer): closed. One that opens under ms after a closed one ends goes on
-// from that one's start, open. Two open ones: the earlier start, open. Sorted by from; the same
-// array when nothing joins.
+// The closed gaps of each machine that overlap or lie under ms apart, joined (new objects); open
+// gaps as they are. The same array when nothing joins.
 export function joinGaps(gaps, ms = GAP_JOIN_MS) {
-  const sorted = [...gaps].sort((x, y) => (x.m < y.m ? -1 : x.m > y.m ? 1 : x.from - y.from || (x.to == null) - (y.to == null)));
+  const closed = gaps.filter((g) => g.to != null).sort((x, y) => (x.m < y.m ? -1 : x.m > y.m ? 1 : x.from - y.from));
   const out = [];
-  for (const g of sorted) {
+  for (const g of closed) {
     const prev = out.at(-1);
-    if (!prev || prev.m !== g.m || g.from - (prev.to ?? Infinity) >= ms) {
-      out.push(g);
+    if (prev && prev.m === g.m && g.from - prev.to < ms) {
+      if (g.to > prev.to) out[out.length - 1] = { ...prev, to: g.to };
       continue;
     }
-    let to;
-    if (prev.to == null) to = g.to;
-    else if (g.to == null) to = g.from <= prev.to ? prev.to : null;
-    else to = Math.max(prev.to, g.to);
-    if (to !== prev.to) out[out.length - 1] = { ...prev, to };
+    out.push(g);
   }
-  return out.length === gaps.length ? gaps : out.sort((x, y) => x.from - y.from);
+  if (out.length === closed.length) return gaps;
+  return [...out, ...gaps.filter((g) => g.to == null)].sort((x, y) => x.from - y.from);
 }
 
 // A Herdr gap: nobody watched between the last beat and this start (joined to the one before it
@@ -1900,9 +1893,9 @@ export function mergeRecords(theirs, mine) {
     lanes: { ...(theirs.lanes ?? {}), ...mine.lanes },
     events: union([...(theirs.events ?? []), ...mine.events], (e) => `${e.a}|${e.at}|${e.s}`).sort((x, y) => x.at - y.at),
     looks: union([...(theirs.looks ?? []), ...mine.looks], (l) => `${l.a}|${l.at}`).sort((x, y) => x.at - y.at),
-    // joinGaps: the copy of a gap that covers most, a gap closed on either side closed, one side's
-    // joined gap over the other's parts; the same in either order.
-    gaps: joinGaps([...mine.gaps, ...(theirs.gaps ?? [])]),
+    // A gap closed on either side is closed (the later duplicate wins, so the closed ones go last);
+    // one side's joined gap covers the other's parts.
+    gaps: joinGaps(union([...mine.gaps, ...(theirs.gaps ?? [])].sort((x, y) => (y.to == null) - (x.to == null)), (g) => `${g.m}|${g.from}`)),
   };
 }
 
