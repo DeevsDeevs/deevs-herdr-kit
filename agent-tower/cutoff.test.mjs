@@ -499,6 +499,19 @@ const tl = await import("./mods/agent-tower/timeline.js");
   }
 }
 
+// R18. The 1 s tick clears a cut render's frame before its reads: a terminal started 60 ms after the
+//      cut, before any 250 ms tick, is tracked by that tick (the dead frame's list doesn't answer).
+{
+  const { v, cx, fire, fx } = await copy();
+  fx.spin = true;
+  assert.ok(cut(() => v.render(cx)));
+  fx.spin = false;
+  fx.fixture.terms.push(term("t7"));
+  clock -= 940; // fire(1000) adds 1000: the tick runs 60 ms after the cut
+  await fire(1000);
+  assert.ok(changed(fx).includes("t7"), `the new terminal is tracked: ${changed(fx)}`);
+}
+
 // F1-F3 (build2/cut-facts.md): the perf log says where a draw's time went.
 const perfAll = (fx) => fx.execArgs.filter((a) => a[2] === "perf").map((a) => a[4]).join("").split("\n").filter(Boolean).map((l) => JSON.parse(l));
 // F1. A list draw's line carries the model pass inside it and what made it run; 0 when none ran.

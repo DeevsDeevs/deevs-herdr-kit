@@ -792,6 +792,8 @@ export default class AgentTasks extends View {
       const late = this.tickAt ? Date.now() - this.tickAt - 1000 : 0;
       this.tickAt = Date.now();
       if (late > 300 && !props()?.overlay) perfLog.late(late);
+      // A cut render's frame, younger than FRAME_MS, would otherwise answer the tick's reads.
+      noteCutOff();
       this.trackTick(cx);
     });
     this.refreshMachines(cx);
@@ -3864,12 +3866,15 @@ export default class AgentTasks extends View {
     };
     let body;
     if (loaded.mod) {
+      const f = liveFrame() ? frame : null;
       try {
-        if (liveFrame()) Object.assign(frame, { view: `stage ${id}`, step: "view" });
+        if (f) Object.assign(f, { view: `stage ${id}`, step: "view" });
         body = timedRender(id, () => loaded.mod.render(t, m, ui));
-        if (liveFrame()) frame.step = "drawing";
       } catch (e) {
         body = div().p(20).text_color(t.blocked).child(`${id} could not be drawn: ${e?.message ?? e}`);
+      } finally {
+        // An ordinary throw too; a cut needs nothing, the frame goes with it.
+        if (f) Object.assign(f, { view: "stage", step: "drawing" });
       }
     } else {
       body = div().p(20).text_color(t.dim).child(loaded.error ? `${VIEWS.find((x) => x.id === id)?.label ?? id} isn't available: ${loaded.error}` : "Loading…");
