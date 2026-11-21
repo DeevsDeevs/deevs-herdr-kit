@@ -97,10 +97,14 @@ export function perfLog({ on = false, dir, exec, clock = () => Date.now() }) {
       return st.on;
     },
     file,
-    render: (view, ms, elements = null) => add({ view: commandName(view), ms: Math.round(ms * 100) / 100, elements }),
+    // pass: {model (ms of model passes inside, 0 when none ran), why (what made the first run: one word)}.
+    render: (view, ms, elements = null, pass) => add({ view: commandName(view), ms: Math.round(ms * 100) / 100, elements, ...pass }),
     command: (what, ms) => add({ what: commandName(what), ms: Math.round(ms * 100) / 100 }),
-    // Render state a cut-off render left (left: what, from a fixed few words), and how many so far.
-    cutOff: (left, count) => add({ what: "render cut off", left, count }),
+    // Render state a cut-off render left (left: what, from a fixed few words), how many so far, and
+    // where: {view ("list", "stage", "stage <view id>", "other"), step (how far it got: a fixed few words)}.
+    cutOff: (left, count, where) => add({ what: "render cut off", left, count, ...where }),
+    // The mod's 1 s tick ran ms later than due: the app's thread was busy with something else.
+    late: (ms) => add({ what: "tick late", ms: Math.round(ms) }),
     flush,
     waiting: () => st.lines.length,
     set(next) {
