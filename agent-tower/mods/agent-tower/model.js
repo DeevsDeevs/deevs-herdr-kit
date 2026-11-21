@@ -1651,13 +1651,17 @@ export const itemArea = (config, item) => areaOf(config, item.machine, item.task
 // state, a timer) reuses the last one. now counts by the minute: an item turns "earlier" or stale at
 // most a minute late, when the minute's redraw comes anyway.
 // memo: one per caller ({}), so two callers with other inputs never evict each other.
+// memo.why: what made the last pass run, one word of PASS_WHY ("first", "settings" or an input's).
+export const PASS_WHY = ["terminals", "agents", "spaces", "changes", "seen", "titles", "machines", "eye", "minute"];
 export function taskModelOnce(ctx, memo) {
   // changesVersion: a caller that owns its changes map says when it changed instead of listing it.
-  const key = JSON.stringify([ctx.terms, [...(ctx.listed ?? [])], ctx.spaces, ctx.changesVersion ?? [...(ctx.changes ?? [])], ctx.seen ?? {}, ctx.titles ?? {},
-    ctx.reach ?? [], ctx.eye?.address ?? null, Math.floor(ctx.now / 60000)]);
-  if (memo.key === key && memo.config === ctx.config) return memo.m;
+  // One string per input (together they cost what one did), so a pass can say which one moved.
+  const key = [ctx.terms, [...(ctx.listed ?? [])], ctx.spaces, ctx.changesVersion ?? [...(ctx.changes ?? [])], ctx.seen ?? {}, ctx.titles ?? {},
+    ctx.reach ?? [], ctx.eye?.address ?? null, Math.floor(ctx.now / 60000)].map((x) => JSON.stringify(x));
+  const moved = memo.key ? key.findIndex((k, i) => k !== memo.key[i]) : -1;
+  if (memo.key && moved < 0 && memo.config === ctx.config) return memo.m;
   const m = taskModel(ctx);
-  Object.assign(memo, { key, config: ctx.config, m });
+  Object.assign(memo, { key, config: ctx.config, m, why: !memo.key ? "first" : moved < 0 ? "settings" : PASS_WHY[moved] });
   return m;
 }
 

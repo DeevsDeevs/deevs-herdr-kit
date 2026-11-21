@@ -449,8 +449,9 @@ const tl = await import("./mods/agent-tower/timeline.js");
   await w.load(ui);
   assert.equal(state.notes, "one");
 }
-// R17. A cut-off render is drawn again within a second (Herdr's banner stays until it is): every copy
-//      with a clock asks once per cut (the cut one can't be told apart), and at most once a second.
+// R17. A cut-off render is drawn again within a quarter of a second (Herdr's banner stays until it
+//      is): every copy with a clock asks once per cut (the cut one can't be told apart) on its 250 ms
+//      tick, and at most once a second.
 {
   // Made in this order so the copies' shared fixture ends with the list's props.
   const s = await copy({}, { props: { stage: true } });
@@ -463,32 +464,79 @@ const tl = await import("./mods/agent-tower/timeline.js");
   };
   const [na, nb, ns] = [asked(a), asked(b), asked(s)];
   // A copy's first ticks may redraw once for cuts from before it started.
-  await a.second();
-  await b.second();
-  await s.fire(250);
+  const quarter = async () => {
+    await a.fire(250);
+    await b.fire(250);
+    await s.fire(250);
+  };
+  await quarter();
+  clock += 1000;
   [na, nb, ns].forEach((n) => n());
   b.fx.spin = true;
   assert.ok(cut(() => a.v.render(a.cx)), "the render was cut off");
   b.fx.spin = false;
-  await a.second();
-  await b.second();
+  await a.fire(250);
+  assert.equal(na(), 1, "the list asks within a quarter of a second");
+  await b.fire(250);
   await s.fire(250);
-  assert.deepEqual([na(), nb(), ns()], [1, 1, 1], "each copy asks for a redraw");
-  await a.second();
-  await b.second();
-  await s.fire(250);
+  assert.deepEqual([nb(), ns()], [1, 1], "each copy asks for a redraw");
+  await quarter();
   assert.deepEqual([na(), nb(), ns()], [0, 0, 0], "no new cut: none");
-  // Every render cut (each next render's start counts the cut before): the stage's 250 ms tick asks
-  // once a second, not four times.
-  const counts = [];
-  for (let i = 0; i < 8; i++) {
-    b.fx.spin = true;
-    assert.ok(cut(() => a.v.render(a.cx)));
-    b.fx.spin = false;
-    await s.fire(250);
-    counts.push(ns());
+  // Every render cut (each next render's start counts the cut before): the stage's and the list's
+  // 250 ms ticks ask once a second, not four times.
+  for (const [c, n] of [[s, ns], [a, na]]) {
+    clock += 1000;
+    const counts = [];
+    for (let i = 0; i < 8; i++) {
+      b.fx.spin = true;
+      assert.ok(cut(() => a.v.render(a.cx)));
+      b.fx.spin = false;
+      await c.fire(250);
+      counts.push(n());
+    }
+    assert.ok(counts.every((x, i) => counts.slice(Math.max(0, i - 3), i + 1).reduce((p, q) => p + q, 0) <= 1), `at most once a second: ${counts}`);
+    assert.ok(counts.filter(Boolean).length >= 2, `but again while cuts go on: ${counts}`);
   }
-  // The first cut is counted by the second render's start, so the first ask comes on the second tick.
-  assert.deepEqual(counts, [0, 1, 0, 0, 0, 1, 0, 0], "at most once a second");
+}
+
+// F1-F3 (build2/cut-facts.md): the perf log says where a draw's time went.
+const perfAll = (fx) => fx.execArgs.filter((a) => a[2] === "perf").map((a) => a[4]).join("").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+// F1. A list draw's line carries the model pass inside it and what made it run; 0 when none ran.
+{
+  const { v, cx, fire, fx } = await copy({ ...PERF });
+  v.render(cx);
+  v.render(cx); // nothing new: the model is reused
+  fx.fixture.terms.push(term("t9"));
+  v.render(cx);
+  await fire(30000);
+  const draws = perfAll(fx).filter((l) => l.view === "list").slice(-2);
+  assert.deepEqual(draws.map((l) => [l.model > 0, l.why ?? null]), [[false, null], [true, "terminals"]], JSON.stringify(draws));
+  assert.equal(draws[0].model, 0);
+}
+// F2. A cut line says which render was cut (list, stage) and how far it got.
+{
+  const s = await copy({ ...PERF }, { props: { stage: true } });
+  s.fx.spin = true;
+  assert.ok(cut(() => s.v.render(s.cx)));
+  s.fx.spin = false;
+  await s.fire(250);
+  const l = await copy({ ...PERF });
+  l.fx.spin = true;
+  assert.ok(cut(() => l.v.render(l.cx)));
+  l.fx.spin = false;
+  await l.fire(250);
+  await l.fire(30000);
+  const cuts = perfLines(l.fx).slice(-2);
+  assert.deepEqual(cuts.map((c) => [c.view, c.step]), [["stage", "reads"], ["list", "reads"]], JSON.stringify(cuts));
+}
+// F3. The 1 s tick running more than 300 ms late writes how late; on time, nothing.
+{
+  const { second, fire, fx } = await copy({ ...PERF });
+  await second();
+  await second();
+  clock += 700;
+  await second();
+  await fire(30000);
+  assert.deepEqual(perfAll(fx).filter((l) => l.what === "tick late").map((l) => l.ms), [700]);
 }
 console.log("cutoff ok");

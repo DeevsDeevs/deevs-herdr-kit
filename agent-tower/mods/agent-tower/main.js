@@ -22,7 +22,7 @@ import { div, svg, image, v_flex, h_flex } from "./perf.js";
 // (RECIPE.md). So each render starts its own frame, and a frame counts only while younger than any
 // live render can be: one a cut-off render left behind is never read, and the tick clears it.
 const FRAME_MS = 100;
-let frame = null; // {at, reads: Map, depth, carried}
+let frame = null; // {at, reads: Map, depth, carried, view, step, modelMs, why}; the last four for the perf log
 const liveFrame = () => {
   const age = frame ? Date.now() - frame.at : -1;
   return age >= 0 && age <= FRAME_MS ? frame.reads : null;
@@ -55,10 +55,10 @@ const run = (command, args) => {
 };
 // Each render starts its own frame (were one ever nested, the outer would then read straight through).
 // finally only covers an ordinary throw; a cut skips it, which the frame's age and the tick cover.
-function inFrame(draw) {
+function inFrame(view, draw) {
   // A frame (or model pass) still here at a render's start is a cut-off render's: counted once.
   noteCutOff();
-  const mine = { at: Date.now(), reads: new Map(), depth: 0, carried: 0 };
+  const mine = { at: Date.now(), reads: new Map(), depth: 0, carried: 0, view, step: "reads", modelMs: 0, why: null };
   frame = mine;
   try {
     return draw();
@@ -72,9 +72,11 @@ let cutOffs = 0;
 function noteCutOff() {
   const left = [frame && "frame", model.passLeft() && "model pass"].filter(Boolean);
   if (!left.length) return;
+  const f = frame;
   frame = null;
   model.clearPass();
-  perfLog.cutOff(left, ++cutOffs);
+  // Which render and how far it got: kept in the frame itself, so the cut leaves them as they were.
+  perfLog.cutOff(left, ++cutOffs, f && { view: f.view, step: f.step });
 }
 // Herdr's banner stays in place of a cut-off view until it draws again, and the cut copy can't be
 // told apart (one module, any copy's tick may notice): each copy with a clock redraws once per new
@@ -118,9 +120,26 @@ function timedRender(view, draw) {
     f.depth--;
   }
   const mine = f.carried + perf.elements();
-  perfLog.render(view, perf.now() - t0, mine);
+  // The list's or stage's own line carries the model passes inside it (a view's, nested, doesn't).
+  perfLog.render(view, perf.now() - t0, mine, f.depth ? undefined : { model: Math.round(f.modelMs * 100) / 100, why: f.why });
   f.carried = f.depth ? outer + mine : 0;
   return out;
+}
+// model.taskModelOnce, with its time and reason kept in the render's frame for the perf log.
+function modelOnce(ctx, memo) {
+  const f = perfLog.on && liveFrame() ? frame : null;
+  if (!f) return model.taskModelOnce(ctx, memo);
+  const was = memo.m;
+  const step = f.step;
+  f.step = "model pass";
+  const t0 = perf.now();
+  const m = model.taskModelOnce(ctx, memo);
+  if (m !== was) {
+    f.modelMs += perf.now() - t0;
+    f.why ??= memo.why;
+  }
+  f.step = step === "reads" ? "drawing" : step;
+  return m;
 }
 // Runs f in a job of its own, for a loop that must outlive it: by then the loop waits at its next
 // await, so a cut inside f (no catch or finally runs, its promise never settles) can't end the loop.
@@ -762,10 +781,17 @@ export default class AgentTasks extends View {
     // Changes get their time every second, drawn or not: Herdr draws no covered, minimized or
     // hidden window, but runs its timers.
     this.trackTick(cx, false);
-    cx.timer.every(1000, (cx) => {
-      // Between renders: render state still set was left by a cut-off render (the second line after liveFrame).
+    // Between renders: render state still set was left by a cut-off render (the second line after
+    // liveFrame), noticed and drawn again within a quarter of a second.
+    cx.timer.every(250, (cx) => {
       noteCutOff();
       if (redrawAfterCut(this)) cx.notify();
+    });
+    cx.timer.every(1000, (cx) => {
+      // A tick far behind is the only sign the app's thread was busy elsewhere (the docked list's only).
+      const late = this.tickAt ? Date.now() - this.tickAt - 1000 : 0;
+      this.tickAt = Date.now();
+      if (late > 300 && !props()?.overlay) perfLog.late(late);
       this.trackTick(cx);
     });
     this.refreshMachines(cx);
@@ -2750,7 +2776,7 @@ export default class AgentTasks extends View {
   render(cx) {
     const p = props();
     const kind = p?.stage ? "stage" : p?.menu || p?.peekBar || p?.paneHead || p?.stageBar || p?.viewBar || p?.textHidden || isToast() ? null : "list";
-    return inFrame(() => (kind ? timedRender(kind, () => this.draw(cx)) : this.draw(cx)));
+    return inFrame(kind ?? "other", () => (kind ? timedRender(kind, () => this.draw(cx)) : this.draw(cx)));
   }
 
   draw(cx) {
@@ -2831,7 +2857,7 @@ export default class AgentTasks extends View {
       cx.timer.after(model.NO_AGENT_MS + 500, (cx) => cx.notify());
     }
     // The one model every view draws from (model.taskModel).
-    const m = model.taskModelOnce({ terms, listed, spaces: spaceList, config, changes: this.changes, changesVersion: this.changesVersion, seen, now,
+    const m = modelOnce({ terms, listed, spaces: spaceList, config, changes: this.changes, changesVersion: this.changesVersion, seen, now,
       titles: sharedOr(TITLES) ?? {}, reach: this.reach, eye: this.eye }, (this.modelMemo ??= {}));
     const allItems = m.all;
     const composeTo = model.composeMode(this.chosen, Boolean(this.eye));
@@ -3318,7 +3344,7 @@ export default class AgentTasks extends View {
     this.recModelAt = now;
     const listed = new Map(agentList.map((a) => [a.address, a.status]));
     const eye = model.findEye(terms, EYE_PER_AREA ? this.shownArea()?.id : null, this.config);
-    const m = model.taskModelOnce({ terms, listed, spaces: spaces(), config: this.config, changes: this.changes, changesVersion: this.changesVersion,
+    const m = modelOnce({ terms, listed, spaces: spaces(), config: this.config, changes: this.changes, changesVersion: this.changesVersion,
       seen: sharedOr(SEEN) ?? {}, now, titles: sharedOr(TITLES) ?? {}, reach: this.reach, eye }, (this.modelMemo ??= {}));
     this.recordTick(terms, m.all, now, this.reach, focus, cx);
   }
@@ -3634,7 +3660,7 @@ export default class AgentTasks extends View {
   areaChips(t) {
     const areas = liveConfig.areas;
     if (areas.length < 2) return [];
-    const m = model.taskModelOnce({ terms: terminals(), listed: new Map(agents().map((a) => [a.address, a.status])), spaces: spaces(), config: liveConfig,
+    const m = modelOnce({ terms: terminals(), listed: new Map(agents().map((a) => [a.address, a.status])), spaces: spaces(), config: liveConfig,
       changes: new Map(), now: Date.now() }, (this.chipsMemo ??= {}));
     const needs = model.areaNeeds(m.items, (i) => i.area);
     const shown = shared(AREA);
@@ -3788,7 +3814,7 @@ export default class AgentTasks extends View {
     const changes = this.changesMap;
     const seen = sharedOr(SEEN) ?? {};
     const config = this.config ?? model.DEFAULTS;
-    const m = model.taskModelOnce({ terms, listed, spaces: spaces(), config, changes, changesVersion: changesV ?? undefined, seen, now,
+    const m = modelOnce({ terms, listed, spaces: spaces(), config, changes, changesVersion: changesV ?? undefined, seen, now,
       titles: sharedOr(TITLES) ?? {}, eye: model.findEye(terms) }, (this.modelMemo ??= {}));
     this.wordCtx = { listed, seen, now, changes };
     if (sidebarHidden()) this.arrive(m.all);
@@ -3839,7 +3865,9 @@ export default class AgentTasks extends View {
     let body;
     if (loaded.mod) {
       try {
+        if (liveFrame()) Object.assign(frame, { view: `stage ${id}`, step: "view" });
         body = timedRender(id, () => loaded.mod.render(t, m, ui));
+        if (liveFrame()) frame.step = "drawing";
       } catch (e) {
         body = div().p(20).text_color(t.blocked).child(`${id} could not be drawn: ${e?.message ?? e}`);
       }
