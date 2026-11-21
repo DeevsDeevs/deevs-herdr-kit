@@ -73,6 +73,63 @@ const now = Date.UTC(2026, 10, 15, 12);
   assert.deepEqual(merged.gaps, [{ m: "herdr", from: a.from, to: b.to }]);
 }
 
+// ── Case 4: a merge keeps the copy of a gap that covers most, in either order ──
+// mergeRecords (two writers of events.json) and movePast (index.json and the moved part) both merge
+// through model.mergeGaps.
+{
+  const g = (m, from, to) => ({ m, from, to });
+  const rec = (gaps) => ({ ...model.newRecord(), gaps });
+  const both = (x, y, want, what) => {
+    assert.deepEqual(model.mergeRecords(rec(x), rec(y)).gaps, want, `${what}: theirs, mine`);
+    assert.deepEqual(model.mergeRecords(rec(y), rec(x)).gaps, want, `${what}: mine, theirs`);
+    assert.deepEqual(model.mergeGaps([...x, ...y]), want, `${what}: index, part`);
+    assert.deepEqual(model.mergeGaps([...y, ...x]), want, `${what}: part, index`);
+  };
+  // Mine joined A with a newer gap; theirs still has A alone.
+  const a = g("herdr", now - 60 * MIN, now - 47 * MIN);
+  both([a], [g("herdr", a.from, now - 34 * MIN)], [g("herdr", a.from, now - 34 * MIN)], "theirs has the part");
+  // recordStep closed a machine's gap and joined it to the one before; theirs still has it open.
+  const r = model.newRecord();
+  const step = (at, reachable) => model.recordStep(r, { terms: [], all: [], now: at, reach: [{ name: "vps", reachable, since: at }] });
+  step(now - 30 * MIN, false);
+  step(now - 20 * MIN, true);
+  step(now - 20 * MIN + 4e3, false);
+  const theirs = structuredClone(r.gaps);
+  step(now - 5 * MIN, true);
+  assert.deepEqual(r.gaps, [g("vps", now - 30 * MIN, now - 5 * MIN)]);
+  both(theirs, r.gaps, [g("vps", now - 30 * MIN, now - 5 * MIN)], "closed and joined against open");
+  // The same gap open on one side, closed on the other: closed (that writer saw the machine answer).
+  both([g("vps", now - 9 * MIN, null)], [g("vps", now - 9 * MIN, now - 2 * MIN)], [g("vps", now - 9 * MIN, now - 2 * MIN)], "open against closed");
+  // Open on both sides from different starts: one, from the earlier, open.
+  both([g("vps", now - 9 * MIN, null)], [g("vps", now - 7 * MIN, null)], [g("vps", now - 9 * MIN, null)], "two open");
+  // A silence that began after the other side's gap ended is a new one: still open.
+  both([g("vps", now - 30 * MIN, now - 20 * MIN)], [g("vps", now - 10 * MIN, null)], [g("vps", now - 30 * MIN, now - 20 * MIN), g("vps", now - 10 * MIN, null)], "a new silence");
+  // Another machine's open gap is not closed by this one's.
+  both([g("lab", now - 25 * MIN, null)], [g("vps", now - 30 * MIN, now - 20 * MIN)], [g("vps", now - 30 * MIN, now - 20 * MIN), g("lab", now - 25 * MIN, null)], "another machine");
+  // A stale open gap closes where the other writer first saw the machine answer; its later silence
+  // stays apart (the time between was recorded).
+  const twoSilences = [g("vps", now - 60 * MIN, now - 50 * MIN), g("vps", now - 20 * MIN, now - 10 * MIN)];
+  both([g("vps", now - 60 * MIN, null)], twoSilences, twoSilences, "a later silence stays apart");
+  // A stale older open gap doesn't push out the other writer's current one.
+  both([g("vps", now - 60 * MIN, null)], [g("vps", now - 60 * MIN, now - 50 * MIN), g("vps", now - 5 * MIN, null)],
+    [g("vps", now - 60 * MIN, now - 50 * MIN), g("vps", now - 5 * MIN, null)], "a current silence stays open");
+  both([g("vps", now - 30 * MIN, null)], [g("vps", now - 30 * MIN, now - 20 * MIN), g("vps", now - 19 * MIN, null)],
+    [g("vps", now - 30 * MIN, now - 20 * MIN), g("vps", now - 19 * MIN, null)], "a silence a minute after");
+  // A record merged with itself is unchanged, and merging again changes nothing.
+  const y = { ...model.newRecord(), lanes: { "vps/t1": { created: now - 90 * MIN } },
+    events: [{ a: "vps/t1", s: "working", turn: 1, at: now - 80 * MIN, msg: null }, { a: "vps/t1", s: "idle", turn: 1, at: now - 40 * MIN, msg: null }],
+    looks: [{ a: "vps/t1", at: now - 45 * MIN }], gaps: [g("herdr", now - 70 * MIN, now - 65 * MIN), g("vps", now - 60 * MIN, now - 50 * MIN), g("vps", now - 5 * MIN, null)] };
+  const self = model.mergeRecords(y, y);
+  for (const k of ["lanes", "events", "looks", "gaps"]) assert.deepEqual(self[k], y[k], `merged with itself: ${k}`);
+  const pairs = [[[a], [g("herdr", a.from, now - 34 * MIN)]], [theirs, r.gaps], [[g("vps", now - 60 * MIN, null)], twoSilences],
+    [[g("vps", now - 60 * MIN, null)], y.gaps], [[g("vps", now - 9 * MIN, null)], [g("vps", now - 7 * MIN, null)]]];
+  for (const [p, q] of pairs) {
+    const once = model.mergeRecords(rec(p), rec(q));
+    assert.deepEqual(model.mergeRecords(rec(p), once).gaps, once.gaps, "merge(a, merge(a, b)) = merge(a, b)");
+    assert.deepEqual(model.mergeRecords(once, rec(q)).gaps, once.gaps, "merge(merge(a, b), b) = merge(a, b)");
+  }
+}
+
 // ── Files written before the join read joined (events.json and index.json) ──
 {
   const gaps = [];

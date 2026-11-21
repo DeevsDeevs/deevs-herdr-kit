@@ -1745,6 +1745,23 @@ export function joinGaps(gaps, ms = GAP_JOIN_MS) {
   return [...out, ...gaps.filter((g) => g.to == null)].sort((x, y) => x.from - y.from);
 }
 
+// Two writers' gaps as one, the same in either order. Copies of a gap (one joined, one not) give the
+// one that covers most. Each open gap is closed at the first end of a closed one of its machine at or
+// after its start (when that writer first saw the machine answer); a later end belongs to a later
+// silence. Of those still open (a silence after every closed one ended), the earliest per machine.
+export function mergeGaps(gaps) {
+  const closed = gaps.filter((g) => g.to != null);
+  const out = [...closed];
+  const open = new Map();
+  for (const g of gaps.filter((x) => x.to == null)) {
+    const to = Math.min(Infinity, ...closed.filter((c) => c.m === g.m && c.to >= g.from).map((c) => c.to));
+    if (to < Infinity) out.push({ m: g.m, from: g.from, to });
+    else if (!(open.get(g.m)?.from <= g.from)) open.set(g.m, g);
+  }
+  out.push(...open.values());
+  return [...joinGaps(out)].sort((x, y) => x.from - y.from || (x.m < y.m ? -1 : x.m > y.m ? 1 : 0));
+}
+
 // A Herdr gap: nobody watched between the last beat and this start (joined to the one before it
 // when the wake between was only seconds).
 // alive: another sign of life (the recorder lease's last renewal by the copy before this one).
@@ -1880,9 +1897,7 @@ export function mergeRecords(theirs, mine) {
     lanes: { ...(theirs.lanes ?? {}), ...mine.lanes },
     events: union([...(theirs.events ?? []), ...mine.events], (e) => `${e.a}|${e.at}|${e.s}`).sort((x, y) => x.at - y.at),
     looks: union([...(theirs.looks ?? []), ...mine.looks], (l) => `${l.a}|${l.at}`).sort((x, y) => x.at - y.at),
-    // A gap closed on either side is closed (the later duplicate wins, so the closed ones go last);
-    // one side's joined gap covers the other's parts.
-    gaps: joinGaps(union([...mine.gaps, ...(theirs.gaps ?? [])].sort((x, y) => (y.to == null) - (x.to == null)), (g) => `${g.m}|${g.from}`)),
+    gaps: mergeGaps([...mine.gaps, ...(theirs.gaps ?? [])]),
   };
 }
 
