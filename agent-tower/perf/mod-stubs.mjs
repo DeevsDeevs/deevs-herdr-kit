@@ -1,6 +1,7 @@
 // gpui-kit, gpui-base and herdr for perf runs: elements are counted, not drawn, and every builder
 // call is counted (in Herdr each one crosses into the host). Commands, file reads and writes, and
-// setShared are logged in globalThis.__fx.log as {what, at} when there is a log. Data comes from
+// setShared are logged in globalThis.__fx.log as {what, at} when there is a log. Element ids go to
+// globalThis.__fx.ids when it is an array. Data comes from
 // globalThis.__fx: {files, shared, elements, calls} at least; fixture, props, layout, log for whole mods.
 const fx = () => globalThis.__fx;
 const note = (what) => fx().log?.push({ what, at: Date.now() });
@@ -12,6 +13,7 @@ const el = () => {
       if (k === "then") return undefined;
       return (...a) => {
         fx().calls++;
+        if (k === "id") fx().ids?.push(a[0]);
         if (k === "when") return a[0] ? a[1](self) : self;
         return self;
       };

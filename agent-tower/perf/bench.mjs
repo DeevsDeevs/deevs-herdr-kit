@@ -29,6 +29,10 @@ export const GAP_CASES = [
   // A rebuild whose lanes an earlier, cut-off one already worked out (or any change elsewhere).
   { case: "timeline 8h, lanes kept", view: "timeline", span: 2, rebuild: true },
   { case: "timeline Week, lanes kept", view: "timeline", span: 4, rebuild: true },
+  // The now-line a pixel on since the frame before (each timed render moves it one more).
+  { case: "timeline 1h, a pixel later", view: "timeline", span: 0, pixel: true },
+  { case: "timeline 8h, a pixel later", view: "timeline", span: 2, pixel: true },
+  { case: "timeline Week, a pixel later", view: "timeline", span: 4, pixel: true },
 ];
 
 // Watchlist's files: tickers named in the fixture's titles, and a long notes file (only its newest
@@ -55,8 +59,11 @@ export async function bench({ kit, fixture, clock, settle, runs = 20, cases = CA
     const state = { span: c.span };
     const ui = { now: fixture.now, width: 1100, height: 720, area: null, selectedKey: null, state, towerDir: fixture.towerDir, here: "mac",
       shape: "sidebar", hideText: false, rowMark: "state", notify() {}, select() {}, pick() {}, open() {}, goInto() {}, onMenu: (el) => el };
+    // ui.width 1100: the track's past is 708 px.
+    const pxMs = c.pixel ? mod.SPANS[c.span].ms / 708 : 0;
     const once = () => {
       if (c.fresh) ui.state = { span: c.span };
+      if (c.pixel) ui.now += pxMs;
       if (c.rebuild) ui.state.cache = null;
       const m = modelOf();
       if (c.open) ui.state.tasks = Object.fromEntries(m.items.map((i) => [i.key, true]));
