@@ -886,7 +886,9 @@ come from the app's program table.
   `apart`, in a job of its own, and never awaits it. `finally` stays where it was: it
   still cleans up after an ordinary throw, which is not a cut. A frame or model pass found
   at a render's start or by the one-second tick was left by a cut: dropped and, with
-  `"perf": true`, logged once as `{at, what: "render cut off", left, count}`.
+  `"perf": true`, logged once as `{at, what: "render cut off", left, count}`. Herdr's banner
+  stays until the view draws again, so on each new cut every copy with a clock (the list's 1 s
+  tick, the stage's 250 ms one) asks for one redraw, at most once a second.
   `cutoff.test.mjs` cuts runs off with Node's `vm` timeout, which skips `catch` and
   `finally` the same way, and stands an ordinary throw in where a job must stop half-way.
 - Timeline's rebuild keeps each lane's stretches the moment they are worked out, under its

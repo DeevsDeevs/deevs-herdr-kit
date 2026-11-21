@@ -76,6 +76,15 @@ function noteCutOff() {
   model.clearPass();
   perfLog.cutOff(left, ++cutOffs);
 }
+// Herdr's banner stays in place of a cut-off view until it draws again, and the cut copy can't be
+// told apart (one module, any copy's tick may notice): each copy with a clock redraws once per new
+// cut, at most once a second, so a view whose every render is cut doesn't loop. Set only from ticks.
+function redrawAfterCut(view, now = Date.now()) {
+  if ((view.cutSeen ?? 0) === cutOffs || now - (view.cutRedrawAt ?? 0) < 1000) return false;
+  view.cutSeen = cutOffs;
+  view.cutRedrawAt = now;
+  return true;
+}
 
 // The perf log (off unless the settings say "perf": true), made again whenever the settings are read.
 let perfLog = perf.perfLog({ on: false, dir: "", exec: hostExec });
@@ -756,6 +765,7 @@ export default class AgentTasks extends View {
     cx.timer.every(1000, (cx) => {
       // Between renders: render state still set was left by a cut-off render (the second line after liveFrame).
       noteCutOff();
+      if (redrawAfterCut(this)) cx.notify();
       this.trackTick(cx);
     });
     this.refreshMachines(cx);
@@ -3727,6 +3737,7 @@ export default class AgentTasks extends View {
     cx.timer.every(30000, () => perfLog.flush());
     // ui.notify(): a redraw asked for outside render, on a short tick.
     cx.timer.every(250, (cx) => {
+      if (redrawAfterCut(this)) this.dirty = true;
       if (!this.dirty) return;
       this.dirty = false;
       cx.notify();
