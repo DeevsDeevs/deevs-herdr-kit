@@ -902,9 +902,12 @@ come from the app's program table.
   rebuild cut off half-way leaves the next one less to do, and a first draw too big for one
   frame ends after a few; a lane with nothing ongoing keeps its stretches across the
   now-line's pixels (only its marks are drawn again). The map is pruned to the shown lanes
-  when a rebuild ends. A lane is cut only by the gaps of its machine in the span, those
-  under a pixel apart joined, in one pass (`cutGaps`: a binary search per stretch), so the
-  cost follows the span, not the length of the gap list. `gaps.test.mjs` cuts a first draw
+  when a rebuild ends. A lane's stretches that reach into the span are cut by every gap of
+  its machine, before the span's start too, those under a pixel apart joined, in one pass
+  (`cutGaps`: a binary search per stretch); stretches that end before the start are left
+  whole, since that span neither draws nor counts them. So a stretch crossing the start is
+  the same piece in every span, and a kept lane serves only spans starting no earlier than
+  the one it was cut for. Only the span's gaps are drawn. `gaps.test.mjs` cuts a first draw
   over frames and checks no finished lane is worked out again; `perf.test.mjs` times
   Timeline on two made-up records of a Mac that slept (175 lanes, 85 and 850 gaps): each
   frame under the record's limit, a rebuild with its lanes kept under 50 ms, a first draw
