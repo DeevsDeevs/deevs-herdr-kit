@@ -117,12 +117,11 @@ The Eye on Codex, leads on Opus, workers on Sonnet:
   `~/.config/agent-tower/bin/worker-<agent id>` (`exec <the agent's argv> "$@"`), which the lead
   gets as `$TOWER_WORKER`, so an argv with quotes in it reaches workers intact.
 - **The machine an Antigravity agent starts on** (a lead, a new member, a worker through
-  `$TOWER_WORKER`, the Eye): before agy starts, `sh` and `jq` add the folder's real path to
-  `trustedWorkspaces` in `~/.gemini/antigravity-cli/settings.json`, so agy does not stop on "Do
-  you trust the contents of this project?". Written to a file beside it and renamed over it
-  (mode 600, every other key and the list's order kept); nothing is written when the folder is
-  listed or the file is not the JSON expected, and no file is made when agy never ran there (a
-  toast says so, and agy asks).
+  `$TOWER_WORKER`, the Eye): `sh` reads the folder's real path there (`pwd -P`), and agy starts
+  with `--settings '{"trustedWorkspaces":["<that path>"]}'`, so it does not stop on "Do you trust
+  the contents of this project?". agy adds that to its own settings for the session only: nothing
+  is written, and `~/.gemini/antigravity-cli/settings.json` need not exist. An agent whose argv
+  already carries `--settings` starts as written.
 - **The machine a task runs on:** `sh -c 'test -f "$HOME/.agents/skills/$1/SKILL.md"' sh
   tower` once per session, and for the panel `python3` with
   [read.py](mods/agent-tower-panel/read.py), which reads

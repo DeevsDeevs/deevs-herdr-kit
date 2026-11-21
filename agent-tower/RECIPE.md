@@ -476,7 +476,7 @@ come from the app's program table.
     `Start workers with: <the worker argv, shell-quoted>`; for a worker agent that needs its
     folder trusted (agy), `Start workers with: <$TOWER_WORKER's script path, shell-quoted> (on
     another machine: <the worker argv, shell-quoted>)`, since the script (the same one the skill
-    uses, which trusts the worker's folder first) exists only on the lead's machine; the argv
+    uses, which trusts the worker's folder for its session) exists only on the lead's machine; the argv
     alone when the script could not be written and "Task: <your words>". The skill itself is written elsewhere. In the contract,
     `{worker-skill}` (the end of a brief) becomes "; use the <skill> skill if you have it"
     with the configured skill's name, and nothing when no skill is configured.
@@ -854,8 +854,9 @@ come from the app's program table.
   agents or roles. Defaults: areas Work and Personal (default); agents Claude · Fable,
   Opus and Sonnet (`claude --model <m> --permission-mode auto`), pi, Codex
   (`codex --no-daemon`), Antigravity (`agy -i`: agy reads its first message only after `-i`;
-  before it starts anywhere, `model.TRUST_SCRIPT` lists its folder in agy's `trustedWorkspaces`
-  on that machine, from `main.js trustFolder` and the worker script); lead and eye Claude · Fable, worker Claude · Opus, namer haiku; one recipe per area, "A
+  it starts with `--settings '{"trustedWorkspaces":["<its folder's real path on its machine>"]}'`,
+  trusted for that session with nothing written, from `main.js trustArgv` and the worker script;
+  an argv with its own `--settings` is left as written); lead and eye Claude · Fable, worker Claude · Opus, namer haiku; one recipe per area, "A
   lead here", no machine, no rules; skill "tower".
 - `cx.timer.every(60000)` for ages, `cx.timer.every(30000)` for settings and machines
   (machines every 2 minutes while Herdr is in the background), `cx.timer.every(5000)` for the

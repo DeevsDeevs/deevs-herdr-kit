@@ -1078,7 +1078,7 @@ export default class AgentTasks extends View {
       reply?.({ ok: false, why });
       return null;
     }
-    await this.trustFolder(machine, folder, lead);
+    const leadArgv = await this.trustArgv(machine, folder, lead.argv);
     this.pending.push({ id, name, words, title, by, naming, machine, recipe: recipe.id, area: recipe.area, lead: lead.id, reply, before: new Set(spaces().map((s) => s.id)), at: Date.now(), found: false });
     run("space.new", {
       name,
@@ -1086,7 +1086,7 @@ export default class AgentTasks extends View {
       folder,
       machine: machine ?? "",
       // Its task id and its workers' command in its environment (the skill reads them there).
-      argv: model.withEnv({ TOWER_TASK: id, TOWER_WORKER: worker }, lead.argv),
+      argv: model.withEnv({ TOWER_TASK: id, TOWER_WORKER: worker }, leadArgv),
       task: model.firstMessage(recipe, this.config, id, words, skill, null, worker),
     });
     this.looker ??= cx.timer.every(1500, (cx) => this.lookForLeads(cx));
@@ -1099,13 +1099,12 @@ export default class AgentTasks extends View {
     return r?.code === 0 && r.stdout.trim() ? r.stdout.trim() : null;
   }
 
-  // agy stops on its trust question in a folder its settings don't list: the folder is listed first,
-  // on the agent's machine (model.TRUST_SCRIPT). When it can't be, a toast says why; the start goes on.
-  async trustFolder(machine, folder, agent) {
-    if (!model.needsTrust(agent.argv)) return;
-    const r = await exec("sh", ["-c", model.TRUST_SCRIPT, "trust", folder], { on: machine, timeout: 15000 }).catch(() => null);
-    const why = model.trustWhy(r?.code === 0 ? r.stdout.trim() : "failed", machine ?? here());
-    if (why) notify({ title: "Antigravity will ask to trust its folder", body: why, level: "warning" });
+  // agy stops on its trust question in a folder its settings don't list: its argv trusts the folder's
+  // real path, asked on the agent's machine (model.trustArgv); when that can't be asked, the path as given.
+  async trustArgv(machine, folder, argv) {
+    if (!model.needsTrust(argv)) return argv;
+    const r = await exec("sh", ["-c", model.REAL_DIR_SCRIPT, "real", folder], { on: machine, timeout: 15000 }).catch(() => null);
+    return model.trustArgv(argv, (r?.code === 0 && r.stdout.trim()) || folder);
   }
 
   // The workers' command for a lead on that machine: the path of a small script that runs the
@@ -1199,8 +1198,7 @@ export default class AgentTasks extends View {
       if (there && there.code !== 0) return fail(cx, `${known[0]} does not exist on ${machine ?? "this computer"}`);
       const folder = known.length ? (there?.stdout || known[0]) : await this.makeFolder(machine, dir);
       if (!folder) return fail(cx, `its folder could not be made in ${dir}`);
-      await this.trustFolder(machine, folder, agent);
-      const argv = model.withEnv({ TOWER_TASK: item.taskId, TOWER_WORKER: worker }, agent.argv);
+      const argv = model.withEnv({ TOWER_TASK: item.taskId, TOWER_WORKER: worker }, await this.trustArgv(machine, folder, agent.argv));
       const task = model.joinMessage(recipe, this.config, item, as, words, skill, worker);
       const tab = as === "lead" ? { name: model.LEAD_TAB } : {};
       const space = item.space && (item.space.machine ?? null) === machine ? spaces().find((s) => s.id === item.space.id) : null;
@@ -1287,14 +1285,13 @@ export default class AgentTasks extends View {
       const folder = (own ? model.eyeFolder(this.config, own, dir) : this.config.eye.folder ?? `${dir}/eye`).replace(/^~(?=\/|$)/, home());
       const name = own ? `Eye · ${model.areaLabel(this.config, own)}` : "Eye";
       await exec("mkdir", ["-p", folder]).catch(() => null);
-      await this.trustFolder(null, folder, agent);
       // The start command and the settings go in its environment, not in the message you read.
       const argv = model.withEnv({
         TOWER_NEW: `${appHome()}/mods/agent-tower/tower-new`,
         TOWER_CONFIG: settingsFile ?? `${dir}/config.json`,
         AGENT_TOWER_DIR: dir === `${home()}/.config/agent-tower` ? null : dir,
         TOWER_AREA: own,
-      }, agent.argv);
+      }, await this.trustArgv(null, folder, agent.argv));
       this.pending.push({ id: model.newId(), eye: key, eyeArea: own, name, words: name, machine: null, before: new Set(spaces().map((s) => s.id)), at: Date.now(), found: false, reply });
       run("space.new", { name, folder, machine: "", argv, task: model.eyeMessage(skill ? this.config : { ...this.config, skill: null }, own) });
       this.looker ??= cx.timer.every(1500, (cx) => this.lookForLeads(cx));
