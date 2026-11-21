@@ -45,8 +45,8 @@ const term = (address, status = "working") => ({ address, state: "live", status,
 const model = await import("./mods/agent-tower/model.js");
 const { default: AgentTasks } = await import("./mods/agent-tower/main.js");
 
-async function copy(files = {}, { hold = {} } = {}) {
-  globalThis.__fx = { files, hold, shared: {}, elements: 0, calls: 0, props: {}, execs: [], execArgs: [], watchers: [], failFind: 0, active: true,
+async function copy(files = {}, { hold = {}, props = {} } = {}) {
+  globalThis.__fx = { files, hold, shared: {}, elements: 0, calls: 0, props, execs: [], execArgs: [], watchers: [], failFind: 0, active: true,
     fixture: { terms: [term("t1")], agents: [], spaces: [], machines: [] },
     layout: { id: "root", children: [{ id: "sidebar", size: { px: 320 } }, { id: "work-view", active: "main", children: [{ id: "main" }, { id: "tower-stage" }] }] } };
   const timers = [];
@@ -448,5 +448,47 @@ const tl = await import("./mods/agent-tower/timeline.js");
   ui.now += 60000;
   await w.load(ui);
   assert.equal(state.notes, "one");
+}
+// R17. A cut-off render is drawn again within a second (Herdr's banner stays until it is): every copy
+//      with a clock asks once per cut (the cut one can't be told apart), and at most once a second.
+{
+  // Made in this order so the copies' shared fixture ends with the list's props.
+  const s = await copy({}, { props: { stage: true } });
+  const a = await copy();
+  const b = await copy();
+  const asked = (c) => {
+    let n = 0;
+    c.cx.notify = () => n++;
+    return () => [n, (n = 0)][0];
+  };
+  const [na, nb, ns] = [asked(a), asked(b), asked(s)];
+  // A copy's first ticks may redraw once for cuts from before it started.
+  await a.second();
+  await b.second();
+  await s.fire(250);
+  [na, nb, ns].forEach((n) => n());
+  b.fx.spin = true;
+  assert.ok(cut(() => a.v.render(a.cx)), "the render was cut off");
+  b.fx.spin = false;
+  await a.second();
+  await b.second();
+  await s.fire(250);
+  assert.deepEqual([na(), nb(), ns()], [1, 1, 1], "each copy asks for a redraw");
+  await a.second();
+  await b.second();
+  await s.fire(250);
+  assert.deepEqual([na(), nb(), ns()], [0, 0, 0], "no new cut: none");
+  // Every render cut (each next render's start counts the cut before): the stage's 250 ms tick asks
+  // once a second, not four times.
+  const counts = [];
+  for (let i = 0; i < 8; i++) {
+    b.fx.spin = true;
+    assert.ok(cut(() => a.v.render(a.cx)));
+    b.fx.spin = false;
+    await s.fire(250);
+    counts.push(ns());
+  }
+  // The first cut is counted by the second render's start, so the first ask comes on the second tick.
+  assert.deepEqual(counts, [0, 1, 0, 0, 0, 1, 0, 0], "at most once a second");
 }
 console.log("cutoff ok");
