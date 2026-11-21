@@ -176,4 +176,155 @@ const now = Date.UTC(2026, 10, 15, 12);
   }
 }
 
+// ── Guards: what everyday use costs today, held there (timeline-edges.md, step 0) ──
+// The ten-times record plus an index.json with one old gap (the person's Mac has one once the
+// hourly move ran). A lane worked out is a read of its events in a frame; a frame that works out
+// more than `cutAt` lanes is cut off as Herdr would. A frame "draws" when it comes back with the
+// same ids and element count as one uncut render of a fresh view on the same data and now.
+{
+  const fx = buildFixture("gaps10");
+  const evPath = `${fx.towerDir}/timeline/events.json`;
+  const index = { v: 1, at: fx.now - 5 * MIN, gaps: [{ m: "herdr", from: fx.now - 20 * 24 * 60 * MIN, to: fx.now - 20 * 24 * 60 * MIN + 9 * 60 * MIN }], tasks: {} };
+  globalThis.__fx = { files: { ...fx.files, [`${fx.towerDir}/timeline/index.json`]: JSON.stringify(index) },
+    shared: { "agent-tower.recorded": "guards" }, elements: 0, calls: 0, log: [] };
+  const listed = new Map(fx.agents.map((a) => [a.address, a.status]));
+  const theModel = () => model.taskModel({ terms: fx.terms, listed, spaces: fx.spaces, config: fx.config, changes: new Map(), seen: {}, now: fx.now, titles: {}, eye: null });
+  const THEME = new Proxy({}, { get: (_, k) => (typeof k === "string" ? "#808080" : undefined) });
+  const uiOf = (span, height = 720) => ({ now: fx.now, width: 1100, height, area: null, selectedKey: null, state: { span }, towerDir: fx.towerDir, here: "mac",
+    shape: "sidebar", notify() {}, select() {}, pick() {}, open() {}, goInto() {}, onMenu: (el) => el });
+  let counting = false;
+  let cutAt = Infinity;
+  let inFrame = new Set();
+  const worked = new Set();
+  let watched = null;
+  const watch = () => {
+    const h = T.history(fx.towerDir, null, fx.now);
+    if (h === watched) return;
+    watched = h;
+    for (const e of h.events) {
+      const msg = e.msg;
+      Object.defineProperty(e, "msg", { get() {
+        if (counting && watched === h && !inFrame.has(e.a)) {
+          inFrame.add(e.a);
+          worked.add(e.a);
+          if (inFrame.size > cutAt) for (;;) {}
+        }
+        return msg;
+      } });
+    }
+  };
+  const settle = async () => {
+    for (let k = 0; k < 10; k++) await new Promise((r) => setTimeout(r, 0));
+    watch();
+  };
+  const drawnAs = (f) => {
+    globalThis.__fx.ids = [];
+    globalThis.__fx.elements = 0;
+    const out = f();
+    const sig = out ? `${globalThis.__fx.elements}|${globalThis.__fx.ids.join(",")}` : null;
+    globalThis.__fx.ids = null;
+    return sig;
+  };
+  // One frame, cut off past `budget` lanes: its drawing, or null when cut.
+  const frameIn = (ui, budget = 20) => drawnAs(() => {
+    inFrame = new Set();
+    cutAt = budget;
+    counting = true;
+    try {
+      return vm.runInNewContext("f()", { f: () => T.render(THEME, theModel(), ui) }, { timeout: 300 });
+    } catch (e) {
+      assert.equal(e.code, "ERR_SCRIPT_EXECUTION_TIMEOUT", String(e));
+      return null;
+    } finally {
+      counting = false;
+    }
+  });
+  // An uncut render of a fresh view showing what `ui` shows.
+  const reference = (ui) => drawnAs(() => T.render(THEME, theModel(), { ...ui, state: { span: ui.state.span, tasks: ui.state.tasks, open: ui.state.open, quiet: ui.state.quiet } }));
+  let writes = 0;
+  // A recorder write: the gaps unchanged, a new stamp; with `add`, a new event on the newest lane;
+  // with `pretty`, the same record in new text.
+  const write = ({ add = true, pretty = false } = {}) => {
+    const ev = JSON.parse(globalThis.__fx.files[evPath]);
+    if (add) ev.events.push({ a: ev.events.at(-1).a, s: "idle", turn: 9000 + writes, at: fx.now - 1000, msg: null });
+    globalThis.__fx.files[evPath] = pretty ? JSON.stringify(ev, null, 1) : JSON.stringify(ev);
+    globalThis.__fx.shared["agent-tower.recorded"] = `guard write ${++writes}`;
+  };
+  // Loaded first (the record before this one has the cut-off spies of the block above).
+  T.history(fx.towerDir, null, fx.now);
+  await settle();
+  for (let i = 0; i < 3; i++) {
+    T.render(THEME, theModel(), uiOf(0));
+    await settle();
+  }
+  assert.equal(T.parseIndex(globalThis.__fx.files[`${fx.towerDir}/timeline/index.json`]).gaps.length, 1, "an index with a gap");
+  const numbers = [];
+
+  // G1: a reload with nothing changed keeps every lane; with one lane changed it redoes that one.
+  for (const span of [0, 4]) {
+    const ui = uiOf(span);
+    frameIn(ui, Infinity);
+    await settle();
+    assert.ok(frameIn(ui, Infinity), "drawn");
+    for (const how of [{ add: false }, { add: false, pretty: true }, { add: true }]) {
+      write(how);
+      await settle();
+      worked.clear();
+      frameIn(ui, Infinity);
+      await settle();
+      frameIn(ui, Infinity);
+      const want = how.add ? [watched.events.at(-1).a] : [];
+      assert.deepEqual([...worked], want, `span ${span}, ${JSON.stringify(how)}: lanes worked out again`);
+    }
+  }
+
+  // G2: a recorder write every 5 frames while the view draws over cut-off frames (1h and Week). The
+  // bar is kit main c1fa53a's count (the harness counts lanes, not time: the same on every run).
+  // G4, the now-line a pixel on, is in perf.test.mjs (PIXEL_BAR).
+  for (const [span, bar] of [[0, 57], [4, 52]]) {
+    const ui = uiOf(span);
+    let ref = reference(ui);
+    let drawn = 0;
+    for (let k = 0; k < 60; k++) {
+      if (k > 0 && k % 5 === 0) {
+        write();
+        await settle();
+        ref = reference(ui);
+      }
+      if (frameIn(ui) === ref) drawn++;
+      await settle();
+    }
+    numbers.push(`G2 span ${span}: drawn in ${drawn} of 60 frames`);
+    assert.ok(drawn >= bar, `span ${span}: drawn in ${drawn} of 60 frames (today ${bar})`);
+  }
+
+  // G3: the first finished render of a fresh view draws every lane: the window tall enough for all,
+  // every task, fold and quiet group open; drawn over cut-off frames, it equals one uncut render.
+  for (const span of [0, 2, 4]) {
+    const ui = uiOf(span, 100000);
+    const ref0 = reference(ui);
+    // Every task, fold and quiet group open.
+    const probe = { ...ui, state: { span } };
+    T.render(THEME, theModel(), probe);
+    ui.state = { span, tasks: {}, open: {}, quiet: {} };
+    for (const g of probe.state.cache.groups) {
+      ui.state.quiet[g.area] = true;
+      for (const task of g.tasks) ui.state.tasks[task.key] = ui.state.open[task.key] = true;
+    }
+    const ref = reference(ui);
+    assert.ok(ref.length > ref0.length, `span ${span}: all open draws more`);
+    let first = null;
+    let cuts = 0;
+    for (let k = 0; k < 60 && !first; k++) {
+      first = frameIn(ui);
+      if (!first) cuts++;
+      await settle();
+    }
+    numbers.push(`G3 span ${span}: first finished after ${cuts} cut frames, ${ref.split("|")[0]} elements`);
+    assert.ok(cuts >= 2, `span ${span}: bigger than a frame (${cuts} cut)`);
+    assert.equal(first, ref, `span ${span}: the first finished render draws all that an uncut one does`);
+  }
+  console.log(numbers.join("\n"));
+}
+
 console.log("gaps ok");

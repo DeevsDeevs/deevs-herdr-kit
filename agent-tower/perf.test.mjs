@@ -9,7 +9,8 @@
 // The gaps records (a Mac that slept with short wakes: many gaps, 175 lanes; and ten times that)
 // time Timeline alone: each frame, a rebuild whose lanes are kept, and a first draw. A first draw
 // may pass the budget (a cut one keeps its lanes, gaps.test.mjs), but only by FIRST_DRAW budgets,
-// and a rebuild with its lanes kept must fit one frame, or a cut-off first draw could never end.
+// and a rebuild with its lanes kept must fit one frame, or a cut-off first draw could never end. So
+// must the rebuild when the now-line moves a pixel (every 5 s at 1h).
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -37,6 +38,11 @@ export const V8_RATIO = 8;
 export const LIMITS = { mac: BUDGET_MS / 2, big: BUDGET_MS, gaps: BUDGET_MS / 2, gaps10: BUDGET_MS };
 // Budgets a first draw on the gaps records may take, spread over that many cut-off frames and more.
 export const FIRST_DRAW = { gaps: 2, gaps10: 4 };
+// The now-line a pixel on: under the budget, except where kit main c1fa53a was already over it
+// (each live lane is worked out again at every pixel). There the bar is that day's highest of three
+// runs plus 10% (gaps Week 55.1; gaps10 1h 76.2, 8h 144.1, Week 86.4): no step may make it worse.
+export const PIXEL_BAR = { "gaps|timeline Week, a pixel later": 61, "gaps10|timeline 1h, a pixel later": 84,
+  "gaps10|timeline 8h, a pixel later": 159, "gaps10|timeline Week, a pixel later": 95 };
 // Elements per render on the big record: about twice what each built at 15:40, except Timeline Week
 // and Month, which then built 11,600 and 9,900 (the over-budget renders) and must come down.
 const CEILING = { model: 0, "timeline Day": 3500, "timeline Week": 5000, "timeline Month": 5000, "timeline Day, all open": 5000, board: 700, radar: 800, watchlist: 700 };
@@ -122,7 +128,7 @@ for (const preset of PRESETS) {
   let speed = 1;
   let busy = false;
   let cal = null;
-  const limitOf = (r) => (r.case.includes("first draw") ? FIRST_DRAW[preset] * BUDGET_MS : r.case.includes("lanes kept") ? BUDGET_MS : limit);
+  const limitOf = (r) => (r.case.includes("first draw") ? FIRST_DRAW[preset] * BUDGET_MS : /lanes kept|pixel later/.test(r.case) ? PIXEL_BAR[`${preset}|${r.case}`] ?? BUDGET_MS : limit);
   if (qjs) {
     rows = await timeViews(preset);
     // One slow run is not a failure: a view over the limit is timed again, and its faster median counts.
@@ -139,7 +145,7 @@ for (const preset of PRESETS) {
   const how = qjs ? `${engine} × ${scale}` : `${engine} × ${scale} × ${speed.toFixed(2)} (calibration ${cal} ms, quiet ${CAL_REF_MS})`;
   console.log(`${preset} record, ${how} = projected Mac ms (limit ${limit}): ${rows.map((r) => `${r.case} ${mac(r)}`).join(", ")}`);
   if (busy) console.log("perf: machine busy, limits skipped");
-  assert.deepEqual(rows.map((r) => r.case).filter((c) => /board|radar|watchlist|timeline/.test(c)).length, gapsRecord(preset) ? 8 : 7, "every view timed");
+  assert.deepEqual(rows.map((r) => r.case).filter((c) => /board|radar|watchlist|timeline/.test(c)).length, gapsRecord(preset) ? 11 : 7, "every view timed");
   for (const r of rows) {
     if (!busy) assert.ok(mac(r) <= limitOf(r), `${preset} record, ${r.case}: projected ${mac(r)} ms on the Mac (${r.median} ms in ${engine}), over ${limitOf(r)}`);
     if (preset === "big") assert.ok(r.elements <= (CEILING[r.case] ?? 700), `${r.case}: ${r.elements} elements, over ${CEILING[r.case] ?? 700}`);
