@@ -130,6 +130,73 @@ const now = Date.UTC(2026, 10, 15, 12);
   }
 }
 
+// ── Case 3: a gap that ended before the span's start still cuts a stretch that crosses the start ──
+// Working from 3 h ago, then an ask from 50 min ago; Herdr was closed from 2 h ago to 70 min ago.
+// Each span (1h to Month) has the same stretches, draws the 1h mark from where the gap ended, and
+// counts the same longest wait.
+{
+  const dir = "/made/up/case3";
+  const ev = { v: 1, beat: now, lanes: { t1: { task: "task:c3", taskId: "c3", taskTitle: "Made-up task", role: "lead", name: "lead", machine: null, created: now - 4 * 3600e3 } },
+    events: [{ a: "t1", s: "working", turn: 1, at: now - 180 * MIN, msg: null }, { a: "t1", s: "blocked", turn: 1, at: now - 50 * MIN, msg: "Made-up question?" },
+      { a: "t1", s: "idle", turn: 2, at: now - 15 * MIN, msg: null },
+      { a: "t2", s: "blocked", turn: 1, at: now - 180 * MIN, msg: "Another made-up question?" }, { a: "t2", s: "idle", turn: 2, at: now - 30 * MIN, msg: null }],
+    looks: [], gaps: [{ m: "herdr", from: now - 120 * MIN, to: now - 70 * MIN }] };
+  ev.lanes.t2 = { ...ev.lanes.t1, role: "worker", name: "worker" };
+  globalThis.__fx = { files: { [`${dir}/timeline/events.json`]: JSON.stringify(ev) }, shared: { "agent-tower.recorded": "case 3" }, elements: 0, calls: 0, log: [] };
+  T.history(dir, null, now);
+  for (let k = 0; k < 10; k++) await new Promise((r) => setTimeout(r, 0));
+  const THEME = new Proxy({}, { get: (_, k) => (typeof k === "string" ? "#808080" : undefined) });
+  const m = { areas: [], items: [] };
+  const seen = T.SPANS.map((_, span) => {
+    const ui = { now, width: 1100, height: 720, state: { span, tasks: { "task:c3": true } }, towerDir: dir, here: "mac", notify() {}, select() {}, pick() {}, open() {}, goInto() {}, onMenu: (el) => el };
+    globalThis.__fx.ids = [];
+    T.render(THEME, m, ui);
+    const ids = globalThis.__fx.ids;
+    globalThis.__fx.ids = null;
+    const lane = (a) => ui.state.cache.shown.find((l) => l.a === a).stretches.map((st) => [st.s, (now - st.from) / MIN, (now - st.to) / MIN]);
+    const longest = ui.state.cache.att.longest;
+    return { span: T.SPANS[span].name, t1: lane("t1"), t2: lane("t2"), longest: longest && [longest.lane.a, longest.waited / MIN], ids };
+  });
+  assert.deepEqual(seen[2].t1, [["working", 180, 120], ["working", 70, 50], ["blocked", 50, 15], ["idle", 15, 0]]);
+  assert.deepEqual(seen[2].t2, [["blocked", 180, 120], ["blocked", 70, 30], ["idle", 30, 0]]);
+  for (const s of seen) assert.deepEqual([s.t1, s.t2], [seen[2].t1, seen[2].t2], `${s.span} as 8h`);
+  // The longest wait counts the asks in the span, cut: at 1h the 40 minutes after the gap, not 150.
+  assert.deepEqual(seen.map((s) => s.longest), [["t2", 40], ...seen.slice(1).map(() => ["t2", 60])]);
+  assert.ok(seen[0].ids.includes(`s-t1-${now - 70 * MIN}`) && !seen[0].ids.includes(`s-t1-${now - 180 * MIN}`), "1h draws the working mark from where the gap ended");
+}
+
+// ── Case 3, round 1: the Workers lane counts the same asks however the view got to Week ──
+// An ended worker's ask that ends just before the Week start, cut by a Herdr gap, and one inside the
+// span. A view that showed Month first keeps the lane cut for Month's start; Week counts neither
+// piece of the ask before its start.
+{
+  const dir = "/made/up/case3w";
+  const D = 24 * 60 * MIN;
+  const lane = { task: "task:c3w", taskId: "c3w", taskTitle: "Made-up task", machine: null, created: now - 9 * D };
+  const ev = { v: 1, beat: now, lanes: { t0: { ...lane, role: "lead", name: "lead" }, t1: { ...lane, role: "worker", name: "worker" } },
+    events: [{ a: "t0", s: "working", turn: 1, at: now - 9 * D, msg: null },
+      { a: "t1", s: "blocked", turn: 1, at: now - 7 * D - 60 * MIN, msg: "Made-up question?" }, { a: "t1", s: "idle", turn: 2, at: now - 7 * D - 2 * MIN, msg: null },
+      { a: "t1", s: "blocked", turn: 2, at: now - 7 * D + 5 * MIN, msg: "Another made-up question?" }, { a: "t1", s: "idle", turn: 3, at: now - 7 * D + 20 * MIN, msg: null },
+      { a: "t1", s: "ended", turn: null, at: now - D, msg: null }],
+    looks: [], gaps: [{ m: "herdr", from: now - 7 * D - 40 * MIN, to: now - 7 * D - 30 * MIN }] };
+  globalThis.__fx = { files: { [`${dir}/timeline/events.json`]: JSON.stringify(ev) }, shared: { "agent-tower.recorded": "case 3w" }, elements: 0, calls: 0, log: [] };
+  T.history(dir, null, now);
+  for (let k = 0; k < 10; k++) await new Promise((r) => setTimeout(r, 0));
+  const THEME = new Proxy({}, { get: (_, k) => (typeof k === "string" ? "#808080" : undefined) });
+  const m = { areas: [], items: [] };
+  const uiOf = () => ({ now, width: 1100, height: 720, state: { span: 4, tasks: { "task:c3w": true } }, towerDir: dir, here: "mac", notify() {}, select() {}, pick() {}, open() {}, goInto() {}, onMenu: (el) => el });
+  const asks = (ui) => ui.state.cache.groups.flatMap((g) => g.tasks).flatMap((tk) => tk.workers?.asks ?? []).map(([l, st]) => [l.a, st.n ?? 1]);
+  const fresh = uiOf();
+  T.render(THEME, m, fresh);
+  const fromMonth = uiOf();
+  fromMonth.state.span = 5;
+  T.render(THEME, m, fromMonth);
+  fromMonth.state.span = 4;
+  T.render(THEME, m, fromMonth);
+  assert.deepEqual(asks(fresh), [["t1", 1]], "Week counts the ask inside it");
+  assert.deepEqual(asks(fromMonth), asks(fresh), "Month, then Week: the same asks");
+}
+
 // ── Files written before the join read joined (events.json and index.json) ──
 {
   const gaps = [];
