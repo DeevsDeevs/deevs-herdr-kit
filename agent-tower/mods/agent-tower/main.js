@@ -3165,8 +3165,8 @@ export default class AgentTasks extends View {
       // Written again only when something in them changed.
       const indexWas = JSON.stringify({ ...index, at: 0 });
       const endedWas = JSON.stringify(ended);
-      // joinGaps keeps the copy of a gap that covers most (a joined one over its parts).
-      index.gaps = model.joinGaps([...index.gaps, ...part.gaps]).sort((x, y) => x.from - y.from);
+      const gapKey = (g) => `${g.m}|${g.from}`;
+      index.gaps = model.joinGaps([...new Map([...index.gaps, ...part.gaps].map((g) => [gapKey(g), g])).values()].sort((x, y) => x.from - y.from));
       const parts = new Map(part.tasks.map((t) => [t.key, t]));
       // Timeline's rebuilt pasts go into the task files too (backfill.json drops them after 7 days).
       const fill = (await this.readJson(`${dir}/backfill.json`, () => ({}))).value;

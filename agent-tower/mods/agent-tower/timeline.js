@@ -618,56 +618,18 @@ const machineOf = (address) => (address.includes("/") ? address.split("/")[0] : 
 // A task's one line: at each moment the most urgent thing any of its agents did (Needs you, Working,
 // the lead's Done, Idle; a worker's Done counts as Idle, as in the list). Recorded beats rebuilt.
 const RANK_OF = { blocked: 4, working: 3, done: 2, idle: 1 };
-// gaps: Herdr's, which every lane shares: then each lane's lineStretches (not cut by them) are swept,
-// and nothing is given out inside them. The same pieces as sweeping the lanes' stretches cut by them:
-// a piece is split at a gap's edges and none starts inside one, so none joins across it.
-export function summaryOf(task, from = -Infinity, to = Infinity, gaps = null) {
+export function summaryOf(task, from = -Infinity, to = Infinity) {
   // Only what the span shows, in one sweep over the cuts: at each, the most urgent piece active (the
   // first, among equals). A day of rebuilt past is hundreds of pieces; never compare all with all.
   const rank = (st, lane) => 2 * (RANK_OF[st.s === "done" && lane.role !== "lead" ? "idle" : st.s] ?? 0) + (st.how ? 0 : 1);
   const edges = [];
   let i = 0;
-  const c = gaps ? cover(gaps) : null;
-  // The first gap whose end is past t (or at it, with orAt).
-  const gapAfter = (t, orAt) => {
-    let lo = 0;
-    let hi = c.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (orAt ? c[mid].to < t : c[mid].to <= t) lo = mid + 1;
-      else hi = mid;
-    }
-    return lo;
-  };
   for (const lane of [...task.lanes, ...task.folded]) {
-    for (const st of (gaps ? lane.lineStretches ?? lane.stretches : lane.stretches) ?? []) {
-      let a = st.from;
-      let b = st.to;
-      // Not cut by the gaps: only from the first piece the cut one would show (one that ends after
-      // from) to the end of the last (one that starts before to).
-      if (c && a < from) {
-        const k = gapAfter(from, false);
-        a = k < c.length && c[k].from <= from ? Math.max(a, c[k].to) : Math.max(a, k > 0 ? c[k - 1].to : a);
-      }
-      if (c && b > to) {
-        const k = gapAfter(to, true);
-        if (k < c.length) b = Math.min(b, c[k].from);
-      }
-      if (b <= a || b <= from || a >= to) continue;
+    for (const st of lane.stretches ?? []) {
+      if (st.to <= st.from || st.to <= from || st.from >= to) continue;
       const p = { st, lane: st.lane ?? lane, r: rank(st, lane), i: i++ };
-      edges.push([a, 1, p], [b, -1, p]);
+      edges.push([st.from, 1, p], [st.to, -1, p]);
     }
-  }
-  // A gap's edges as edges with no piece (p null): inside one, nothing is given out.
-  let inGap = 0;
-  if (c && edges.length) {
-    let lo = Infinity;
-    let hi = -Infinity;
-    for (const e of edges) {
-      lo = Math.min(lo, e[0]);
-      hi = Math.max(hi, e[0]);
-    }
-    for (let k = gapAfter(lo, false); k < c.length && c[k].from < hi; k++) edges.push([c[k].from, 1, null], [c[k].to, -1, null]);
   }
   edges.sort((x, y) => x[0] - y[0]);
   const active = Array.from({ length: 10 }, () => new Set());
@@ -675,14 +637,12 @@ export function summaryOf(task, from = -Infinity, to = Infinity, gaps = null) {
   for (let k = 0; k < edges.length;) {
     const a = edges[k][0];
     for (; k < edges.length && edges[k][0] === a; k++) {
-      const p = edges[k][2];
-      if (!p) inGap += edges[k][1];
-      else if (edges[k][1] > 0) active[p.r].add(p);
+      const [, d, p] = edges[k];
+      if (d > 0) active[p.r].add(p);
       else active[p.r].delete(p);
     }
     if (k >= edges.length) break;
     const b = edges[k][0];
-    if (inGap > 0) continue;
     let best = null;
     for (let r = 9; r >= 0 && !best; r--) for (const p of active[r]) if (!best || p.i < best.i) best = p;
     if (!best) continue;
@@ -702,39 +662,30 @@ export const isQuiet = (task, start) => !task.lanes.some((l) => l.live === "bloc
 
 // Every Needs-you stretch in the shown lanes since `since`: how long it waited, how soon you looked.
 export function attention(h, lanes, since, now) {
-  // Counted as they go: only the open ones and the longest are copied with their lane (a week of
-  // asks cut by many gaps is thousands of pieces).
-  let count = 0;
-  let waited = 0;
-  const open = [];
-  let longest = null;
-  let longestLane = null;
+  const all = [];
   for (const lane of lanes) {
     // A lane's asks (all of them, with when you first looked) are kept with its memo while its
     // stretches and the looks hold; the span's start only filters them.
     const k = `${h.looks.length}|${h.looks.at(-1)?.at ?? 0}`;
-    let mine = lane.memo?.asksKey === k && lane.memo.asksOf === lane.stretches ? lane.memo.asks : null;
-    if (!mine) {
-      mine = [];
-      for (const st of lane.stretches) {
-        if (st.s !== "blocked" || st.how === "guessed") continue;
-        const seen = firstLook(h, lane.a, st.from, st.to);
-        mine.push({ ...st, waited: st.to - st.from, seenAfter: seen == null ? null : seen - st.from });
-      }
-      if (lane.memo) Object.assign(lane.memo, { asksKey: k, asksOf: lane.stretches, asks: mine });
+    if (lane.memo?.asksKey === k && lane.memo.asksOf === lane.stretches) {
+      for (const x of lane.memo.asks) if (x.to >= since) all.push({ ...x, lane });
+      continue;
     }
-    for (const x of mine) {
-      if (x.to < since) continue;
-      count++;
-      waited += x.to - Math.max(x.from, since);
-      if (x.ongoing) open.push({ ...x, lane });
-      if (!longest || x.waited > longest.waited) {
-        longest = x;
-        longestLane = lane;
-      }
+    const mine = [];
+    for (const st of lane.stretches) {
+      if (st.s !== "blocked" || st.how === "guessed") continue;
+      const seen = firstLook(h, lane.a, st.from, st.to);
+      mine.push({ ...st, waited: st.to - st.from, seenAfter: seen == null ? null : seen - st.from });
     }
+    if (lane.memo) Object.assign(lane.memo, { asksKey: k, asksOf: lane.stretches, asks: mine });
+    for (const x of mine) if (x.to >= since) all.push({ ...x, lane });
   }
-  return { count, open, waited, longest: longest && { ...longest, lane: longestLane } };
+  return {
+    count: all.length,
+    open: all.filter((x) => x.ongoing),
+    waited: all.reduce((sum, x) => sum + x.to - Math.max(x.from, since), 0),
+    longest: all.reduce((best, x) => (!best || x.waited > best.waited ? x : best), null),
+  };
 }
 
 // What the Details card is told about a picked stretch (shape agreed with t47).
@@ -831,7 +782,7 @@ const preparedCut = new WeakMap();
 const preparedMemo = new WeakMap();
 
 // A lane's file past up to where the recorder takes over, minus its gaps: kept per list while those
-// hold (the same gaps array: gapList keeps one per gaps list and machine).
+// hold (the same gaps array: gapsOnce keeps it while its gaps are the same).
 const olderMemo = new WeakMap();
 function olderOnce(list, first, gaps) {
   if (!list?.length) return [];
@@ -1022,21 +973,26 @@ function withIndexGaps(recorded, indexGaps = []) {
   return joinedLast.h;
 }
 
-// The gaps that cut one machine's lanes: all of them, whatever the span (a stretch is the same in
-// every span), an open one running on for good (nothing after its start is drawn, now or later, so
-// what it cuts does not move with now). One array per gaps list and machine, shared by every view:
-// a lane's memo and cutGaps' cover hold across frames, spans and views. Released with the list.
-// Herdr's gaps ("herdr") and each machine's are kept apart: Herdr's cut every lane at the same
-// moments, so a task's line sweeps its lanes cut by their machines' gaps only and leaves Herdr's
-// out as it goes (summaryOf's cuts): the same pieces, without one per gap per lane.
-const cutLists = new WeakMap();
-function gapList(h, m) {
-  let byKey = cutLists.get(h.gaps);
-  if (!byKey) cutLists.set(h.gaps, (byKey = new Map()));
-  if (!byKey.has(m)) byKey.set(m, h.gaps.filter((g) => g.m === m).map((g) => (g.to == null ? { ...g, to: Infinity } : g)));
-  return byKey.get(m);
+// The gaps over one machine's lanes in the span, as drawn: those less than a pixel apart joined (what
+// lies between could not show). Kept as the same array while they are the same, so a lane's memo and
+// cutGaps' cover hold across rebuilds. Once per machine per rebuild; its size is the span's, not the
+// history's: lanes are cut only where the span shows them.
+const gapsKept = new Map();
+const closedJoined = new WeakMap();
+function gapsOnce(h, machine, now, start, pxMs) {
+  // The closed ones joined once per gaps list, machine and pixel size; the span and open ones each rebuild.
+  let byKey = closedJoined.get(h.gaps);
+  if (!byKey) closedJoined.set(h.gaps, (byKey = new Map()));
+  const ck = `${machine ?? ""}|${pxMs}`;
+  if (!byKey.has(ck)) byKey.set(ck, model.joinGaps(gapsFor({ gaps: h.gaps.filter((g) => g.to != null) }, machine, now), pxMs));
+  const open = gapsFor({ gaps: h.gaps.filter((g) => g.to == null) }, machine, now, start);
+  const all = model.joinGaps([...byKey.get(ck).filter((g) => g.to > start), ...open], pxMs);
+  const key = all.map((g) => `${g.m}:${g.from}-${g.to}`).join(",");
+  const was = gapsKept.get(machine ?? "");
+  if (was?.key === key) return was.all;
+  gapsKept.set(machine ?? "", { key, all });
+  return all;
 }
-const NO_GAPS = [];
 
 // What of the model Timeline draws from, as one string: a new model object each frame is not a change.
 const modelKey = (m) => (m.areas ?? []).map((a) => `${a.id}:${a.label}`).join(",") + "\n" + (m.items ?? []).map((i) => [i.key, i.area, i.title, i.word, i.status, i.group, i.changed, i.stale ? 1 : 0, i.leadGone ? 1 : 0,
@@ -1100,12 +1056,15 @@ export function render(t, m, ui) {
     const laneMemo = (view.laneMemo ??= new Map());
     const nextMemo = new Map();
     const bucket = `${Math.floor(now / pxMs)}|${view.span}|${pastW}`;
-    const herdrGaps = gapList(h, "herdr");
+    // Per machine: its gaps in the span, to cut and to draw with.
+    const gapsBy = new Map();
     for (const lane of allLanes) {
-      const machineGaps = lane.machine ? gapList(h, lane.machine) : NO_GAPS;
+      const gm = lane.machine ?? "";
+      if (!gapsBy.has(gm)) gapsBy.set(gm, gapsOnce(h, lane.machine, now, start, pxMs));
+      lane.gaps = gapsBy.get(gm);
       // A lane only a task file has, prepared when the file loaded: nothing to work out per rebuild.
       if (lane.fileOnly && lane.pastCut) {
-        lane.stretches = lane.lineStretches = lane.pastCut;
+        lane.stretches = lane.pastCut;
         let m = preparedMemo.get(lane.pastCut);
         if (!m || m.bucket !== bucket) preparedMemo.set(lane.pastCut, (m = { bucket, stretches: lane.pastCut }));
         lane.memo = m;
@@ -1118,36 +1077,29 @@ export function render(t, m, ui) {
       let was = laneMemo.get(key);
       // Stretches that nothing ongoing ties to now hold across the now-line's pixels; only their marks
       // are worked out again. So a rebuild spread over cut-off frames still ends at 1h, where a pixel is seconds.
-      if (was && was.sig === sig && was.herdrGaps === herdrGaps && was.machineGaps === machineGaps && was.past === lane.past && was.pastCut === lane.pastCut && was.entry === entry
+      if (was && was.sig === sig && was.gaps === lane.gaps && was.past === lane.past && was.pastCut === lane.pastCut && was.entry === entry
         && (was.bucket === bucket || was.timeless)) {
         if (was.bucket !== bucket) laneMemo.set(key, (was = { ...was, bucket, marks: null }));
         lane.stretches = was.stretches;
-        lane.lineStretches = was.lineStretches;
         if (entry?.turns) lane.rebuilt = entry;
         lane.memo = was;
         nextMemo.set(key, was);
         continue;
       }
       // A lane only a task file has: its address may be another agent's in events.json now.
-      // stretches: cut by every gap of the lane (its machine's and Herdr's); lineStretches: by its
-      // machine's only, for the task's line. Cutting by one list and then the other is cutting by both.
-      const recentM = lane.fileOnly ? [] : stretches(h, lane.a, now, { live: lane.live, since: lane.since, gaps: machineGaps });
-      const recent = cutGaps(recentM, herdrGaps);
+      const recent = lane.fileOnly ? [] : stretches(h, lane.a, now, { live: lane.live, since: lane.since, gaps: lane.gaps });
       const first = recent[0]?.from ?? Infinity;
-      const olderM = olderOnce(lane.past, first, machineGaps);
-      lane.stretches = [...cutGaps(olderM, herdrGaps), ...recent];
-      lane.lineStretches = [...olderM, ...recentM];
+      // A lane only a file has was cut by the index's gaps when the file loaded.
+      lane.stretches = lane.fileOnly && lane.pastCut ? lane.pastCut : [...olderOnce(lane.past, first, lane.gaps), ...recent];
       const timeless = !lane.live && lane.stretches.length > 0 && !lane.stretches.some((st) => st.ongoing);
       if (entry?.turns) {
         lane.rebuilt = entry;
         if (!lane.fileOnly && !lane.stretches.some((st) => st.how)) {
           const until = lane.stretches[0]?.from ?? now;
-          const rebuiltM = cutGaps(rebuiltOnce(entry, lane.created, until), machineGaps);
-          lane.stretches = [...cutGaps(rebuiltM, herdrGaps), ...lane.stretches];
-          lane.lineStretches = [...rebuiltM, ...lane.lineStretches];
+          lane.stretches = [...cutGaps(rebuiltOnce(entry, lane.created, until), lane.gaps), ...lane.stretches];
         }
       }
-      lane.memo = { sig, bucket, timeless, herdrGaps, machineGaps, past: lane.past, pastCut: lane.pastCut, entry, stretches: lane.stretches, lineStretches: lane.lineStretches };
+      lane.memo = { sig, bucket, timeless, gaps: lane.gaps, past: lane.past, pastCut: lane.pastCut, entry, stretches: lane.stretches };
       laneMemo.set(key, lane.memo);
       nextMemo.set(key, lane.memo);
     }
@@ -1158,17 +1110,10 @@ export function render(t, m, ui) {
     const shownGroups = view.needs ? byArea.map((g) => ({ ...g, tasks: g.tasks.filter(hasAsk) })).filter((g) => g.tasks.length) : byArea;
     const shown = shownGroups.flatMap((g) => g.tasks.flatMap((task) => [...task.lanes, ...task.folded]));
     const att = attention(h, shown, start, now);
-    view.cache = { key: cacheKey, groups, byArea, shownGroups, shown, att, bands: new Map(), herdrGaps };
+    const herdrBands = gapsBy.get("") ?? gapsOnce(h, null, now, start, pxMs);
+    view.cache = { key: cacheKey, groups, byArea, shownGroups, shown, att, herdrBands };
   }
-  const { groups, byArea, shownGroups, shown, att } = view.cache;
-  // The grey bands of one machine's lanes: its gaps in the span, those under a pixel apart drawn as
-  // one (only the bands: marks over them still show). Once per machine per rebuild, with the cache.
-  const bandsOf = (machine) => {
-    const k = machine ?? "";
-    if (!view.cache.bands.has(k)) view.cache.bands.set(k, model.joinGaps(gapsFor(h, machine, now, start).filter((g) => g.from < now), pxMs));
-    return view.cache.bands.get(k);
-  };
-  const herdrBands = bandsOf(null);
+  const { groups, byArea, shownGroups, shown, att, herdrBands } = view.cache;
 
   // The click grammar (paths-grammar.md), through the stage's helpers: a task goes in (rule 1); an
   // agent goes in with that agent open (rules 2, 3); a stretch stays here and shows its moment.
@@ -1286,24 +1231,25 @@ export function render(t, m, ui) {
   // (it does not change while the file stays), and only what is newer than the file is summed now.
   const lineMarks = (task) => {
     const file = task.file;
-    const herdrGaps = view.cache.herdrGaps;
     if (!file?.summary) {
-      const line = summaryOf(task, start, now, herdrGaps);
+      const line = summaryOf(task, start, now);
       return toPixels(long ? forSpan(line, pxMs) : line, pxMs);
     }
     const cut = file.until ?? now;
     const older = fileMarksFor(file, pxMs, long, span.ms).filter((st) => st.to > start && st.from < cut);
     // Not in the file: the recorder's newer stretches (clipped at the file's until, which holds the
     // rest), and anything rebuilt or guessed (a transcript's past, a forgotten agent), at any age.
-    // rebuiltOld from the lane as drawn (cut by every gap); the line from lineStretches.
-    const rebuiltOld = [...task.lanes, ...task.folded].some((l) => (l.stretches ?? []).some((st) => !st.file && st.how && st.from < cut));
-    const recentOnly = (l) => ({ ...l, lineStretches: undefined, stretches: (l.lineStretches ?? l.stretches ?? []).flatMap((st) => {
+    let rebuiltOld = false;
+    const recentOnly = (l) => ({ ...l, stretches: (l.stretches ?? []).flatMap((st) => {
       if (st.file) return [];
-      if (st.how) return [st];
+      if (st.how) {
+        if (st.from < cut) rebuiltOld = true;
+        return [st];
+      }
       if (st.to <= cut) return [];
       return [st.from < cut ? { ...st, from: cut } : st];
     }) });
-    const recent = summaryOf({ lanes: task.lanes.map(recentOnly), folded: task.folded.map(recentOnly) }, start, now, herdrGaps);
+    const recent = summaryOf({ lanes: task.lanes.map(recentOnly), folded: task.folded.map(recentOnly) }, start, now);
     // The row's cap is shared: the recent part gets its share of the span (all of it with old rebuilt work).
     const share = rebuiltOld ? MAX_MARKS : Math.max(4, Math.ceil((MAX_MARKS * (now - Math.max(start, cut))) / span.ms));
     return [...older, ...toPixels(long ? forSpan(recent, pxMs) : recent, pxMs, share)];
@@ -1342,7 +1288,7 @@ export function render(t, m, ui) {
     const knownFrom = lane.rebuilt || lane.stretches[0]?.how ? (lane.stretches[0]?.from ?? firstKnown ?? now) : firstKnown ?? now;
     const unknown = lane.created != null && (firstKnown == null ? lane.live : true) && lane.created < knownFrom - 1000
       ? band(lane.a, lane.created, knownFrom, firstKnown == null && !lane.rebuilt ? "Not recorded yet" : "Before recording") : null;
-    const gaps = bandsOf(lane.machine).map((g) => band(lane.a, g.from, g.to, g.m === "herdr" ? "Not recorded: Herdr was closed" : `Not recorded: ${g.m} did not answer`));
+    const gaps = lane.gaps.map((g) => band(lane.a, g.from, g.to, g.m === "herdr" ? "Not recorded: Herdr was closed" : `Not recorded: ${g.m} did not answer`));
     const asking = lane.live === "blocked";
     // Hover names it: the agent and where it runs.
     const label = h_flex().id(`l-${lane.a}`).w(LABEL_W).flex_none().h(LANE_H).items_center().gap(6).pl(30).pr(10)
@@ -1494,10 +1440,7 @@ export function render(t, m, ui) {
 
   // Where your focus was, in Herdr with its window in front. One ink; the tooltip names the agent.
   // Worked out once per rebuild (a month of looks is thousands), kept with the cache.
-  // Kept per view while the looks, the shown lanes' names and the now-line's pixel hold.
-  const lookedKey = `${Math.floor(now / pxMs)}|${view.span}|${pastW}|${shown.map((l) => `${l.a}:${l.name}`).join(",")}`;
-  if (view.looked?.looks !== h.looks || view.looked.key !== lookedKey) view.looked = { looks: h.looks, key: lookedKey, marks: lookedMarks() };
-  const looked = view.looked.marks;
+  const looked = (view.cache.looked ??= lookedMarks());
   function lookedMarks() {
     const names = new Map(shown.map((l) => [l.a, l]));
     // Looks less than two pixels apart are one mark (naming up to three agents), at most MAX_MARKS.
