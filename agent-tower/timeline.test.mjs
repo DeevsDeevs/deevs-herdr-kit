@@ -504,6 +504,14 @@ const recorded = {
   assert.deepEqual(F.turnsAsk(gone, got, now), { key: `t71@${ago(300)}`, pid: null, argv: ["claude", "brief"], cwd: "/home/me/work/e1", created_s: 18000, finished_s: 3600 });
   assert.equal(F.turnsAsk(gone, { ...got, created_ms: ago(10) }, now), null, "the address is another agent's now");
   assert.equal(F.turnsAsk(gone, null, now), null);
+  // Another lane of the machine began within 2 minutes with the same message (its last word), or with one
+  // unknown: a twin. Another message, or further apart: not.
+  assert.equal(F.turnsAsk(gone, got, now, [{ created: ago(300) + 90e3, argv: ["/made/up/worker-x", "brief"] }]).twin, true);
+  assert.equal(F.turnsAsk(gone, got, now, [{ created: ago(300) - 30e3, argv: null }]).twin, true, "its run line unknown");
+  assert.equal(F.turnsAsk(gone, got, now, [{ created: ago(300) + 30e3, argv: ["claude", "another"] }, { created: ago(303), argv: ["claude", "brief"] }]).twin, undefined);
+  // An argv that is not a list (hc's answer odd): unknown, never a throw.
+  assert.equal(F.turnsAsk(gone, got, now, [{ created: ago(300), argv: {} }]).twin, true, "a neighbour's argv {}: unknown");
+  assert.deepEqual(F.turnsAsk(gone, { ...got, argv: {} }, now, [{ created: ago(300), argv: ["claude", "brief"] }]).argv, [], "its own argv {}: sent as none");
 
   const mNow = now / 1000 + 100;
   const sec = (m) => mNow - m * 60;
@@ -513,11 +521,13 @@ const recorded = {
     t70: { task: "task:e1", taskId: "e1", role: "lead", name: "lead", area: "work", created: ago(100) },
     t71: { task: "task:e1", taskId: "e1", role: "worker", name: "e1-fix", area: "work", created: ago(300) },
     t72: { task: "task:e1", taskId: "e1", role: "worker", name: "e1-test", area: "work", created: ago(280) },
-  }, events: [{ a: "t70", s: "working", at: ago(100) }, { a: "t71", s: "working", at: ago(100) }, { a: "t71", s: "ended", at: ago(60) },
+    t73: { task: "task:e1", taskId: "e1", role: "worker", name: "e1-again", area: "work", created: ago(299) },
+  }, events: [{ a: "t73", s: "working", at: ago(299) }, { a: "t70", s: "working", at: ago(100) }, { a: "t71", s: "working", at: ago(100) }, { a: "t71", s: "ended", at: ago(60) },
     { a: "t72", s: "working", at: ago(90) }, { a: "t72", s: "ended", at: ago(70) }], looks: [], gaps: [] }));
   tl.shared.set(F.RECORDED, 20);
   const asked = [];
-  tl.hc = (args) => Promise.resolve(args[1] === "t71" ? { code: 0, stdout: JSON.stringify(got) } : { code: 1, stdout: "" });
+  const hcGot = { t71: got, t73: { ...got, state: "live", created_ms: ago(299), finished_ms: null, argv: ["/made/up/worker-x", "brief"] } };
+  tl.hc = (args) => Promise.resolve(hcGot[args[1]] ? { code: 0, stdout: JSON.stringify(hcGot[args[1]]) } : { code: 1, stdout: "" });
   tl.exec = (cmd, args, opts) => {
     const req = JSON.parse(args[4]);
     asked.push([opts.on, req]);
@@ -543,7 +553,8 @@ const recorded = {
   // (1) The ended agent hc still lists: one turns request by folder and time; the one hc forgot is remembered as gone.
   const turnsReq = asked.filter(([, r]) => r.turns);
   assert.equal(turnsReq.length, 1);
-  assert.deepEqual(turnsReq[0][1].turns.terminals.map((x) => [x.key, x.created_s, x.finished_s, x.pid]), [[`t71@${ago(300)}`, 18000, 3600, null]]);
+  assert.deepEqual(turnsReq[0][1].turns.terminals.map((x) => [x.key, x.created_s, x.finished_s, x.pid, x.twin ?? false]), [[`t71@${ago(300)}`, 18000, 3600, null, true]],
+    "t73 began a minute after t71 with the same message: t71 is asked as a twin");
   const cache = JSON.parse(tl.files.get(`${dir}/timeline/backfill.json`));
   assert.equal(cache[`t71@${ago(300)}`].turns.length, 1);
   assert.equal(cache[`t72@${ago(280)}`].gone, true, "hc forgot it: not asked again");

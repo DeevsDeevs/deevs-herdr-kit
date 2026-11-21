@@ -574,6 +574,168 @@ assert.deepEqual(readAs({ tasks: { ids: ["q2-trip"] } }).tasks.map((t) => t.sess
 const unchanged = readAs({ tasks: { ids: ["k7-ledger"], since_s: 86400, have: { [found.tasks[0].path]: [found.tasks[0].mtime, found.tasks[0].size] } } });
 assert.deepEqual([unchanged.tasks[0].same, unchanged.tasks[0].turns], [true, undefined]);
 
+// Ended and forgotten Antigravity (agy) agents. Ended: only a run line that runs agy; the one
+// conversation whose whole first message is the run line's, begun while the terminal ran and within
+// 120 s of its creation, last written by its end, put in no other folder by history.jsonl, with no twin
+// anywhere since the creation and no other terminal of the request on it. Only conversations whose
+// folder was made in that start window are opened; with that time unknown, many candidates give
+// nothing. By task or folder: only conversations history.jsonl puts in one folder. An odd agy record
+// never breaks the reply.
+{
+  const home = mkdtempSync(join(tmpdir(), "tower-agy-past-"));
+  const agyHome = join(home, ".gemini/antigravity-cli");
+  const step = (i, type, s, more = {}) => ({ step_index: i, source: type === "USER_INPUT" ? "USER_EXPLICIT" : "MODEL", type, status: "DONE", created_at: at(s), ...more });
+  const asked = (text) => `<USER_REQUEST>\n${text}\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nmade up\n</ADDITIONAL_METADATA>`;
+  // A conversation that began `start` s ago with `brief` and was last written `end` s ago.
+  const born = {};
+  const talk = (id, start, end, brief, first = null) => {
+    born[id] = start + 1;
+    const logs = join(agyHome, "brain", id, ".system_generated/logs");
+    execFileSync("mkdir", ["-p", logs]);
+    const path = join(logs, "transcript.jsonl");
+    writeFileSync(path, [first ?? step(0, "USER_INPUT", start, { content: asked(brief) }), step(1, "PLANNER_RESPONSE", start - 10, { content: "On it.", tool_calls: [{ name: "run_command", args: {} }] }),
+      step(2, "GENERIC", start - 20, { content: "made up" }), step(3, "PLANNER_RESPONSE", end, { content: "Done." })].map((l) => JSON.stringify(l)).join("\n") + "\n");
+    const t = new Date(Date.now() - end * 1000);
+    utimesSync(path, t, t);
+  };
+  // Tower's worker scripts (model.workerScript): the name holds the agent's id, the exec line its program.
+  const bin = join(home, "bin");
+  execFileSync("mkdir", ["-p", bin]);
+  writeFileSync(join(bin, "worker-agy"), '#!/bin/sh\nd=$(pwd -P | sed \'s/[\\\\"]/\\\\&/g\')\nexec agy --settings "{\\"trustedWorkspaces\\":[\\"$d\\"]}" -i "$@"\n');
+  writeFileSync(join(bin, "worker-claude"), "#!/bin/sh\nexec claude --model opus --permission-mode auto \"$@\"\n");
+  writeFileSync(join(bin, "worker-gem"), "#!/bin/sh\nexec /opt/made/up/agy -i \"$@\"\n");
+  const owls = "Count the owls in the barn. You are a worker on task k9-barn; use the tower skill if you have it.";
+  talk("owls-1", 5000, 4000, owls);
+  talk("lead-2", 3000, 2000, "Lead the made-up barn survey.");
+  talk("twin-3", 1500, 1200, "Same made-up words.");
+  talk("twin-4", 1490, 1210, "Same made-up words.");
+  talk("away-5", 900, 800, "Sweep the made-up loft.");
+  talk("bats-6", 700, 600, "Count the bats. You are a worker on task k9-barn.");
+  talk("mice-7", 700, 600, "Count the mice. You are a worker on task k9-barn.");
+  talk("rats-8", 700, 600, "Count the rats. You are a worker on task k9-barn.");
+  // A twin resumed later (its last write long after its terminal ended); the other run of that message.
+  talk("hens-9", 6000, 10, "Feed the made-up hens.");
+  talk("hens-10", 5995, 5900, "Feed the made-up hens.");
+  // A retry of a short-lived terminal; one with nothing left after loose(); odd records.
+  talk("shelf-11", 6950, 6900, "Sort the made-up shelf.");
+  talk("blank-12", 6500, 6400, "''");
+  talk("odd-13", 6300, 6200, "", step(0, "USER_INPUT", 6300, { content: ["made up"] }));
+  talk("hay-14", 6100, 6000, "Stack the made-up hay.");
+  writeFileSync(join(agyHome, "history.jsonl"), [
+    { display: "made-up typed words", timestamp: Date.now() - 850000, workspace: "/made/up/elsewhere", conversationId: "away-5" },
+    { display: "made-up typed words", timestamp: Date.now() - 650000, workspace: "/made/up/barn", conversationId: "bats-6" },
+    { display: "made-up typed words", timestamp: Date.now() - 650000, workspace: "/made/up/barn", conversationId: "mice-7" },
+    { display: "more made-up words", timestamp: Date.now() - 640000, workspace: "/made/up/shed", conversationId: "mice-7" },
+    { display: "made-up typed words", timestamp: Date.now() - 6050000, workspace: "/made/up/loft", conversationId: "hay-14" },
+    { display: "made-up typed words", timestamp: Date.now() - 6040000, workspace: "/made/up/shed", conversationId: "hay-14" },
+    { display: "odd", timestamp: Date.now(), workspace: "/made/up/barn", conversationId: ["odd-13"] },
+    { display: "odd", timestamp: Date.now(), workspace: ["/made/up/barn"], conversationId: "odd-13" },
+    { display: "odd", timestamp: "soon", workspace: "/made/up/barn\u0000", conversationId: "odd-13" },
+  ].map((l) => JSON.stringify(l)).join("\n") + "\n");
+  // A Claude worker of the same task, beside them: an odd agy record must not hide it.
+  const claudeBarn = join(home, ".claude/projects/-made-up-barn");
+  execFileSync("mkdir", ["-p", claudeBarn]);
+  writeFileSync(join(claudeBarn, "c1.jsonl"), [
+    { type: "user", timestamp: at(500), cwd: "/made/up/barn", sessionId: "c1", message: { role: "user", content: "Count the cows. You are a worker on task k9-barn." } },
+    [1, "odd"],
+    { type: "assistant", timestamp: at(450), cwd: "/made/up/barn", message: { id: "b", role: "assistant", content: [{ type: "tool_use", id: "o1", name: { odd: 1 } }] } },
+    { type: "assistant", timestamp: at(400), cwd: "/made/up/barn", message: { id: "c", role: "assistant", content: [{ type: "text", text: "Cows counted." }] } },
+  ].map((l) => JSON.stringify(l)).join("\n") + "\n");
+  // born: when each conversation's folder was made, {id: seconds ago}; left out, the file system can't say.
+  const ask = (req, born = {}, live = {}) => JSON.parse(execFileSync("python3", ["-c", `
+import importlib.util, json, sys
+req, born, live = json.loads(sys.argv[1]), json.loads(sys.argv[2]), json.loads(sys.argv[3])
+if live:
+    held = lambda pid, argv, cwd: r.agy_transcript(live[str(pid)])
+sys.argv = ["read.py", "{}"]
+spec = importlib.util.spec_from_file_location("read", ${JSON.stringify(new URL("./mods/agent-tower-panel/read.py", import.meta.url).pathname)})
+r = importlib.util.module_from_spec(spec); spec.loader.exec_module(r)
+r.agy_born = lambda dirs: {d: r.NOW - born[d.split("/brain/")[1]] for d in dirs if d.split("/brain/")[1] in born}
+if live:
+    r.find_transcript = held
+opened, opening = [], r.opening
+r.opening = lambda path, size: (opened.append(r.agy_cid(path)) if "/brain/" in path else None, opening(path, size))[1]
+out = r.tasks_request(req["tasks"]) if "tasks" in req else r.turns_request(req["turns"])
+print(json.dumps([out, sorted(set(opened) | {r.agy_cid(p) for p in r.AGY_FIRST})]))
+`, JSON.stringify(req), JSON.stringify(born), JSON.stringify(live)], { encoding: "utf8", env: { ...process.env, HOME: home } }));
+  const worker = (brief, agent = "agy") => [join(bin, `worker-${agent}`), brief];
+  const lead = (task) => ["zsh", "-lic", '"$@"; exec "$0" -li', "zsh", "env", "TOWER_TASK=k9", `TOWER_WORKER=${join(bin, "worker-agy")}`, "/made/up/bin/agy", "--settings", '{"trustedWorkspaces":["/made/up/barn"]}', "-i", task];
+  const spec = (key, argv, created_s, finished_s, cwd = "/made/up/barn") => ({ key, pid: null, argv, cwd, created_s, finished_s });
+  const endedAgy = (argv, created_s, finished_s, cwd, born) => ask({ turns: { since_s: 7 * 86400, terminals: [spec("x", argv, created_s, finished_s, cwd)] } }, born);
+  const cid = (e) => e?.path.split("/brain/")[1].split("/")[0] ?? null;
+  const [owl, owlOpened] = endedAgy(worker(owls), 5005, 3990, undefined, born);
+  assert.deepEqual([owl.terminals.x?.program, owl.terminals.x?.turns.map((t) => [ago10(Date.now() / 1000, t.start), ago10(Date.now() / 1000, t.end), t.ended])], ["agy", [[5000, 4000, "answer"]]],
+    "an ended agy worker: its conversation's turns");
+  assert.deepEqual(owlOpened, ["owls-1"], "only conversations made in its start window are opened");
+  assert.equal(cid(endedAgy(worker(owls, "gem"), 5005, 3990)[0].terminals.x), "owls-1", "a worker script under another id whose exec line runs agy");
+  assert.equal(cid(endedAgy(lead("Lead the made-up barn survey."), 3002, 1995)[0].terminals.x), "lead-2",
+    "an ended lead: the word after -i in Herdr's wrapper, --settings before it");
+  assert.deepEqual([
+    endedAgy(worker(owls), 4990, 3990)[0].terminals.x,
+    endedAgy(worker(owls), 5300, 3990)[0].terminals.x,
+    endedAgy(worker("Count the owls"), 5005, 3990)[0].terminals.x,
+    endedAgy(worker("Same made-up words."), 1505, 1190)[0].terminals.x,
+    endedAgy(worker("Sweep the made-up loft."), 905, 790)[0].terminals.x,
+    endedAgy(["codex", owls], 5005, 3990)[0].terminals.x,
+  ], [null, null, null, null, null, null],
+  "never: begun before the terminal, begun long after it, part of the message, two that fit, history puts it in another folder, another program");
+  assert.equal(endedAgy(worker("Sweep the made-up loft."), 905, 790, "/made/up/elsewhere")[0].terminals.x?.program, "agy", "its own folder: found");
+  // Round 1: each of these showed another terminal's conversation, or broke the reply.
+  assert.deepEqual([
+    endedAgy(worker(owls, "claude"), 5005, 3990)[0].terminals.x,
+    endedAgy(["/made/up/bin/worker-agy", owls], 5005, 3990)[0].terminals.x,
+    endedAgy(worker("Feed the made-up hens."), 6002, 5890)[0].terminals.x,
+    endedAgy(worker("Sort the made-up shelf."), 7000, 6990)[0].terminals.x,
+    endedAgy(worker("Stack the made-up hay."), 6105, 5990, "/made/up/barn")[0].terminals.x,
+    endedAgy(["/made/up/bin/agy", "-i", " ' "], 6505, 6390)[0].terminals.x,
+  ], [null, null, null, null, null, null],
+  "never: a Claude worker's script, a script not on this machine, a twin last written after the terminal ended, a conversation begun after it ended, history in two other folders, a message empty after spacing and quotes");
+  const both = ask({ turns: { since_s: 7 * 86400, terminals: [spec("a", worker("Sort the made-up shelf."), 6952, 6940), spec("b", worker("Sort the made-up shelf."), 6951, 6840)] } })[0];
+  assert.deepEqual([both.terminals.a, both.terminals.b], [null, null], "one conversation that fits two terminals of the request: neither's");
+  // Round 2. Timeline says another terminal began with the same message beside it: nothing.
+  assert.equal(ask({ turns: { since_s: 7 * 86400, terminals: [{ ...spec("x", worker(owls), 5005, 3990), twin: true }] } })[0].terminals.x, null, "a twin Timeline knows of: nothing");
+  // A live agy holding a conversation an ended terminal also matched keeps it; the ended one gets nothing.
+  const held = ask({ turns: { since_s: 7 * 86400, terminals: [{ key: "live", pid: 4242, argv: ["agy", "-i", "Lead the made-up barn survey."], cwd: "/made/up/barn" },
+    spec("gone", lead("Lead the made-up barn survey."), 3002, 1995)] } }, {}, { 4242: "lead-2" })[0];
+  assert.deepEqual([cid(held.terminals.live), held.terminals.gone], ["lead-2", null], "a live holder keeps its conversation, the ended claimant loses");
+  // An odd line and a tool name that is not a string inside a matched transcript: its turns, the reply whole.
+  const geese = join(agyHome, "brain", "geese-16", ".system_generated/logs");
+  execFileSync("mkdir", ["-p", geese]);
+  writeFileSync(join(geese, "transcript.jsonl"), [step(0, "USER_INPUT", 4800, { content: asked("Count the made-up geese.") }), [1, "odd"], "odd",
+    step(1, "PLANNER_RESPONSE", 4790, { content: "", tool_calls: [{ name: { odd: 1 }, args: {} }, "odd"] }), step(2, "PLANNER_RESPONSE", 4700, { content: "Geese counted." })].map((l) => JSON.stringify(l)).join("\n") + "\n");
+  utimesSync(join(geese, "transcript.jsonl"), new Date(Date.now() - 4700000), new Date(Date.now() - 4700000));
+  assert.deepEqual(endedAgy(worker("Count the made-up geese."), 4805, 4690)[0].terminals.x?.turns.map((t) => t.ended), ["answer"], "odd records inside: still its turns");
+  // A lead that lived 30 days: only conversations made in its start window are opened.
+  const [lived, livedOpened] = endedAgy(lead("Lead the made-up barn survey."), 3002, 0, undefined, born);
+  assert.deepEqual([cid(lived.terminals.x), livedOpened], ["lead-2", ["lead-2"]], "a long-lived lead: one opened");
+  // Without that time: an ordinary short worker among the conversations written since it ended is found.
+  for (let i = 0; i < 40; i++) talk(`more-${i}`, 2900 - i, 100, `Made-up job ${i}.`);
+  assert.equal(cid(endedAgy(worker(owls), 5005, 3990)[0].terminals.x), "owls-1", "birth times unknown, 40 written since it ended: found");
+  // Past AGY_OPEN_MAX (256) such candidates nothing is opened and nothing shown.
+  for (let i = 40; i < 260; i++) talk(`more-${i}`, 2900 - i, 100, `Made-up job ${i}.`);
+  const [many, manyOpened] = endedAgy(lead("Lead the made-up barn survey."), 3002, 0);
+  assert.deepEqual([many.terminals.x, manyOpened], [null, []], "too many candidates of unknown age: none");
+  // By task: only a conversation history.jsonl puts in one folder; the others are never opened.
+  const [byTask, taskOpened] = ask({ tasks: { ids: ["k9-barn"], since_s: 86400 } });
+  assert.deepEqual(byTask.map((t) => [t.task, t.program, t.cwd, t.session, t.turns.length]), [["k9-barn", "agy", "/made/up/barn", "bats-6", 1], ["k9-barn", "claude", "/made/up/barn", "c1", 1]],
+    "by task: a conversation typed into in one folder; not one with no typed row (owls-1, rats-8) nor one typed into in two (mice-7); odd rows skipped, the Claude worker kept");
+  assert.ok(!taskOpened.includes("owls-1") && !taskOpened.includes("rats-8"), `conversations without a folder are not opened: ${taskOpened}`);
+  const [inFolder] = ask({ turns: { since_s: 86400, terminals: [], folders: ["/made/up/barn"] } });
+  assert.deepEqual(inFolder.folders["/made/up/barn"].map((e) => e.path.split("/brain/")[1]?.split("/")[0] ?? "claude"), ["bats-6", "claude"], "by folder: the same rule");
+  // The real birth time of a conversation's folder (made just now), through the file system.
+  talk("fresh-15", 1, 0, "Made-up fresh words.");
+  const real = JSON.parse(execFileSync("python3", ["-c", `
+import importlib.util, json, sys
+sys.argv = ["read.py", "{}"]
+spec = importlib.util.spec_from_file_location("read", ${JSON.stringify(new URL("./mods/agent-tower-panel/read.py", import.meta.url).pathname)})
+r = importlib.util.module_from_spec(spec); spec.loader.exec_module(r)
+d = r.agy_dir(r.agy_transcript("fresh-15"))
+print(json.dumps(r.NOW - (r.agy_born([d]).get(d) or 0)))
+`], { encoding: "utf8", env: { ...process.env, HOME: home } }));
+  assert.ok(real < 60, `a folder made just now is born just now (the file system says when): ${real}`);
+  rmSync(home, { recursive: true, force: true });
+}
+
 // The chain link's title when chain.mjs falls back to the file name: saved with --title from text
 // that starts with "##", or carrying a frontmatter title.
 const chainCli = join(process.env.HOME, ".agents/skills/chains/chain.mjs");
