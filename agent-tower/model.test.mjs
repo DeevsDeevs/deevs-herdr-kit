@@ -251,6 +251,8 @@ const leadRules = [
   "(a sub-lead) is started the same way, with",
   "A brief gives: goal, what the worker owns, what it must not touch, when it is done, a result file path it can write.",
   "the parent field of hc get for your own terminal",
+  "if your parent has ended, runs no agent (status null), is a shell or carries task.was=lead, send it to the task's lead instead: hc ls --json --label task.id=",
+  "--label task.role=lead | jq -r '[.terminals[] | select(.status != null)][0].address // empty'; if that prints nothing, to a parent hc get cannot read; with no one, send nothing, keep the result file and say so.",
   "use the tower skill if you have it.",
   "After starting workers, hc read each once: a folder-trust or sign-in prompt stalls a new worker without telling you.",
   "Routine prompts (trusting the folder you chose): answer with",
@@ -261,6 +263,18 @@ const leadRules = [
   "Start the last message of every turn with one or two plain sentences, no ids or paths: where the task stands, what happens now. Details after.",
   "At a milestone save a chain link",
   "When the work is done, say so; leave ending the workers to the person.",
+  "A new lead whose first message says the earlier lead still runs: before anything else hc send it this one message:",
+  "\"A new lead, $HC_TERMINAL_ID, has taken over this task. Save a chain link with where the task stands, what waits on the person, which workers run and what each was asked, and hc send me only the chain's name. Then stop leading: clear your task.ask, start no more workers, send nothing to the person on your own, and stay to answer my questions. Pass on to the task's lead (now me) all that reaches you about this task: workers' reports, hc's notes on them, a chain's name from the lead before you, and what the person types to you (tell them a new lead leads this task).\"",
+  "Wait with hc wait <its address> --timeout 100, at most twice, then load that chain (chains), and any chain name passed on to you later.",
+  "A new lead whose earlier lead has ended, is blocked on the person, or did not answer: go on from the task's terminals (hc read each) and the newest chain in the task's folder, and say so to the person in your first report.",
+  "Never answer a blocked earlier lead's prompt (no hc keys, no hc send --force): set task.ask asking the person to end it or answer its prompt and tell you; on the next turn, send it the message above if it still runs.",
+  "A new lead sets task.ask again for what still waits on the person: the question your first message quotes, or one in the chain.",
+  "Workers you did not start are not your children: find them with hc ls --json --label task.id=",
+  "--label task.role=worker | jq -r '.terminals[].address' and wait on them by address, hc wait <address> --timeout 100 (a message to you also ends it).",
+  "After every wait, hc get each of them and handle what you see as for your own. The earlier lead (task.was=lead) is not a worker to brief or reuse: it answers questions only.",
+  "Told that a new lead has taken over: do the handover it asks for, then stop leading: hc label $HC_TERMINAL_ID task.ask=",
+  "start no more workers, send nothing to the person on your own, and stay to answer its questions. Pass on to the task's lead of the moment (hc ls --json --label task.id=",
+  "--label task.role=lead | jq -r '[.terminals[] | select(.status != null)][0].address // empty') all that reaches you about the task: workers' reports, hc's notes on them, a chain's name from the lead before you, and what the person types to you (tell them a new lead leads this task).",
 ];
 const inOrder = (text, label) => leadRules.reduce((at, words) => {
   const i = text.indexOf(words, at);
@@ -287,6 +301,11 @@ const skillFile = `${process.env.HOME}/.agents/skills/tower/SKILL.md`;
 if (existsSync(skillFile)) {
   const skillText = readFileSync(skillFile, "utf8");
   inOrder(skillText.slice(skillText.indexOf("## Lead"), skillText.indexOf("## Worker")).replace(/`/g, "").replace(/\s+/g, " "), "skill");
+  // Whom a worker reports to: the skill's Worker part and the mod's worker text name the same labels.
+  const workerPart = skillText.slice(skillText.indexOf("## Worker"), skillText.indexOf("## Eye")).replace(/`/g, "").replace(/\s+/g, " ");
+  // The lines themselves are run under dash, bash and zsh in report.test.mjs.
+  for (const words of ["report with these lines, then finish your turn: your parent if it runs an agent and is neither a shell nor a replaced lead, else the task's lead, else a parent hc can't read; with no one, nothing is sent: keep the result file and say so.",
+    "[.terminals[] | select(.status != null)][0].address // empty"]) assert.ok(workerPart.includes(words), `skill Worker part: ${words}`);
 }
 // The skill check runs on the lead's machine with the name as an argument, never in the script.
 assert.deepEqual(model.skillCheck("tower"), ["-c", 'test -f "$HOME/.agents/skills/$1/SKILL.md"', "sh", "tower"]);

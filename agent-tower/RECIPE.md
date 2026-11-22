@@ -497,12 +497,15 @@ come from the app's program table.
     remote worker by `<machine>/<id>-<role>`; reuse an idle worker when its context fits, a
     fresh one for a cold look; a sub-lead starts with the same `task.id` and
     `task.role=worker`; what a brief gives and how it ends (report to the parent with the
-    result path); after starting workers `hc read` each once (a folder-trust or sign-in
+    result path, or to the task's lead once the parent has ended, runs no agent, is a shell or
+    carries `task.was=lead`; never to an empty address); after starting workers `hc read` each once (a folder-trust or sign-in
     prompt stalls a new worker without telling you), routine prompts with `hc keys`,
     permissions, sign-ins, deleting or sending to the person; `hc wait --children any
     --timeout 100`, never poll, what to do on a report or a stop, and `hc file read --on
     <machine>` for a remote worker's file; the last message opens with one or two plain
-    sentences; a chain link at milestones; done is said, ending the workers left to you.
+    sentences; a chain link at milestones; done is said, ending the workers left to you; a new
+    lead's handover, workers it did not start, and what an earlier lead does once replaced (New
+    lead, below).
     The test checks the order against the installed skill.
 - **The Eye**, one per area. An area's Eye is the newest live terminal labelled
   `tower.eye=1` and `tower.area=<area id>` (`model.findEye(terms, area)`); an older Eye with
@@ -714,17 +717,59 @@ come from the app's program table.
   call: a lead gets `task.id`, `task.role=lead`, the task's `task.title` and `task.by`,
   `task.recipe`, `task.area`, `task.lead` and `tower.tab-name=lead`; a worker `task.id` and
   `task.role=worker`. Then the lead before it becomes `task.role=worker` while its agent runs,
-  `task.role=shell` (no row) once its program has ended; an ended terminal keeps its labels.
-  - A new lead's first message, with the skill, two lines:
-    `You are the new lead of task <id>, "<title>", taking over from its earlier lead: its terminals and its chain say where it stands.`
-    and `Lead task <id> with the tower skill (questions to me go through task.ask): <words>`.
+  `task.role=shell` (no row) once its program has ended, in the same call `task.ask=` (what
+  waits on the person goes in the handover; the new lead sets it again) and `task.was=lead` (its
+  workers then report to the task's lead of the moment); an ended terminal keeps its labels.
+  - A new lead's first message, with the skill, two lines. The first says how the earlier lead
+    stands (its address on its own machine, where the new lead starts):
+    `You are the new lead of task <id>, "<title>", taking over from its earlier lead <its address>, which still runs: get its handover first.`
+    while it runs an agent (in `error` too: `hc send` reaches it); `…<its address>, which is
+    blocked on the person: send it nothing now.` when that agent is blocked (`hc send` refuses it,
+    and `--force` would answer its prompt); `…taking over from its earlier lead, which has ended.`
+    otherwise. When the earlier lead had a `task.ask` (the mod clears it), one more line carries it
+    as data: `The earlier lead's question to the person, unanswered: "<its text, JSON-quoted>"`.
+    Then `Lead task <id> with the tower skill (questions to me go through task.ask): <words>`.
     Without the skill: the recipe's rules, that same "You are the new lead…" line, then the
-    full contract and "Task: <words>".
+    full contract (with the handover lines below) and "Task: <words>".
+  - The handover is the agents' (skill, Lead part; the contract says the same); the mod waits for
+    none of it.
+    - A running earlier lead gets one message that carries the whole request, so an earlier lead
+      without the newest skill can follow it: save a chain link (where the task stands, what waits
+      on the person, which workers run and what each was asked), answer with its name, stop leading
+      (clear `task.ask`, start no workers, send nothing to the person on its own), stay to answer,
+      and pass on to the task's lead all that reaches it about the task (workers' reports, hc's
+      notes on them, a chain name from the lead before it, the person's words). The new lead waits
+      with `hc wait <its address> --timeout 100` at most twice and loads that chain and any chain
+      name passed on later.
+    - An ended, blocked or silent earlier lead: the new lead goes on from the task's terminals and
+      the newest chain in the task's folder and says so in its first report. A blocked one's prompt
+      is never answered by the new lead (no `hc keys`, no `--force`): the person is the trigger. The
+      new lead sets `task.ask` asking them to end it or answer its prompt and say so, and on the
+      turn that follows sends it the handover message if it still runs.
+    - On every path the new lead sets `task.ask` again for what still waits on the person: the
+      question its first message quotes, or one in the chain.
+    - Workers it did not start are not its children: it finds them by `task.id` and
+      `task.role=worker`, waits on them by address, and after every wait looks at each with `hc get`. The earlier lead (`task.was=lead`) is never briefed or
+      reused; it answers questions only.
+    - A second New lead during a handover: the middle lead hands over what it has, and passes the
+      first one's chain name on when it comes; the newest lead loads both.
+  - Whom a worker reports to (skill, Worker part; the contract's brief line says the same): its
+    parent, unless the parent has ended, runs no agent (`status` null), is a shell or carries
+    `task.was=lead`; then the task's lead running an agent, found by label (`hc ls --json --label
+    task.id=<id> --label task.role=lead | jq -r '[.terminals[] | select(.status != null)][0].address
+    // empty'`); if none, a parent `hc get` could not read. A server worker whose parent is on the
+    Mac can read neither that parent nor the Mac's leads (`hc ls` on a server does not list the
+    Mac's terminals), so it always sends to that earlier lead: an agent passes it on, but one whose
+    agent had quit, before New lead was pressed or after, is a shell, and the report is typed into
+    it. The new lead then finds that worker's result by looking at the workers it did not start
+    (`hc get` after every wait, `hc read`). Otherwise never a shell, an ended terminal, an empty or `null` address: with no one, the worker
+    sends nothing, keeps its result file and says so. A sub-lead's workers still report to it.
+    `report.test.mjs` runs the skill's lines under dash, bash and zsh against a fake hc.
   - A worker added from the list gets four lines:
     `You are a worker on task <id>, "<title>"; use the tower skill if you have it.`;
     `Do exactly the task below. Start no other agents unless it says so; if it does, start them with --label task.id=<id> --label task.role=worker, and they report to you.`;
-    `Put long answers in a result file. When done or blocked, report to your parent, the task's lead (<lead address, or: hc ls --json --label task.id=<id> --label task.role=lead | jq -r '.terminals[].address'>): hc send it one plain sentence and the result path, then finish your turn.`;
-    `Task: <words>`. The lead's address is given only while the lead runs an agent.
+    `Put long answers in a result file. When done or blocked, report to the task's lead of the moment (hc ls --json --label task.id=<id> --label task.role=lead | jq -r '[.terminals[] | select(.status != null)][0].address // empty'): hc send it one plain sentence and the result path, then finish your turn; when that prints nothing, send nothing: keep the result file and say so in your last message.`;
+    `Task: <words>`. It has no parent, and the lead may change, so it looks the lead up when it reports.
 - **Close** (item menu): the question counts what would end: for a task, every terminal
   carrying its `task.id`; for an unlabelled agent, it and the live terminals that belong
   to it (not another task's workers); on a merged row, all of that for every member.
