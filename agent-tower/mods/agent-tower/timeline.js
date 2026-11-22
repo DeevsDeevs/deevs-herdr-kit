@@ -1005,6 +1005,9 @@ function withIndexGaps(recorded, indexGaps = []) {
 // lane's memo and cutGaps' cover hold across rebuilds. Once per machine per rebuild. An open gap (a
 // machine not answering) runs to Infinity: nothing after its start was recorded, so it cuts the same
 // as one to now, and the list doesn't change as now moves. Its band is drawn to the now-line.
+// Kept per machine and pixel size, so views at different spans (every copy shares this module) keep
+// their own; the GAPS_KEPT used last stay.
+const GAPS_KEPT = 32;
 const gapsKept = new Map();
 const closedJoined = new WeakMap();
 function gapsOnce(h, machine, pxMs) {
@@ -1016,14 +1019,18 @@ function gapsOnce(h, machine, pxMs) {
   const closed = byKey.get(ck);
   const open = gapsFor({ gaps: h.gaps.filter((g) => g.to == null) }, machine, Infinity);
   const openKey = open.map((g) => `${g.m}:${g.from}`).join(",");
-  const m = machine ?? "";
-  const was = gapsKept.get(m);
-  // Compared by value only when the file was read again, the pixel size changed or an open gap came or went.
-  if (was?.closed === closed && was.openKey === openKey) return was.all;
-  const all = open.length ? model.joinGaps([...closed, ...open], pxMs) : closed;
-  const key = all.map((g) => `${g.m}:${g.from}-${g.to}`).join(",");
-  gapsKept.set(m, { closed, openKey, key, all: was?.key === key ? was.all : all });
-  return gapsKept.get(m).all;
+  const was = gapsKept.get(ck);
+  // Compared by value only when the file was read again or an open gap came or went.
+  const kept = was?.closed === closed && was.openKey === openKey ? was : (() => {
+    const all = open.length ? model.joinGaps([...closed, ...open], pxMs) : closed;
+    const key = all.map((g) => `${g.m}:${g.from}-${g.to}`).join(",");
+    return { closed, openKey, key, all: was?.key === key ? was.all : all };
+  })();
+  // Moved to the end (most recently used) with nothing between: a render cut off here keeps the slot.
+  gapsKept.delete(ck);
+  gapsKept.set(ck, kept);
+  if (gapsKept.size > GAPS_KEPT) gapsKept.delete(gapsKept.keys().next().value);
+  return kept.all;
 }
 
 // The gaps drawn in the span.
