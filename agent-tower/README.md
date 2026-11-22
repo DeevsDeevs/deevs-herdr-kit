@@ -153,7 +153,10 @@ The Eye on Codex, leads on Opus, workers on Sonnet:
   click its lead or a worker under it to open that terminal. Right-click for Details, Pin to
   the top, Rename, New lead, End.
 - **New lead** gives a task a fresh lead in a new tab of its space and folder, as the same task.
-  The old lead stays as a worker while its agent runs, else as a plain shell. A row whose lead
+  The old lead stays as a worker while its agent runs, else as a plain shell; its question is
+  cleared. The new lead asks the old one for a handover (a chain) unless it is blocked on you, asks
+  you again what still waits on you, and the task's workers report
+  to the new lead from then on (tower skill). A row whose lead
   ended says "lead ended". With a task selected, the composer's "in <title>" chip starts a lead
   or a worker inside it instead of a new task.
 - The magnifier (`ctrl-s /`) searches every task, agent and machine in every area.

@@ -713,7 +713,7 @@ const newSpace = (fx) => fx.runs.filter((r) => r[0] === "space.new").at(-1)?.[1]
   await tick(1600);
   const labels = fx.hcCalls.filter((x) => x[0] === "label").map((x) => x.slice(1).join(" "));
   assert.deepEqual(labels, ["t2 task.id=j1 task.role=lead task.title=Garden plan task.by=llm task.recipe=personal-lead task.area=personal task.lead=claude-fable tower.tab-name=lead tower.space-name=Garden plan",
-    "t1 task.role=shell"]);
+    "t1 task.role=shell task.ask= task.was=lead"]);
   old.labels = { ...old.labels, "task.role": "shell" };
   t2.labels = { ...t2.labels, "task.id": "j1", "task.role": "lead", "task.title": "Garden plan", "task.by": "llm", "task.area": "personal", "tower.tab-name": "lead", "tower.space-name": "Garden plan" };
   fx.hcCalls = [];

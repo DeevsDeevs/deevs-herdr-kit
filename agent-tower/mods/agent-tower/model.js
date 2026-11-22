@@ -11,12 +11,17 @@ const CONTRACT = [
   "Start each worker with the agent command named in the \"Start workers with\" line below, brief on the run line (hc tracks it): hc run --bg --outlive-parent --label task.id={id} --label task.role=worker --name {id}-<role> --cwd <dir> [--on <machine>] <agent command> \"<brief>\". <role>: short, lowercase, unique in the task, and says what the worker works on (snow-gear, api-review), not a step or a counter (port, r7). <dir>: the task's own folder or one under it, never a shared one such as /tmp or a home folder. Address a remote worker as <machine>/{id}-<role>, never the bare name.",
   "Before starting a new worker, reuse an idle worker of the task when its context fits the new work: hc send it the brief. Start a fresh one when it does not, or when the work needs eyes that have not seen it (a cold look).",
   "A worker that will start workers of its own (a sub-lead) is started the same way, with task.id={id} and task.role=worker, never an id or role of its own; its brief says it may start workers and that they get the same two labels.",
-  "A brief gives: goal, what the worker owns, what it must not touch, when it is done, a result file path it can write. End it: \"When done or blocked, hc send one plain sentence and the result path to your parent (the parent field of hc get for your own terminal), then finish your turn. You are a worker on task {id}{worker-skill}.\"",
+  "A brief gives: goal, what the worker owns, what it must not touch, when it is done, a result file path it can write. End it: \"When done or blocked, hc send one plain sentence and the result path to your parent (the parent field of hc get for your own terminal), then finish your turn; if your parent has ended, runs no agent (status null), is a shell or carries task.was=lead, send it to the task's lead instead: hc ls --json --label task.id={id} --label task.role=lead | jq -r '[.terminals[] | select(.status != null)][0].address // empty'; if that prints nothing, to a parent hc get cannot read; with no one, send nothing, keep the result file and say so. You are a worker on task {id}{worker-skill}.\"",
   "After starting workers, hc read each once: a folder-trust or sign-in prompt stalls a new worker without telling you. Routine prompts (trusting the folder you chose): answer with hc keys. Permissions, sign-ins, anything that deletes or sends: ask the person.",
   "Wait with hc wait --children any --timeout 100 (under the 120 s tool limit), never poll. On a report, read it and wait again; on blocked, error or exit, hc read that worker and handle it or ask the person. A remote worker's file: hc file read --on <machine> <path>.",
   "Start the last message of every turn with one or two plain sentences, no ids or paths: where the task stands, what happens now. Details after.",
   "At a milestone save a chain link (chains), its next step opening with a plain sentence.",
   "When the work is done, say so; leave ending the workers to the person.",
+  "A new lead whose first message says the earlier lead still runs: before anything else hc send it this one message: hc send <its address> \"A new lead, $HC_TERMINAL_ID, has taken over this task. Save a chain link with where the task stands, what waits on the person, which workers run and what each was asked, and hc send me only the chain's name. Then stop leading: clear your task.ask, start no more workers, send nothing to the person on your own, and stay to answer my questions. Pass on to the task's lead (now me) all that reaches you about this task: workers' reports, hc's notes on them, a chain's name from the lead before you, and what the person types to you (tell them a new lead leads this task).\" Wait with hc wait <its address> --timeout 100, at most twice, then load that chain (chains), and any chain name passed on to you later.",
+  "A new lead whose earlier lead has ended, is blocked on the person, or did not answer: go on from the task's terminals (hc read each) and the newest chain in the task's folder, and say so to the person in your first report. Never answer a blocked earlier lead's prompt (no hc keys, no hc send --force): set task.ask asking the person to end it or answer its prompt and tell you; on the next turn, send it the message above if it still runs.",
+  "A new lead sets task.ask again for what still waits on the person: the question your first message quotes, or one in the chain.",
+  "Workers you did not start are not your children: find them with hc ls --json --label task.id={id} --label task.role=worker | jq -r '.terminals[].address' and wait on them by address, hc wait <address> --timeout 100 (a message to you also ends it). After every wait, hc get each of them and handle what you see as for your own. The earlier lead (task.was=lead) is not a worker to brief or reuse: it answers questions only.",
+  "Told that a new lead has taken over: do the handover it asks for, then stop leading: hc label $HC_TERMINAL_ID task.ask= , start no more workers, send nothing to the person on your own, and stay to answer its questions. Pass on to the task's lead of the moment (hc ls --json --label task.id={id} --label task.role=lead | jq -r '[.terminals[] | select(.status != null)][0].address // empty') all that reaches you about the task: workers' reports, hc's notes on them, a chain's name from the lead before you, and what the person types to you (tell them a new lead leads this task).",
 ].join("\n");
 
 export const TITLE_MAX = 80;
@@ -1341,16 +1346,24 @@ export function joinMessage(recipe, config, item, as, words, skillHere = Boolean
   const id = item.taskId;
   const title = titleOf(item);
   if (as === "worker") {
-    // A lead whose program ended is a shell: the worker looks the lead up when it reports.
-    const lead = !item.leadGone && isAgent(item.lead) ? item.lead.address : null;
+    // No parent, and the lead may change: the worker looks the task's lead up when it reports.
     return [
       `You are a worker on task ${id}, "${title}"${config.skill ? `; use the ${config.skill} skill if you have it` : ""}.`,
       `Do exactly the task below. Start no other agents unless it says so; if it does, start them with --label task.id=${id} --label task.role=worker, and they report to you.`,
-      `Put long answers in a result file. When done or blocked, report to your parent, the task's lead (${lead ?? `hc ls --json --label task.id=${id} --label task.role=lead | jq -r '.terminals[].address'`}): hc send it one plain sentence and the result path, then finish your turn.`,
+      `Put long answers in a result file. When done or blocked, report to the task's lead of the moment (hc ls --json --label task.id=${id} --label task.role=lead | jq -r '[.terminals[] | select(.status != null)][0].address // empty'): hc send it one plain sentence and the result path, then finish your turn; when that prints nothing, send nothing: keep the result file and say so in your last message.`,
       `Task: ${words}`,
     ].join("\n");
   }
-  const over = `You are the new lead of task ${id}, "${title}", taking over from its earlier lead: its terminals and its chain say where it stands.`;
+  // The new lead starts on the earlier one's machine: its address there, without the machine.
+  // A blocked one waits on the person: hc send refuses it (an error does not), so the rules say what to do instead.
+  const old = !item.leadGone && isAgent(item.lead) ? localOf(item.lead.address, machineOf(item.lead.address)) : null;
+  const stands = !old ? ", which has ended."
+    : item.lead.status === "blocked" ? ` ${old}, which is blocked on the person: send it nothing now.`
+    : ` ${old}, which still runs: get its handover first.`;
+  // The mod clears the earlier lead's question (oldLeadPairs): it travels here, as data.
+  const asked = item.lead?.labels?.["task.ask"]?.trim();
+  const over = `You are the new lead of task ${id}, "${title}", taking over from its earlier lead${stands}`
+    + (asked ? `\nThe earlier lead's question to the person, unanswered: ${JSON.stringify(asked)}` : "");
   return firstMessage(recipe, config, id, words, skillHere, over, worker);
 }
 
@@ -1366,10 +1379,12 @@ export function joinPairs(item, as, recipe, agentId) {
 
 // The lead before a new one: a worker while its agent runs, a shell (no row) once its program has
 // ended; an ended terminal keeps its labels (the live lead wins). Null: nothing to label.
+// Its question goes with the handover (the new lead sets it again); task.was=lead tells its workers
+// to report to the new lead.
 export function oldLeadPairs(item) {
   const lead = item.lead;
   if (!lead || item.leadGone || !isLive(lead)) return null;
-  return [isAgent(lead) ? "task.role=worker" : "task.role=shell"];
+  return [isAgent(lead) ? "task.role=worker" : "task.role=shell", "task.ask=", "task.was=lead"];
 }
 
 // The new member's terminal: live, in a tab of that space that was not there before.

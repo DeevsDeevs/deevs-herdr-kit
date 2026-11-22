@@ -282,17 +282,39 @@ for (const [name, args] of [["tower-names", ["--nope"]], ["tower-eye", ["stop"]]
   assert.deepEqual(model.joinPairs(item, "lead", recipe, "claude-opus"), ["task.id=g1", "task.role=lead", "task.title=Garden plan", "task.by=you",
     "task.recipe=personal-lead", "task.area=personal", "task.lead=claude-opus", "tower.tab-name=lead", "tower.space-name=Garden plan"]);
   assert.deepEqual(model.joinPairs(item, "worker", recipe, "claude-opus"), ["task.id=g1", "task.role=worker"]);
-  assert.deepEqual(model.oldLeadPairs(item), ["task.role=shell"]);
-  assert.deepEqual(model.oldLeadPairs({ lead: { ...shell, status: "idle" }, leadGone: false }), ["task.role=worker"], "still an agent: a worker");
+  // The old lead: its question goes with the handover, and task.was=lead sends its workers' reports to the new lead.
+  assert.deepEqual(model.oldLeadPairs(item), ["task.role=shell", "task.ask=", "task.was=lead"]);
+  assert.deepEqual(model.oldLeadPairs({ lead: { ...shell, status: "idle", labels: { ...shell.labels, "task.ask": "Which beds get beans?" } }, leadGone: false }),
+    ["task.role=worker", "task.ask=", "task.was=lead"], "still an agent: a worker, its question cleared");
   assert.equal(model.oldLeadPairs({ lead: { ...shell, state: "finished" }, leadGone: true }), null, "an ended terminal keeps its labels");
   // First messages: with the skill one line more than a start's; without, the full contract; a worker's says where to report.
+  // The old lead's agent has ended (a shell): the message says so; still running: it names its address on that machine.
   const withSkill = model.joinMessage(recipe, config, item, "lead", "make a planting calendar", true);
-  assert.equal(withSkill, 'You are the new lead of task g1, "Garden plan", taking over from its earlier lead: its terminals and its chain say where it stands.\nLead task g1 with the tower skill (questions to me go through task.ask): make a planting calendar');
+  assert.equal(withSkill, 'You are the new lead of task g1, "Garden plan", taking over from its earlier lead, which has ended.\nLead task g1 with the tower skill (questions to me go through task.ask): make a planting calendar');
+  const running = { ...item, lead: { ...shell, status: "idle" } };
+  assert.equal(model.joinMessage(recipe, config, running, "lead", "make a planting calendar", true),
+    'You are the new lead of task g1, "Garden plan", taking over from its earlier lead t1, which still runs: get its handover first.\nLead task g1 with the tower skill (questions to me go through task.ask): make a planting calendar');
+  assert.ok(model.joinMessage(recipe, config, { ...item, lead: { ...shell, address: "vps/t1", status: "idle" } }, "lead", "w", true).includes("earlier lead t1, which still runs"), "a remote lead: its address on its machine");
+  assert.ok(model.joinMessage(recipe, config, { ...running, leadGone: true }, "lead", "w", true).includes("earlier lead, which has ended."), "a gone lead");
+  // A blocked lead waits on the person: hc send refuses it, and --force would answer its prompt.
+  assert.equal(model.joinMessage(recipe, config, { ...item, lead: { ...shell, status: "blocked" } }, "lead", "w", true).split("\n")[0],
+    'You are the new lead of task g1, "Garden plan", taking over from its earlier lead t1, which is blocked on the person: send it nothing now.');
+  // An error is not the person's: hc send reaches it, so it gets the handover.
+  assert.ok(model.joinMessage(recipe, config, { ...item, lead: { ...shell, status: "error" } }, "lead", "w", true).startsWith(
+    'You are the new lead of task g1, "Garden plan", taking over from its earlier lead t1, which still runs: get its handover first.\n'), "error");
+  // The earlier lead's question (the mod clears it) travels in the first message, as data, on every path.
+  const asking = (lead) => model.joinMessage(recipe, config, { ...item, lead: { ...lead, labels: { ...lead.labels, "task.ask": ' Which beds get "beans"? ' } } }, "lead", "w", true).split("\n");
+  for (const lead of [shell, { ...shell, status: "idle" }, { ...shell, status: "blocked" }]) {
+    assert.equal(asking(lead)[1], 'The earlier lead\'s question to the person, unanswered: "Which beds get \\"beans\\"?"', String(lead.status));
+  }
+  assert.equal(model.joinMessage(recipe, config, { ...item, lead: { ...shell, labels: { ...shell.labels, "task.ask": "" } } }, "lead", "w", true).split("\n").length, 2, "no question: no line");
+  const fullRunning = model.joinMessage(recipe, config, running, "lead", "w", false);
+  assert.ok(fullRunning.startsWith('You are the new lead of task g1, "Garden plan", taking over from its earlier lead t1, which still runs') && fullRunning.includes("A new lead, $HC_TERMINAL_ID, has taken over this task."), "without the skill: the handover rules too");
   const full = model.joinMessage(recipe, config, item, "lead", "make a planting calendar", false);
   assert.ok(full.startsWith("You are the new lead of task g1") && full.includes("You lead task g1.") && full.endsWith("Task: make a planting calendar"));
   const w = model.joinMessage(recipe, config, item, "worker", "water the beans", true);
-  assert.ok(w.startsWith('You are a worker on task g1, "Garden plan"; use the tower skill if you have it.') && w.includes("--label task.role=lead | jq -r '.terminals[].address'") && w.endsWith("Task: water the beans"), w);
-  for (const words of ["Do exactly the task below", "Start no other agents unless it says so", "--label task.id=g1 --label task.role=worker", "Put long answers in a result file", "report to your parent"]) assert.ok(w.includes(words), words);
+  assert.ok(w.startsWith('You are a worker on task g1, "Garden plan"; use the tower skill if you have it.') && w.includes("report to the task's lead of the moment (hc ls --json --label task.id=g1 --label task.role=lead | jq -r '[.terminals[] | select(.status != null)][0].address // empty')") && w.includes("when that prints nothing, send nothing: keep the result file") && w.endsWith("Task: water the beans"), w);
+  for (const words of ["Do exactly the task below", "Start no other agents unless it says so", "--label task.id=g1 --label task.role=worker", "Put long answers in a result file"]) assert.ok(w.includes(words), words);
   // findJoined: the live terminal in a new tab of that space, not one the task had.
   const join = { space: "sp1", machine: null, tabsBefore: new Set(["tb1"]), members: new Set(["t1", "t2"]) };
   const sps = [space("sp1", "Garden plan", true, [["tb1", "lead", true], ["tb2", "lead", true]])];
