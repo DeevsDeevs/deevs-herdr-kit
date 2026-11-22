@@ -22,7 +22,7 @@ import { div, svg, image, v_flex, h_flex } from "./perf.js";
 // (RECIPE.md). So each render starts its own frame, and a frame counts only while younger than any
 // live render can be: one a cut-off render left behind is never read, and the tick clears it.
 const FRAME_MS = 100;
-let frame = null; // {at, reads: Map, depth, carried, view, step, modelMs, why}; the last four for the perf log
+let frame = null; // {at, reads: Map, depth, carried, view, step, modelMs, why, clock}; the last five for the perf log
 const liveFrame = () => {
   const age = frame ? Date.now() - frame.at : -1;
   return age >= 0 && age <= FRAME_MS ? frame.reads : null;
@@ -58,7 +58,11 @@ const run = (command, args) => {
 function inFrame(view, draw) {
   // A frame (or model pass) still here at a render's start is a cut-off render's: counted once.
   noteCutOff();
-  const mine = { at: Date.now(), reads: new Map(), depth: 0, carried: 0, view, step: "reads", modelMs: 0, why: null };
+  const mine = { at: Date.now(), reads: new Map(), depth: 0, carried: 0, view, step: "reads", modelMs: 0, why: null, clock: null };
+  if (perfLog.on && view === "list") {
+    const t0 = perf.now();
+    mine.clock = { t0, last: t0, parts: {}, largest: { ms: 0, part: null } };
+  }
   frame = mine;
   try {
     return draw();
@@ -76,8 +80,25 @@ function noteCutOff() {
   frame = null;
   model.clearPass();
   // Which render and how far it got: kept in the frame itself, so the cut leaves them as they were.
-  perfLog.cutOff(left, ++cutOffs, f && { view: f.view, step: f.step });
+  perfLog.cutOff(left, ++cutOffs, f && { view: f.view, step: f.step, ...(f.clock && { ...drawFacts(f.clock), lastCheck: round(f.clock.last - f.clock.t0) }) });
 }
+// The list's draw, with perf on: a checkpoint adds the time since the last one to the part the draw
+// is in (frame.step), keeps the largest single step, and moves on to part when given. One step far
+// over its part's usual time is a pause (garbage collection, a busy thread); time spread over every
+// part is our code or a slow machine. All of it lives in the frame, so a cut leaves it as it was.
+const SLOW_MS = 30;
+function mark(part) {
+  const c = frame?.clock;
+  if (!c) return;
+  const t = perf.now();
+  const ms = t - c.last;
+  c.parts[frame.step] = (c.parts[frame.step] ?? 0) + ms;
+  if (ms > c.largest.ms) c.largest = { ms, part: frame.step };
+  c.last = t;
+  if (part) frame.step = part;
+}
+const round = (ms) => Math.round(ms * 100) / 100;
+const drawFacts = (c) => ({ parts: Object.fromEntries(Object.entries(c.parts).map(([k, ms]) => [k, round(ms)])), largest: { ms: round(c.largest.ms), part: c.largest.part } });
 // Herdr's banner stays in place of a cut-off view until it draws again, and the cut copy can't be
 // told apart (one module, any copy's tick may notice): each copy with a clock redraws once per new
 // cut, at most once a second, so a view whose every render is cut doesn't loop. Set only from ticks.
@@ -120,17 +141,22 @@ function timedRender(view, draw) {
     f.depth--;
   }
   const mine = f.carried + perf.elements();
-  // The list's or stage's own line carries the model passes inside it (a view's, nested, doesn't).
-  perfLog.render(view, perf.now() - t0, mine, f.depth ? undefined : { model: Math.round(f.modelMs * 100) / 100, why: f.why });
+  if (!f.depth) mark();
+  const ms = perf.now() - t0;
+  // The list's or stage's own line carries the model passes inside it (a view's, nested, doesn't),
+  // and a slow list draw its parts.
+  perfLog.render(view, ms, mine, f.depth ? undefined : { model: round(f.modelMs), why: f.why, ...(f.clock && ms > SLOW_MS && drawFacts(f.clock)) });
   f.carried = f.depth ? outer + mine : 0;
   return out;
 }
-// model.taskModelOnce, with its time and reason kept in the render's frame for the perf log.
-function modelOnce(ctx, memo) {
+// model.taskModelOnce, with its time and reason kept in the render's frame for the perf log; after:
+// the part a draw that read until now goes on to.
+function modelOnce(ctx, memo, after = "drawing") {
   const f = perfLog.on && liveFrame() ? frame : null;
   if (!f) return model.taskModelOnce(ctx, memo);
   const was = memo.m;
   const step = f.step;
+  mark();
   f.step = "model pass";
   const t0 = perf.now();
   const m = model.taskModelOnce(ctx, memo);
@@ -138,7 +164,8 @@ function modelOnce(ctx, memo) {
     f.modelMs += perf.now() - t0;
     f.why ??= memo.why;
   }
-  f.step = step === "reads" ? "drawing" : step;
+  mark();
+  f.step = step === "reads" ? after : step;
   return m;
 }
 // Runs f in a job of its own, for a loop that must outlive it: by then the loop waits at its next
@@ -2805,6 +2832,7 @@ export default class AgentTasks extends View {
     if (props()?.textHidden) return div().size_full().flex().items_center().justify_center().bg(t.background).text_color(t.dim).child("Text hidden");
     if (props()?.viewBar) return this.viewRow(t);
     this.takeRequest(cx);
+    mark();
     if (!props()?.overlay) {
       // A new copy (Herdr's start, a layout switch) puts the shown view and shape in place once.
       if (!this.placed) {
@@ -2826,11 +2854,13 @@ export default class AgentTasks extends View {
       const want = shared(AREA);
       if (want && want !== this.area && this.config.areas.some((a) => a.id === want)) this.switchArea(want);
     }
+    mark();
     const now = Date.now();
     const terms = terminals();
     const agentList = agents();
     const listed = new Map(agentList.map((a) => [a.address, a.status]));
     const spaceList = spaces();
+    mark();
     // "New space" made a space: its first terminal leads a task from birth (adopt.js), once it shows.
     if (this.born) {
       const b = now - this.born.at < 60000 ? adopt.bornSpace(this.born, spaceList, terms) : null;
@@ -2840,11 +2870,13 @@ export default class AgentTasks extends View {
     // Changes tracked now too (the tick's notify is not allowed here); this copy's recorder takes
     // them from the model below.
     this.track(terms, now, null);
+    mark();
     const seen = sharedOr(SEEN) ?? {};
     const unseen = new Set(model.forgettable(Object.keys(seen), terms, this.reach));
     if (unseen.size) setShared(SEEN, Object.fromEntries(Object.entries(seen).filter(([a]) => !unseen.has(a))));
     const downSince = new Map(this.reach.filter((m) => !m.reachable).map((m) => [m.name, m.since]));
     const f = focused();
+    mark();
 
     const config = this.config;
     // The shown area's Eye (no Eye is ever a work item): its own row, chip, rail cell and start.
@@ -2857,7 +2889,7 @@ export default class AgentTasks extends View {
     }
     // The one model every view draws from (model.taskModel).
     const m = modelOnce({ terms, listed, spaces: spaceList, config, changes: this.changes, changesVersion: this.changesVersion, seen, now,
-      titles: sharedOr(TITLES) ?? {}, reach: this.reach, eye: this.eye }, (this.modelMemo ??= {}));
+      titles: sharedOr(TITLES) ?? {}, reach: this.reach, eye: this.eye }, (this.modelMemo ??= {}), "bookkeeping");
     const allItems = m.all;
     const composeTo = model.composeMode(this.chosen, Boolean(this.eye));
     if (composeTo !== this.composeTo) {
@@ -2890,6 +2922,7 @@ export default class AgentTasks extends View {
     if (!props()?.overlay && this.configLoaded && area && shared(AREA) !== area) setShared(AREA, area);
     // What finished unseen in the other areas since you last left them (the experiment's signal).
     const news = model.areaNews(workList, { shown: area, areaOfItem, left: sharedOr(AREA_LEFT) ?? {}, listed, seen, now, changes: this.changes });
+    mark();
     const items = workList.filter((i) => areaOfItem(i) === area);
     const leftHere = loose.filter((i) => areaOfItem(i) === area);
     const pending = this.pending.filter((p) => p.area === area);
@@ -2919,6 +2952,7 @@ export default class AgentTasks extends View {
       if (lead && hasPane(lead)) run("pane.focus", { terminal: lead });
     }
     view.selectedKey = this.followSelection(allItems, view.focusedAgent);
+    mark();
     if (!props()?.overlay) {
       this.arrive(allItems);
       this.takeAct(allItems, cx);
@@ -2935,7 +2969,9 @@ export default class AgentTasks extends View {
         if (Date.now() - at < 10000) this.openSearch(cx);
       }
     }
+    mark();
     this.recordTick(terms, m.all, now, this.reach, view.focusedAgent, cx);
+    mark("groups");
 
     const groups = model.groupItems(items, this.changes, now, listed, seen);
     if (pending.length && !groups.some((g) => g.id === "working")) {
@@ -2971,6 +3007,7 @@ export default class AgentTasks extends View {
         else this.dismiss();
       });
 
+    mark("rows");
     if (narrow()) {
       const down = this.machineLines(t, onArea, true);
       return root
@@ -2997,6 +3034,7 @@ export default class AgentTasks extends View {
         if (item.key === view.selectedKey) selectedRow = rows.length;
         const g = model.groupItems([item], this.changes, now, listed, seen)[0]?.id ?? "idle";
         rows.push(...(item.leftOver ? [this.leftRow(t, item, view)] : this.itemRow(t, item, view, g)));
+        mark();
       }
     }
     let earlierAt = -1;
@@ -3011,6 +3049,7 @@ export default class AgentTasks extends View {
       for (const e of shown) {
         if (e.key === view.selectedKey) selectedRow = rows.length;
         rows.push(...(e.dup ? this.dupRows(t, e, view, g.id) : this.itemRow(t, e, view, g.id)));
+        mark();
       }
       if (cut) rows.push(this.moreRow(t, this.folded.has("done-more") ? entries.length - DONE_SHOWN : 0));
     }
@@ -3025,6 +3064,7 @@ export default class AgentTasks extends View {
       if (!this.folded.has("leftover")) rows.push(...leftHere.map((i) => this.leftRow(t, i, view)));
     }
     if (shells.length && shells.length < 3 && !found) rows.push(div().h(10).flex_none(), ...shells.map((s) => this.shellRow(t, s, view)));
+    mark("drawing");
 
     // The selected row stays in view when the selection changes or the card beside it resizes
     // (tower-stack sizes its card to its content).
@@ -3045,7 +3085,9 @@ export default class AgentTasks extends View {
     const bottom = !props()?.overlay && viewSwitch() === "bottom"
       ? v_flex().flex_none().when(Boolean(this.recipeChips(t)), (el) => el.child(div().pt(6).border_t(1).border_color(t.border).child(this.recipeChips(t)))).child(this.viewRow(t, true))
       : null;
+    mark();
     const down = this.machineLines(t, onArea, false, doneLines);
+    mark();
     return root
       // The Eye covers every area: its row sits above the area row, the composer under the plus.
       .when(Boolean(this.eye), (el) => el.child(div().flex_none().pl(8).pr(14).pb(4).child(this.eyeRow(t, view))))

@@ -864,7 +864,12 @@ come from the app's program table.
   is still looking for its terminal.
 - With `"perf": true` in the settings the mod appends one line per render (`{at, view, ms,
   elements}`; the list's and the stage's add `model`, the ms of the model passes inside, 0 when
-  none ran, and `why`, what made the first run: `first`, `settings` or one of `model.PASS_WHY`),
+  none ran, and `why`, what made the first run: `first`, `settings` or one of `model.PASS_WHY`;
+  a list draw over 30 ms adds `parts`, each part's ms (`reads`, `model pass`, `bookkeeping`,
+  `groups`, `rows`, `drawing`; `model pass` holds the check for a change too, so it is over 0
+  while `model` is 0 when no pass ran), and `largest: {ms, part}`, its largest step between two
+  checkpoints: one step far over its part's usual time is a pause, such as QuickJS collecting
+  garbage; time spread over the parts is the code or the machine),
   per command (`{at, what, ms}`) and per one-second tick over 300 ms late (`{at, what: "tick
   late", ms}`, the only sign that the app's thread was busy elsewhere) to
   `<tower folder>/perf.jsonl`, never terminal text; past 1 MiB the file moves to `perf.jsonl.1`. Herdr cuts a mod's render off
@@ -892,8 +897,9 @@ come from the app's program table.
   at a render's start or by the one-second tick was left by a cut: dropped and, with
   `"perf": true`, logged once as `{at, what: "render cut off", left, count, view, step}`:
   `view` is `list`, `stage`, `stage <view id>` (cut inside that view) or `other` (a small copy),
-  `step` how far it got (`reads`, `model pass`, `drawing`, `view`), both kept in the frame
-  itself. Herdr's banner stays until the view draws again, so on each new cut every copy with a
+  `step` how far it got (`reads`, `model pass`, `drawing`, `view`; in the list one of its
+  parts), both kept in the frame itself; a cut list also has `parts` and `largest` so far and
+  `lastCheck`, how many ms into the draw its last checkpoint was (the cut came at about 50). Herdr's banner stays until the view draws again, so on each new cut every copy with a
   clock (the list's and the stage's 250 ms ticks) asks for one redraw, at most once a second.
   `cutoff.test.mjs` cuts runs off with Node's `vm` timeout, which skips `catch` and
   `finally` the same way, and stands an ordinary throw in where a job must stop half-way.
