@@ -478,6 +478,60 @@ const now = Date.UTC(2026, 10, 15, 12);
     assert.ok(vps.some((l) => l.live), "live lanes on that machine");
     for (const l of vps) assert.ok(l.stretches.every((st) => st.to <= opened), `${l.a}: nothing after the gap began`);
   }
+
+  // Case 1: two views at different spans (1h and Week; every copy shares the module) rendering in
+  // turn keep their lanes as one view alone does: a reload redoes none, a new event its lane, a new
+  // open gap only its machine's lanes.
+  {
+    const views = [uiOf(0), uiOf(4)];
+    const turn = () => views.map((ui) => {
+      worked.clear();
+      assert.ok(frameIn(ui, Infinity), "drawn");
+      return [...worked];
+    });
+    // The new record is read on the first settle and lands on the second.
+    const reload = async (how) => {
+      const was = watched;
+      write(how);
+      await settle();
+      await settle();
+      assert.notEqual(watched, was, "read again");
+    };
+    turn();
+    await settle();
+    turn();
+    await reload({ add: false });
+    assert.deepEqual(turn(), [[], []], "two views, a reload with nothing changed");
+    await reload({ add: true });
+    const changed = watched.events.at(-1).a;
+    assert.deepEqual(turn(), [[changed], [changed]], "two views, one new event");
+    const ev = JSON.parse(globalThis.__fx.files[evPath]);
+    ev.gaps.push({ m: "lab-box", from: fx.now - 2 * MIN, to: null });
+    globalThis.__fx.files[evPath] = JSON.stringify(ev);
+    globalThis.__fx.shared["agent-tower.recorded"] = "lab-box silent";
+    await settle();
+    await settle();
+    const redone = turn();
+    numbers.push(`Case 1: a new open gap redid ${redone.map((r) => r.length).join(" / ")} lanes (1h / Week), all on its machine`);
+    for (const r of redone) assert.ok(r.length > 0 && r.every((a) => a.startsWith("lab-box/")), `only lab-box lanes: ${r.filter((a) => !a.startsWith("lab-box/")).slice(0, 3)}`);
+    assert.deepEqual(turn(), [[], []], "and kept after");
+
+    // Round 1: a render cut off inside the gap lists' slow path (the first frame after a reload)
+    // keeps the kept lists, so the next frame works out no lane. The cut: an old Herdr gap whose
+    // start, written out for the lists' value key, spins while armed.
+    const ui = views[0];
+    await reload({ add: false });
+    const trapped = watched.gaps.find((g) => g.m === "herdr" && g.to != null);
+    const at = trapped.from;
+    let armed = true;
+    trapped.from = { valueOf: () => at, toString() { if (armed) for (;;) {} return String(at); } };
+    assert.equal(frameIn(ui, Infinity), null, "cut off in the slow path");
+    armed = false;
+    worked.clear();
+    assert.ok(frameIn(ui, Infinity), "drawn");
+    assert.deepEqual([...worked], [], "a render cut in the slow path loses no kept list");
+    trapped.from = at;
+  }
   console.log(numbers.join("\n"));
 }
 
