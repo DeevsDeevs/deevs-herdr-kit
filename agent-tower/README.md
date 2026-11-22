@@ -72,8 +72,10 @@ falls back to its default and a toast names it.
   (`contract`) in the first message instead.
 - `contract`: those full rules, as text (`{id}` is the task id).
 - `perf`: `true` appends one line per render (view, milliseconds, elements; for the list and the
-  stage also the model pass's milliseconds and one word for what made it run), per command (its
-  kind, milliseconds), per cut-off render (which view, how far it got) and per one-second tick
+  stage also the model pass's milliseconds and one word for what made it run; for a list draw
+  over 30 ms also each part's milliseconds and its largest single step), per command (its
+  kind, milliseconds), per cut-off render (which view, how far it got; for the list also its
+  parts and largest step so far) and per one-second tick
   that ran over 300 ms late (how late) to `<tower folder>/perf.jsonl`, no terminal text; past
   1 MiB the file moves to `perf.jsonl.1`. Off by default.
 - `doneSignal`: how another area shows a finish: `dot`, `pulse`, `line` or `off` (the

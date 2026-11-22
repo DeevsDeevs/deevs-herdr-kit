@@ -16,8 +16,17 @@ import * as s from ${JSON.stringify(io)};
 export * from ${JSON.stringify(io)};
 export const agents = () => {
   if (globalThis.__fx.spin) for (;;) {}
+  // fx.slow: ms this read takes (a slow step inside the list's reads).
+  for (const t = performance.now(); performance.now() - t < (globalThis.__fx.slow ?? 0);) {}
   if (globalThis.__fx.throwAgents) throw new Error("a made-up failure");
   return s.agents();
+};
+// Every props() read counted in fx.propsRead; fx.spinAtProps: the read that spins (where a later cut lands).
+export const props = () => {
+  const fx = globalThis.__fx;
+  fx.propsRead = (fx.propsRead ?? 0) + 1;
+  if (fx.propsRead === fx.spinAtProps) for (;;) {}
+  return s.props();
 };
 // fx.py(args): what read.py answers.
 export const exec = (cmd, args, opts) => (globalThis.__fx.py && cmd === "sh" && args?.[2] === "tower" ? Promise.resolve(globalThis.__fx.py(args)) : s.exec(cmd, args, opts));
@@ -551,5 +560,50 @@ const perfAll = (fx) => fx.execArgs.filter((a) => a[2] === "perf").map((a) => a[
   await second();
   await fire(30000);
   assert.deepEqual(perfAll(fx).filter((l) => l.what === "tick late").map((l) => l.ms), [700]);
+}
+
+// S1-S2 (build2/list-slow-draws.md): a slow list draw and a cut say where in the draw the time went.
+const PARTS = ["reads", "model pass", "bookkeeping", "groups", "rows", "drawing"];
+// S1. A list draw over 30 ms carries each part's time and its largest single step, with the part it
+//     fell in; a quick one carries neither.
+{
+  const { v, cx, fire, fx } = await copy({ ...PERF });
+  v.render(cx);
+  fx.slow = 40;
+  v.render(cx);
+  fx.slow = 0;
+  await fire(30000);
+  const [quick, slow] = perfAll(fx).filter((l) => l.view === "list").slice(-2);
+  assert.equal(quick.parts, undefined, JSON.stringify(quick));
+  assert.equal(quick.largest, undefined);
+  assert.ok(slow.ms > 30, JSON.stringify(slow));
+  assert.deepEqual(Object.keys(slow.parts), PARTS, JSON.stringify(slow));
+  assert.ok(slow.parts.reads >= 40 && slow.largest.ms >= 40 && slow.largest.part === "reads", JSON.stringify(slow));
+  const sum = PARTS.reduce((n, p) => n + slow.parts[p], 0);
+  assert.ok(Math.abs(sum - slow.ms) < 1, `the parts add up to the draw: ${sum} ${slow.ms}`);
+}
+// S2. A cut list draw's line carries the part it was cut in, the parts and the largest step so far,
+//     and how far into the draw its last checkpoint was, as the cut render left them.
+{
+  const { v, cx, fire, fx } = await copy({ ...PERF });
+  fx.spin = true;
+  assert.ok(cut(() => v.render(cx)));
+  fx.spin = false;
+  await fire(250);
+  // A cut in the last part: at the draw's last props() read.
+  fx.propsRead = 0;
+  v.render(cx);
+  const reads = fx.propsRead;
+  fx.propsRead = 0;
+  fx.spinAtProps = reads;
+  assert.ok(cut(() => v.render(cx)));
+  fx.spinAtProps = null;
+  await fire(250);
+  await fire(30000);
+  const [early, late] = perfLines(fx).slice(-2);
+  assert.deepEqual([early.view, early.step, early.largest.part, Object.keys(early.parts)], ["list", "reads", "reads", ["reads"]], JSON.stringify(early));
+  assert.ok(early.lastCheck >= 0 && early.lastCheck < 5, JSON.stringify(early));
+  assert.deepEqual([late.view, late.step, Object.keys(late.parts)], ["list", "drawing", PARTS], JSON.stringify(late));
+  assert.ok(PARTS.includes(late.largest.part) && late.largest.ms > 0 && late.lastCheck > 0, JSON.stringify(late));
 }
 console.log("cutoff ok");
