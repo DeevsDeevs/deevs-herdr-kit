@@ -123,6 +123,32 @@ const hc = timed(hostHc, (a) => `hc ${a[0]?.[0] ?? ""}`);
 const exec = timed(hostExec, (a) => `exec ${a[0]}`);
 const readTextFile = timed(hostRead, (a) => `read ${baseName(a[0])}`);
 const writeTextFile = timed(hostWrite, (a) => `write ${baseName(a[0])}`);
+
+// Restart lead (model.restartable), shared by every copy: what read.py found each ended lead left,
+// per quit (model.restartKey → {session} or null; {asking: time} while it asks), and each task's
+// restart under way (task id → when it was chosen), held until it is settled and at most
+// RESTART_HOLD_MS: a task cut off never settles.
+const restartFound = new Map();
+const restarting = new Map();
+const RESTART_WAIT_MS = 60000;
+const RESTART_HOLD_MS = 180000;
+// hc send waits 3 s after a person's last key and up to a minute on a line they are still writing. Past
+// this, Herdr stops hc, and hc drops a send it has not typed: it can never arrive later.
+const RESTART_SEND_MS = 6000;
+
+// A restart of this task under way: marked, within the hold, and its lead has not changed state since
+// (one that came back and quit again is a new quit).
+const restartUnderWay = (item, now, changes) => {
+  const busy = item?.taskId ? restarting.get(item.taskId) : undefined;
+  return busy !== undefined && now - busy < RESTART_HOLD_MS && (changes.get(item.lead?.address)?.at ?? 0) <= busy;
+};
+
+// The conversation Restart lead would resume for this item, or null: then it is not offered.
+function restartOf(item, now, changes, config) {
+  const start = item?.taskId ? model.restartable(item, now, changes, config) : null;
+  const found = start && !restartUnderWay(item, now, changes) ? restartFound.get(model.restartKey(item.lead, changes)) : null;
+  return found?.session ? { start, session: found.session, words: model.resumeWords(config, item.lead, start.program) } : null;
+}
 // A render, timed with the elements it built: for the list, the stage and each view. A render
 // inside another (a view in the stage) is counted in both: the outer one carries its count over.
 // The depth and the carried count live in the render's frame, so a cut-off render's go with it.
@@ -1724,6 +1750,7 @@ export default class AgentTasks extends View {
     setShared(REQUEST, null);
     if (request.action === "rename") this.beginRename(request.keys[0], cx, true);
     else if (request.action === "newLead") this.composeInto(request.keys[0]);
+    else if (request.action === "restartLead") this.restartLead(cx, request.keys[0]);
     else if (request.action === "close") this.closeItem(request, cx);
     else if (request.action === "adopt") {
       cx.spawn(async (cx) => {
@@ -3328,6 +3355,75 @@ export default class AgentTasks extends View {
     const now = Date.now();
     const terms = terminals();
     this.recordNow(terms, now, this.track(terms, now, redraw ? cx : null), cx);
+    this.findRestarts(cx, terms, now);
+  }
+
+  // Restart lead: the conversation each lead that ended left, asked once per quit on its machine
+  // (read.py's lead_session).
+  findRestarts(cx, terms, now) {
+    for (const t of terms) {
+      if (t.state !== "live" || t.labels?.["task.role"] !== "lead") continue;
+      const start = model.restartable({ taskId: t.labels["task.id"], lead: t }, now, this.changes, this.config ?? liveConfig);
+      const key = start && model.restartKey(t, this.changes);
+      const had = key ? restartFound.get(key) : null;
+      if (!key || (had !== undefined && !(had?.asking && now - had.asking > RESTART_WAIT_MS))) continue;
+      restartFound.set(key, { asking: now });
+      cx.spawn(async (cx) => {
+        restartFound.set(key, await this.lookUpRestart(t, start, now).catch(() => null));
+        cx.notify();
+      });
+    }
+  }
+
+  // Restart lead's lookup: when hc's core saw the agent end (its status_ms there: Tower may have seen it
+  // late), the last exit line of its program in the lead's terminal (model.saidSession; the text is used
+  // for that id only and not kept), then read.py on the lead's machine (lead_session). {session, path} or
+  // null.
+  async lookUpRestart(lead, start, now) {
+    const got = await hc(["get", lead.address, "--json"]).then((r) => (r.code === 0 ? JSON.parse(r.stdout) : null), () => null);
+    if (!got || got.status != null || !Number.isFinite(got.status_ms)) return null;
+    const text = await hc(["read", lead.address, "--lines", "400"]).then((r) => (r.code === 0 ? r.stdout : ""), () => "");
+    const named = model.saidSession(text, start.program);
+    const script = await readTextFile(`${appHome()}/mods/agent-tower-panel/read.py`);
+    const ask = JSON.stringify(model.restartAsk(lead, start, now, this.changes, named, got.status_ms));
+    const r = await exec("sh", ["-c", 'python3 -c "$1" "$2"', "tower", script, ask], { on: model.machineOf(lead.address), timeout: 30000 });
+    return JSON.parse(r.stdout).restart ?? null;
+  }
+
+  // Restart lead: typed into the lead's shell (hc send pastes and presses Enter; to a shell, as is).
+  // Its labels stay: it is the same lead. One at a time per task: held until the send has returned and
+  // a minute has shown whether its agent came back.
+  restartLead(cx, key) {
+    const now = Date.now();
+    const item = this.items?.find((i) => i.key === key);
+    const config = this.config ?? liveConfig;
+    const fail = (why) => notify({ title: "The agent didn't start", body: why, level: "error" });
+    if (restartUnderWay(item, now, this.changes)) return fail("a restart of this lead is under way");
+    const r = restartOf(item, now, this.changes, config);
+    if (!r) return fail("its last conversation is not known for sure");
+    restarting.set(item.taskId, now);
+    const address = item.lead.address;
+    const done = (cx, why) => {
+      if (restarting.get(item.taskId) === now) restarting.delete(item.taskId);
+      if (why) fail(why);
+      cx.notify();
+    };
+    cx.spawn(async (cx) => {
+      // Looked up again: since the quit, another terminal may have taken that conversation up.
+      const again = await this.lookUpRestart(item.lead, r.start, Date.now()).catch(() => null);
+      if (again?.session !== r.session) return done(cx, "its last conversation is not known for sure");
+      // What is in front, right before typing.
+      const lead = terminals().find((t) => t.address === address);
+      const shell = lead && model.restartable({ ...item, lead }, Date.now(), this.changes, config) ? model.shellKind(lead) : null;
+      if (!shell) return done(cx, "its terminal runs something else now");
+      const screen = await hc(["read", address]).then((x) => (x.code === 0 ? x.stdout : ""), () => "");
+      if (!model.promptBare(screen)) return done(cx, "nothing was typed: its shell's last line is not a known empty prompt");
+      const line = model.restartLine(r.start, lead.cwd, r.session, r.words, shell);
+      const sent = await exec("hc", ["send", "--", address, line], { timeout: RESTART_SEND_MS }).catch((e) => ({ code: 1, stderr: String(e) }));
+      if (sent.code !== 0) return done(cx, /took longer/.test(sent.stderr) ? "nothing was typed: a line is being written in its shell" : model.errorWords(sent));
+      cx.notify();
+      cx.timer.after(RESTART_WAIT_MS, (cx) => done(cx, terminals().find((t) => t.address === address)?.status == null ? `${r.start.program} did not start in the lead's terminal` : null));
+    });
   }
 
   // Changes get their time here, from the tick and at the start of each draw (so a draw never shows
@@ -4209,6 +4305,7 @@ export default class AgentTasks extends View {
       } }] : []),
       ...(one?.lead && !p.rail ? [{ label: "Rename", icon: "square-pen", act: () => this.request({ action: "rename" }) }] : []),
       ...(one?.taskId && !p.rail ? [{ label: "New lead", icon: "plus", act: () => this.request({ action: "newLead" }) }] : []),
+      ...(restartOf(one, Date.now(), new Map(Object.entries(sharedOr(CHANGES) ?? {})), liveConfig) ? [{ label: "Restart lead", icon: "terminal", act: () => this.request({ action: "restartLead" }) }] : []),
       // Not a task yet (an agent's own row, a space with only shells): its space becomes one (adopt.js).
       ...(p.space && (p.shellSpace || (one && !one.taskId)) ? [{ label: "Make a task", icon: "plus", act: () => this.request({ action: "adopt", space: p.space }) }] : []),
       // Herdr's words: "End" for terminals and what they started ("Close" is for spaces and panes).

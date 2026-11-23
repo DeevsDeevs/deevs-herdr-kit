@@ -715,6 +715,110 @@ def agy_ended(argv, cwd, created, finished):
     return None if cwd and agy_elsewhere(agy_cid(path), cwd) else path
 
 
+# Restart lead: only the conversation the lead was started with, and only when nothing says it left it.
+# created: the terminal's start; finished: when its agent quit (the earlier of hc's status_ms, quit_ms,
+# and the time Tower saw it); epoch seconds on this machine. {session, path} or None.
+# 1. The candidate: the one transcript of its program in its folder whose first message is the run
+#    line's and that began within ENDED_SLACK of the start (agy: agy_ended, and not agy_left).
+# 2. named, the last exit line of its program in the lead's terminal, must be the candidate's id: any
+#    other (/clear, /new, /resume, an agent run there by hand, a line quoted) offers nothing.
+# 3. No other transcript of that program there, a worker's apart, was written after the candidate.
+# 4. Without an exit line (a crash, a cleared screen): the candidate was written within ENDED_SLACK
+#    before the quit, as an agent that died at work leaves it.
+# 5. Not written since the quit (RESTART_SLACK): another terminal may be in it now.
+RESTART_SLACK = 15
+SESSION_ID = re.compile(r"[0-9A-Za-z][0-9A-Za-z-]{0,63}")
+# The first messages Tower and the skill give a worker: a brief's last sentence, or the list's first line.
+WORKER_END = re.compile(r"You are a worker on task [A-Za-z0-9_-]+(?:; use the [\w.-]+ skill if you have it)?\.\s*$")
+WORKER_START = re.compile(r'^\s*You are a worker on task [A-Za-z0-9_-]+, "')
+
+
+def a_worker(text):
+    return bool(text) and bool(WORKER_END.search(text) or WORKER_START.search(text))
+
+
+def first_said(path, program):
+    text, meta = opening(path, TASK_HEAD[program])
+    return text or (codex_said(path) if program == "codex" else None), meta
+
+
+def lead_session(program, cwd, created, finished, argv, named=None):
+    cwd = (cwd or "").rstrip("/") or "/"
+    if not os.path.isdir(cwd) or not argv or (named is not None and not SESSION_ID.fullmatch(str(named))):
+        return None
+    if program == "agy":
+        path = quiet(agy_ended, argv, cwd, created, finished)
+        if not path or quiet(agy_left, path, cwd) is not False:
+            return None
+        session, others = agy_cid(path), []
+    else:
+        if program == "claude":
+            found = glob.glob(f"{claude_dir(cwd)}/*.jsonl")
+        elif program == "pi":
+            found = glob.glob(f"{pi_dir(cwd)}/*.jsonl")
+        elif program == "codex":
+            days = range(int((NOW - created) // 86400) + 2)
+            found = codex_in(cwd, {time.strftime("%Y/%m/%d", time.localtime(NOW - d * 86400)) for d in days})
+        else:
+            return None
+        said = loose(argv[-1])
+        mine, others = [], []
+        for path in found:
+            if os.path.getmtime(path) < created - ENDED_SLACK:
+                continue
+            text, meta = first_said(path, program)
+            head = loose(text or "")[:100]
+            first = first_ago(path, 0)
+            if head and head in said and first is not None and abs(NOW - first - created) <= ENDED_SLACK:
+                mine.append((path, meta))
+            elif not a_worker(text):
+                others.append(path)
+        if len(mine) != 1:
+            return None
+        path, meta = mine[0]
+        session = meta["session"] or os.path.basename(path)[:-6]
+    written = os.path.getmtime(path)
+    if named is not None and named != session:
+        return None
+    if any(os.path.getmtime(p) > written for p in others):
+        return None
+    if named is None and written < finished - ENDED_SLACK:
+        return None
+    if written > finished + RESTART_SLACK:
+        return None
+    return {"session": session, "path": path}
+
+
+# Codex 0.166 writes no user_message event: its first message is the first UserMessage item.
+def codex_said(path):
+    with open(path, "rb") as f:
+        data = f.read(TASK_HEAD["codex"])
+    for line in data.split(b"\n"):
+        try:
+            item = (json.loads(line).get("payload") or {}).get("item") or {}
+        except (ValueError, AttributeError):
+            continue
+        if isinstance(item, dict) and item.get("type") == "UserMessage":
+            return "\n".join(texts(item.get("content"), ("text",)))
+    return None
+
+
+# agy_idle's check for an ended conversation: left with /clear, /new or /resume, typed into in another
+# folder, or another conversation typed into in its folder after its last write.
+def agy_left(path, cwd):
+    cid, here, since = agy_cid(path), os.path.realpath(cwd), os.path.getmtime(path)
+    for row in agy_history():
+        if row.get("conversationId") == cid:
+            if str(row.get("display") or "").strip().split(" ")[0] in AGY_LEAVE:
+                return True
+            if row.get("workspace") and os.path.realpath(row["workspace"]) != here:
+                return True
+        elif row.get("conversationId") and os.path.realpath(row.get("workspace") or "/") == here \
+                and (row.get("timestamp") or 0) / 1000 > since:
+            return True
+    return False
+
+
 def agy_dir(path):
     return path.split("/.system_generated/")[0]
 
@@ -1078,6 +1182,19 @@ def main():
         return
     if "tasks" in req:
         sys.stdout.write(json.dumps({"now": NOW, "tasks": tasks_request(req["tasks"])}))
+        return
+    # Restart lead: {program, argv, cwd, created_s, finished_s, quit_ms, named?}: created_s and finished_s as
+    # seconds ago on the caller's clock, quit_ms hc's status_ms for the lead on this machine.
+    if "restart" in req:
+        r = req["restart"]
+        # The quit: the earlier of when Tower saw it and when hc's core did (quit_ms, this machine's clock).
+        # Without hc's time, nothing: Tower may have seen the quit long after it.
+        if not isinstance(r.get("quit_ms"), (int, float)):
+            sys.stdout.write(json.dumps({"restart": None}))
+            return
+        finished = min(NOW - float(r["finished_s"]), float(r["quit_ms"]) / 1000)
+        sys.stdout.write(json.dumps({"restart": lead_session(r.get("program"), r.get("cwd"), NOW - float(r["created_s"]),
+                                                             finished, r.get("argv") or [], r.get("named"))}))
         return
     out = {}
     with concurrent.futures.ThreadPoolExecutor(4) as pool:

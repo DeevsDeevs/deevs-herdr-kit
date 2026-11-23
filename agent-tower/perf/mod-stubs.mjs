@@ -71,7 +71,10 @@ export const writeTextFile = (p, text) => {
 export const watchFolder = () => new Promise(() => {});
 export const nextCommand = () => new Promise(() => {});
 export const knownAgents = () => Promise.resolve([]);
-export const notify = () => note("notify");
+export const notify = (n) => {
+  (fx().notes ??= []).push(n);
+  note("notify");
+};
 export const openOverlay = () => note("openOverlay");
 export const closeOverlay = () => null;
 export const run = (cmd) => note(`run ${cmd}`);
@@ -89,13 +92,25 @@ export const hc = (args) => {
     const all = [...(f.terms ?? []), ...(f.gone ?? [])].filter((t) => !k || t.labels?.[k] === v);
     return Promise.resolve({ code: 0, stdout: JSON.stringify({ terminals: all }) });
   }
-  if (args[0] === "read") return Promise.resolve({ code: 0, stdout: "╭──╮\n│ ● working │\n╰──╯" });
+  // fx().hcGet(address): hc get's record for Restart lead's lookup (left out: hc get prints nothing).
+  if (args[0] === "get" && fx().hcGet) {
+    const t = fx().hcGet(args[1]);
+    return Promise.resolve(t ? { code: 0, stdout: JSON.stringify(t) } : { code: 1, stdout: "", stderr: "no such terminal" });
+  }
+  // fx().readText[address]: a terminal's text (Restart lead reads the agent's resume line there).
+  if (args[0] === "read") return Promise.resolve({ code: 0, stdout: fx().readText?.[args[1]] ?? "╭──╮\n│ ● working │\n╰──╯" });
   return Promise.resolve({ code: 0, stdout: "" });
 };
 export const exec = (cmd, args = [], opts = {}) => {
   // read.py runs as sh -c 'python3 -c "$1" "$2"' tower <script> <request>.
   if (cmd === "sh" && args[2] === "tower") {
     const req = JSON.parse(args[4] ?? "{}");
+    // Restart lead's lookup: fx().restartOut(request) answers, else nothing found.
+    if (req.restart) {
+      (fx().restartAsks ??= []).push(req.restart);
+      if (fx().restartHang?.(req.restart)) return new Promise(() => {});
+      return Promise.resolve({ code: 0, stdout: JSON.stringify({ restart: fx().restartOut?.(req.restart) ?? null }), stderr: "" });
+    }
     const kind = req.turns ? "turns" : req.tasks ? "tasks" : "panel";
     note(`exec read.py ${kind}${req.chain ? " +chain" : ""}${opts.on ? " (remote)" : ""}`);
     const now = Date.now() / 1000;
@@ -108,6 +123,11 @@ export const exec = (cmd, args = [], opts = {}) => {
     if (req.chain) out.chain = { chain: task, title: `Link of ${task} at ${Date.now()}`, next: null, ago_s: 60 };
     else delete out.chain;
     return Promise.resolve({ code: 0, stdout: JSON.stringify(out), stderr: "" });
+  }
+  // hc run through exec (Restart lead's bounded send): fx().hcExec answers, else done.
+  if (cmd === "hc") {
+    (fx().hcExecs ??= []).push([args, opts]);
+    if (fx().hcExec) return fx().hcExec(args, opts);
   }
   note(`exec ${cmd}${args[0] && !args[0].startsWith("-") ? ` ${args[0].split("/").pop()}` : ""}`);
   return Promise.resolve({ code: 0, stdout: "", stderr: "" });
