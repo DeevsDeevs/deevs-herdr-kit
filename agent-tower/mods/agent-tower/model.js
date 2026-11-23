@@ -299,20 +299,24 @@ function treeOf(lead, members, more = false) {
     if (!kidsOf.has(m.parent)) kidsOf.set(m.parent, []);
     kidsOf.get(m.parent).push(m);
   }
-  const rows = [];
-  const placed = new Set(lead ? [lead.address] : []);
-  const walk = (kids, lines) => kids.forEach((k, i) => {
-    if (placed.has(k.address)) return;
-    placed.add(k.address);
-    const last = i === kids.length - 1 && !(more && !lines.length);
-    rows.push({ t: k, lines: [...lines, last ? "└" : "├"] });
-    walk(kidsOf.get(k.address) ?? [], [...lines, last ? "" : "│"]);
-  });
+  const s = { rows: [], placed: new Set(lead ? [lead.address] : []), kidsOf, more };
   const top = members.filter((m) => m !== lead && (m.parent === lead?.address || !inItem.has(m.parent) || m.parent === m.address));
-  walk(top, []);
+  walkTree(top, [], s);
   // A parent loop never reaches the top: still show those once.
-  walk(members.filter((m) => m !== lead && !placed.has(m.address)), []);
-  return rows;
+  walkTree(members.filter((m) => m !== lead && !s.placed.has(m.address)), [], s);
+  return s.rows;
+}
+// A module function, not a closure that calls itself: in QuickJS that closure is a reference cycle,
+// and all it holds waits for the cycle collector, a pause inside some later render (treewalk.test.mjs).
+function walkTree(kids, lines, s) {
+  for (let i = 0; i < kids.length; i++) {
+    const k = kids[i];
+    if (s.placed.has(k.address)) continue;
+    s.placed.add(k.address);
+    const last = i === kids.length - 1 && !(s.more && !lines.length);
+    s.rows.push({ t: k, lines: [...lines, last ? "└" : "├"] });
+    walkTree(s.kidsOf.get(k.address) ?? [], [...lines, last ? "" : "│"], s);
+  }
 }
 
 // Every work item: a labelled task (terminals carrying its task.id, and what they started), or an
