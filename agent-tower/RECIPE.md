@@ -248,8 +248,19 @@ One column on `chrome`, 13px text, in the vocabulary of Herdr's shipped `agents`
   - **one line for the rest**: "2 done · 10 idle" with a chevron, 12px `dim`; a click opens
     their rows under it. A worker's Done stays Done (it finished and reported; agreed with
     the panel), but only the lead's Done makes the task Done, and only once nothing in it works.
-  The tree is open while the task is selected or something in it works or waits, folded
-  otherwise; a click on the chip opens or folds it and that choice wins.
+  - **its shells without a tab**: a live member labelled `task.role=shell` whose `herdr.space`
+    label is missing or empty (`model.tablessShell`: started with `hc run`, so Herdr never placed
+    it, or parked, which empties the label; Herdr labels every terminal it keeps in a tab with its
+    space and places any terminal so labelled, and the label and the mod's `panes()` agree), on
+    this machine or another, one row each after the workers, at a top-level worker's indent without
+    a tree line, named by `name`, else the program, else the address (no `template`, unlike a
+    worker), with "shell" (11px `dim`) where a worker has its mark. A click and a right-click
+    are a worker's (its peek; Open, End…). A shell in a tab has no row. Shells are no members of
+    the tree: no state, count, word, need, fold or view reads them (`item.shells`, apart from
+    `tree`); a task with only such shells has the fold chip, folded until opened.
+  The tree is open while something in it works or waits, or a search matched in it, folded
+  otherwise (selecting the task opens nothing); a click on the chip opens or folds it and that
+  choice wins.
 - **A starting task**: a 30px row in Working with the working mark, your words in `muted`,
   "Starting…" in `dim`, until its lead is labelled.
 - **Left over** (agents whose starter is gone, see below). Under an item: after its
@@ -720,7 +731,7 @@ come from the app's program table.
   call: a lead gets `task.id`, `task.role=lead`, the task's `task.title` and `task.by`,
   `task.recipe`, `task.area`, `task.lead` and `tower.tab-name=lead`; a worker `task.id` and
   `task.role=worker`. Then the lead before it becomes `task.role=worker` while its agent runs,
-  `task.role=shell` (no row) once its program has ended, in the same call `task.ask=` (what
+  `task.role=shell` (no row: it keeps its tab) once its program has ended, in the same call `task.ask=` (what
   waits on the person goes in the handover; the new lead sets it again) and `task.was=lead` (its
   workers then report to the task's lead of the moment); an ended terminal keeps its labels.
   - A new lead's first message, with the skill, two lines. The first says how the earlier lead
@@ -1314,7 +1325,14 @@ Top to bottom:
     sentence, paths as file names, cut at a word to about two lines (84 characters), then
     "· 9m ago". A click shows all of it. With no report, line 2 is the worker's own title
     when it differs from its name.
-- **Rows**, 16px below the message or the Workers section, 28px each, 8px corners, chevron
+- **Shells**, 16px below the Workers section or the message (12px below any other block): the
+  task's shells without a tab (the list's selection names them in `shells`), a "Shells" label (11,
+  `dim`), then one 22px line each: icon, name (else program, else address), its machine (`dim`),
+  "shell" (11, `dim`) at the right. A click opens it as a worker's does; right-click is the list's
+  agent menu. No read, age or count. In a task with no live lead its shells are the selection's
+  members, so they show under Workers instead and not here (the list still shows them as shell
+  rows).
+- **Rows**, 16px below the message, the Workers section or the Shells section, 28px each, 8px corners, chevron
   11px at the right. A closed row's hover fills it with `hover`; an open row has no surface,
   and hovering it only turns its chevron `foreground`. The summary never wraps: whole
   segments drop from the end past 48 characters, and the first segment always stays.

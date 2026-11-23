@@ -135,6 +135,8 @@ export function detailOf(selection, terms, listed, spaceList, changes) {
     // The task's word as its row shows it (the list publishes it), or null from an older list.
     status: selection.status ?? null,
     workers,
+    // The task's live shells without a tab (the list's selection names them), unless already members.
+    shells: (selection.shells ?? []).map((a) => byAddress.get(a)).filter((t) => isLive(t) && !members.includes(t)),
     needs: blocked.map((a) => ({ ...a, kind: kindOf(a.t), sentence: a.t.report?.msg?.trim() || null })),
     space: homeSpace(anchor, byAddress, spaceList),
     machine: machineOf(anchor.address),
