@@ -567,64 +567,71 @@ export function restartLine(start, folder, session, words, shell = "posix") {
 // lines, open} (rows: the quiet rows it holds).
 export function displayRows(item, isOpen = () => false) {
   const lead = item.leadGone ? null : item.lead;
-  const members = item.live.filter((t) => t !== lead && t.labels?.["task.role"] !== "shell");
-  const inItem = new Set(item.live.map((t) => t.address));
-  const status = new Map(item.tree.map((r) => [r.t.address, r.status]));
-  const busy = (t) => status.get(t.address) === "working" || status.get(t.address) === "blocked";
-  const placed = new Set(lead ? [lead.address] : []);
-  const kidsOf = (address) => members.filter((m) => !placed.has(m.address)
-    && (m.parent === address || (address === (lead?.address ?? null) && (!inItem.has(m.parent) || m.parent === m.address))));
-  const active = new Map();
-  const isActive = (t, seen = new Set()) => {
-    if (active.has(t.address)) return active.get(t.address);
-    if (seen.has(t.address)) return false;
-    seen.add(t.address);
-    const v = busy(t) || members.some((m) => m.parent === t.address && isActive(m, seen));
-    active.set(t.address, v);
-    return v;
+  const s = {
+    item, isOpen, lead,
+    members: item.live.filter((t) => t !== lead && t.labels?.["task.role"] !== "shell"),
+    inItem: new Set(item.live.map((t) => t.address)),
+    status: new Map(item.tree.map((r) => [r.t.address, r.status])),
+    placed: new Set(lead ? [lead.address] : []),
+    active: new Map(),
+    rows: [],
   };
-  const rows = [];
-  const walk = (address, lines) => {
-    const kids = kidsOf(address);
-    kids.forEach((k) => placed.add(k.address));
-    const quiet = kids.filter((k) => !isActive(k));
-    // Done and idle fold apart (rule 4: one line says one thing); a single one is just listed.
-    const done = quiet.filter((k) => status.get(k.address) === "done");
-    const idle = quiet.filter((k) => status.get(k.address) !== "done");
-    const folded = (list, kind) => (list.length > 1 ? [{ fold: list, kind }] : list.map((k) => ({ k })));
-    const entries = [...kids.filter((k) => isActive(k)).map((k) => ({ k })), ...folded(done, "done"), ...folded(idle, "idle")];
-    entries.forEach((e, i) => {
-      const last = i === entries.length - 1;
-      const at = [...lines, last ? "└" : "├"];
-      const below = [...lines, last ? "" : "│"];
-      if (e.k) {
-        rows.push({ t: e.k, lines: at, status: status.get(e.k.address) ?? null });
-        walk(e.k.address, below);
-        return;
-      }
-      const key = `${item.key}:quiet:${address ?? ""}:${e.kind}`;
-      const open = isOpen(key);
-      rows.push({ fold: true, key, rows: e.fold.map((t) => ({ t, status: status.get(t.address) ?? null })), lines: at, open });
-      if (!open) {
-        // Folded: what they started stays under the fold, not drawn.
-        const hide = (a) => members.filter((m) => m.parent === a && !placed.has(m.address)).forEach((m) => {
-          placed.add(m.address);
-          hide(m.address);
-        });
-        e.fold.forEach((t) => hide(t.address));
-        return;
-      }
-      e.fold.forEach((t, j) => {
-        const lastIn = j === e.fold.length - 1;
-        rows.push({ t, lines: [...below, lastIn ? "└" : "├"], status: status.get(t.address) ?? null });
-        walk(t.address, [...below, lastIn ? "" : "│"]);
-      });
-    });
-  };
-  walk(lead?.address ?? null, []);
+  rowsUnder(s, lead?.address ?? null, []);
   // A parent loop never reaches the lead: still show those once.
-  for (const m of members.filter((x) => !placed.has(x.address))) rows.push({ t: m, lines: ["└"], status: status.get(m.address) ?? null });
-  return rows;
+  for (const m of s.members.filter((x) => !s.placed.has(x.address))) s.rows.push({ t: m, lines: ["└"], status: s.status.get(m.address) ?? null });
+  return s.rows;
+}
+// The steps are module functions over one state s, not closures that call themselves: in QuickJS such a
+// closure is a reference cycle, and all it holds waits for the cycle collector (treewalk.test.mjs).
+const kidsUnder = (s, address) => s.members.filter((m) => !s.placed.has(m.address)
+  && (m.parent === address || (address === (s.lead?.address ?? null) && (!s.inItem.has(m.parent) || m.parent === m.address))));
+function activeRow(s, t, seen = new Set()) {
+  if (s.active.has(t.address)) return s.active.get(t.address);
+  if (seen.has(t.address)) return false;
+  seen.add(t.address);
+  const v = s.status.get(t.address) === "working" || s.status.get(t.address) === "blocked" || s.members.some((m) => m.parent === t.address && activeRow(s, m, seen));
+  s.active.set(t.address, v);
+  return v;
+}
+function hideUnder(s, a) {
+  for (const m of s.members.filter((x) => x.parent === a && !s.placed.has(x.address))) {
+    s.placed.add(m.address);
+    hideUnder(s, m.address);
+  }
+}
+function rowsUnder(s, address, lines) {
+  const { status, item } = s;
+  const kids = kidsUnder(s, address);
+  kids.forEach((k) => s.placed.add(k.address));
+  const quiet = kids.filter((k) => !activeRow(s, k));
+  // Done and idle fold apart (rule 4: one line says one thing); a single one is just listed.
+  const done = quiet.filter((k) => status.get(k.address) === "done");
+  const idle = quiet.filter((k) => status.get(k.address) !== "done");
+  const folded = (list, kind) => (list.length > 1 ? [{ fold: list, kind }] : list.map((k) => ({ k })));
+  const entries = [...kids.filter((k) => activeRow(s, k)).map((k) => ({ k })), ...folded(done, "done"), ...folded(idle, "idle")];
+  entries.forEach((e, i) => {
+    const last = i === entries.length - 1;
+    const at = [...lines, last ? "└" : "├"];
+    const below = [...lines, last ? "" : "│"];
+    if (e.k) {
+      s.rows.push({ t: e.k, lines: at, status: status.get(e.k.address) ?? null });
+      rowsUnder(s, e.k.address, below);
+      return;
+    }
+    const key = `${item.key}:quiet:${address ?? ""}:${e.kind}`;
+    const open = s.isOpen(key);
+    s.rows.push({ fold: true, key, rows: e.fold.map((t) => ({ t, status: status.get(t.address) ?? null })), lines: at, open });
+    if (!open) {
+      // Folded: what they started stays under the fold, not drawn.
+      e.fold.forEach((t) => hideUnder(s, t.address));
+      return;
+    }
+    e.fold.forEach((t, j) => {
+      const lastIn = j === e.fold.length - 1;
+      s.rows.push({ t, lines: [...below, lastIn ? "└" : "├"], status: status.get(t.address) ?? null });
+      rowsUnder(s, t.address, [...below, lastIn ? "" : "│"]);
+    });
+  });
 }
 
 // How many agents run in an item (its lead and every live member running one).
