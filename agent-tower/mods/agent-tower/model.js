@@ -319,6 +319,12 @@ function walkTree(kids, lines, s) {
   }
 }
 
+// A plain shell of a task (task.role=shell) with no tab: no herdr.space label, or an empty one. Herdr
+// labels every terminal it keeps in a tab with its space and places any terminal so labelled; one
+// started with hc run carries none, and Herdr's Park empties it (build2/shell-rows.md: the label and
+// the mod's panes() agree).
+export const tablessShell = (t) => isLive(t) && t.labels?.["task.role"] === "shell" && !t.labels?.["herdr.space"];
+
 // Every work item: a labelled task (terminals carrying its task.id, and what they started), or an
 // unlabelled top-level agent and what it started. listed: agents() status by address.
 export function workItems(terms, listed, spaceList) {
@@ -341,7 +347,8 @@ export function workItems(terms, listed, spaceList) {
     const lead = taskId ? all.find((t) => isLead(t) && isLive(t)) ?? all.find(isLead) ?? null : byAddress.get(key.slice(6));
     const leadGone = !isLive(lead);
     const live = all.filter(isLive);
-    // A member labelled task.role=shell (adopt.js: a plain shell in a task's space) gets no row.
+    // A member labelled task.role=shell (adopt.js: a plain shell in a task's space) is no worker: it
+    // has no place in the tree, its states or counts. One without a tab (tablessShell) is listed apart.
     const shown = live.filter((t) => t === lead || t.labels?.["task.role"] !== "shell");
     const tree = treeOf(leadGone ? null : lead, shown).map((row) => ({ ...row, status: subStatus(row.t, listed) }));
     // Rows that work or wait, and those above them, are listed; the rest fold into one line.
@@ -375,6 +382,8 @@ export function workItems(terms, listed, spaceList) {
         .map((row) => ({ ...row, status: subStatus(row.t, listed) })) : tree,
       quiet,
       live,
+      // Its live shells that have no tab of their own: the list's rows after its workers.
+      shells: live.filter((t) => t !== lead && tablessShell(t)),
       labelTitle: taskId ? lead?.labels?.["task.title"] || null : null,
       ownTitle: ownTitle(lead),
       space,
@@ -670,6 +679,8 @@ export function selectionOf(item, ctx = null) {
     // A task's plain shells (task.role=shell: an old lead whose agent ended, adopt's shells) are no
     // workers; only when nothing else is left do they stand for the task.
     members: (shown.length ? shown : item.live).map((t) => t.address),
+    // Its shells without a tab, listed apart (the panel draws them after the workers).
+    shells: (item.shells ?? []).map((t) => t.address),
     title: titleOf(item),
     ids: item.ids ?? [],
     // The area the list shows it in (taskModel's), so the card never decides it again.

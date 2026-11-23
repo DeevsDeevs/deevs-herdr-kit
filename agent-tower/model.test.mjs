@@ -184,7 +184,7 @@ const started = model.workItems([term("t1", "s1", { labels: { "task.id": "x1", "
 assert.equal(model.areaOf(config, started.machine, started.taskArea), "work", "a labelled lead stays in its area");
 
 // The panel mod's selection: key, live lead, live members, title; an item found by any member.
-assert.deepEqual(model.selectionOf(task), { key: "task:x1", lead: "t1", members: ["t1", "t2", "t3", "t4"], title: "Ship it", ids: ["x1"], area: null,
+assert.deepEqual(model.selectionOf(task), { key: "task:x1", lead: "t1", members: ["t1", "t2", "t3", "t4"], shells: [], title: "Ship it", ids: ["x1"], area: null,
   status: null, leadWord: null, need: { by: "t2", kind: "Asks you", text: "Which branch?" } });
 assert.equal(model.selectionOf(task, { listed: new Map(), seen: {}, now: NOW, changes: new Map() }).status, "blocked", "the row's word");
 assert.equal(model.selectionOf(null), null);

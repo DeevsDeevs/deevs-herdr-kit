@@ -2411,7 +2411,7 @@ export default class AgentTasks extends View {
     // Earlier is a directory: one 24 px line per task, nothing under it (unless a search matched inside it).
     const compact = groupId === "earlier" && !this.matchedIn?.has(item.key);
     const open = !compact && this.treeOpen(item);
-    const members = compact ? 0 : item.tree.length + item.leftOvers.length;
+    const members = compact ? 0 : item.tree.length + item.leftOvers.length + item.shells.length;
     // Where it runs stays; the space note gives way to the title (model.fitRow). The fold chip
     // shows no count: "mac +1" beside "› 1" read as the same thing.
     // Where it runs: one form on every row, the server glyph with the machines in its tooltip.
@@ -2478,6 +2478,9 @@ export default class AgentTasks extends View {
       row,
       ...(item.leadGone ? [] : [this.subRow(t, { t: item.lead, lines: [drawn.length ? "├" : "└"], status: item.leadWord ?? item.status }, view, item, "Lead")]),
       ...drawn.map((r) => (r.fold ? this.foldRow(t, item, r) : this.subRow(t, r, view, item))),
+      // Its shells without a tab (started with hc run): reached from here only. An empty line box
+      // lines their icons up with the top-level workers', with no tree line drawn.
+      ...item.shells.map((k) => this.subRow(t, { t: k, lines: [""], word: "shell" }, view, item, k.name || k.program?.name || k.address)),
       // Agents whose starter is gone, that name this item's space: one folded line after its
       // real workers; open, their rows.
       ...(item.leftOvers.length ? this.leftOverRows(t, item, view) : []),
@@ -2614,7 +2617,8 @@ export default class AgentTasks extends View {
     );
   }
 
-  // A lead or worker row; a click opens that terminal (and keeps its task selected).
+  // A lead, worker or shell row (r.word in place of the status mark); a click opens that terminal
+  // (and keeps its task selected).
   subRow(t, r, view, item, label = null) {
     const k = r.t;
     const pic = programIcon(k.program, 14, t.foreground);
@@ -2643,7 +2647,7 @@ export default class AgentTasks extends View {
         .child(div().flex_1().min_w(0).truncate().text_color(on || marked ? t.foreground : t.muted).child(label ?? (k.name || k.template || k.program?.name || k.address)))
         // A worker says where it runs when that is not where the area lives (the lead row says it in words).
         .when(Boolean(where), (el) => el.child(div().max_w(72).flex_none().ml(6).mr(5).truncate().text_size(10.5).text_color(t.dim).child(where)))
-        .child(markSlot(t, r.status)),
+        .child(r.word ? div().flex_none().text_size(11).text_color(t.dim).child(r.word) : markSlot(t, r.status)),
       () => {
         this.select(item, k.address);
         this.go(k.address);

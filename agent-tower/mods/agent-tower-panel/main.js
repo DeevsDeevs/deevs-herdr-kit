@@ -560,6 +560,19 @@ export default class AgentTowerPanel extends View {
       .when(endedOpen, (el) => el.children(folded.map((w) => this.worker(t, w, reports, quiet, nowOf, down))));
   }
 
+  // The task's shells without a tab (started with hc run): name, machine, the word shell.
+  shells(t, list) {
+    return v_flex().gap(6).text_size(12)
+      .child(div().px(8).text_size(11).text_color(t.dim).child("Shells"))
+      .children(list.map((k) => withMenu(h_flex().id(`tp-sh-${k.address}`).h(22).px(8).gap(6).items_center().rounded(8)
+        .cursor_pointer().hover((s) => s.bg(t.hover)).on_click(() => openAgent(k.address)), { agent: k })
+        .child(h_flex().w(14).flex_none().justify_center().child(programIcon(k.program, 14, t.foreground) ?? div()))
+        .child(div().min_w(0).truncate().text_color(t.foreground).child(k.name || k.program?.name || k.address))
+        .child(div().flex_none().text_color(t.dim).child(machineName(panel.machineOf(k.address))))
+        .child(div().flex_1().min_w(0))
+        .child(div().flex_none().text_size(11).text_color(t.dim).child("shell"))));
+  }
+
   codeDetail(t, repos) {
     const open = (url) => exec(window()?.platform === "macos" ? "open" : "xdg-open", [url]).catch(() => null);
     // A detail line has no chevron, so it holds a few more characters than a row's summary.
@@ -732,7 +745,7 @@ export default class AgentTowerPanel extends View {
     // The body, top to bottom: what needs you, then the lead, its words, the workers, the rows.
     const body = [];
     let above = null;
-    const gapAfter = { needs: { any: 12 }, card: { any: 12 }, state: { message: 4 }, message: { any: 16 }, workers: { any: 16 } };
+    const gapAfter = { needs: { any: 12 }, card: { any: 12 }, state: { message: 4 }, message: { any: 16 }, workers: { any: 16 }, shells: { any: 16 } };
     const place = (kind, el) => {
       const mt = above ? gapAfter[above]?.[kind] ?? gapAfter[above]?.any ?? 12 : 0;
       body.push(el.mt(mt));
@@ -784,6 +797,7 @@ export default class AgentTowerPanel extends View {
           : div().whitespace_normal().text_color(color).child(`${message.prefix ?? ""}${text}`))));
     }
     if (workers.length) place("workers", fade(this.workers(t, workers, reports, quiet, nowOf, down)));
+    if (d.shells?.length) place("shells", fade(this.shells(t, d.shells)));
 
     const rows = [];
     if (repos.length && !neverAnswered) rows.push(...this.row(t, "code", panel.codeSummary(repos), () => this.codeDetail(t, repos)));

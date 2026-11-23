@@ -84,7 +84,7 @@ export const hc = (args) => {
   // hc machine ls: the fixture's machines (their state as given).
   return Promise.resolve({ code: 0, stdout: JSON.stringify({ machines: args[0] === "machine" ? fx().fixture.machines ?? [] : [] }) });
 };
-// Elements that remember their ids and tooltips (fx().ids, fx().tips), for checks on what a render built.
+// Elements that remember their ids, tooltips and text children (fx().ids, fx().tips, fx().texts), for checks on what a render built.
 const recording = () => {
   fx().elements++;
   let myId = null;
@@ -98,6 +98,7 @@ const recording = () => {
           (fx().ids ??= new Set()).add(a[0]);
         }
         if (k === "tooltip") (fx().tips ??= []).push([myId, a[0]]);
+        if (k === "child" && typeof a[0] === "string") (fx().texts ??= []).push(a[0]);
         if (k === "when") return a[0] ? a[1](self) : self;
         return self;
       };

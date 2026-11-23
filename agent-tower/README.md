@@ -165,6 +165,10 @@ The Eye on Codex, leads on Opus, workers on Sonnet:
 - A row is a task, on every machine it runs on. Click it to select it (Details follows);
   click its lead or a worker under it to open that terminal. Right-click for Details, Pin to
   the top, Rename, New lead, Restart lead, End.
+- A task's shell (`task.role=shell`) without a tab of its own (started with `hc run`, or parked: no
+  `herdr.space` label, or an empty one) is listed under the task after the workers, and in Details
+  under "Shells". A shell in a tab has no row. In a task with no live lead, Details lists its shells
+  under "Workers" (they are all that is left of it); the list still shows them as shell rows.
 - **New lead** gives a task a fresh lead in a new tab of its space and folder, as the same task.
   The old lead stays as a worker while its agent runs, else as a plain shell; its question is
   cleared. The new lead asks the old one for a handover (a chain) unless it is blocked on you, asks
@@ -240,7 +244,7 @@ words you typed for its Eye, and an Eye's space never shows as a space row.
   `Downloads`) takes the lead's own title instead. No two tasks share a title: a clash adds the
   other machine's name, else a number. The area comes from the machine. The lead is the space's
   first agent (first tab, first pane); its other agents are workers. A plain shell belongs to the
-  task quietly. Finished terminals are left alone.
+  task quietly (it sits in a tab of the space, so it gets no row). Finished terminals are left alone.
 - One space at a time, by hand:
   `tower-adopt [--apply] --space <id or name> [--title <words>] [--lead <address>] [--area <id>]`.
   The id is on each line of the dry run; a name several spaces share needs the id. The lead must
