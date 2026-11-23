@@ -1,9 +1,12 @@
 // node treewalk.test.mjs: the sub-agent tree (model.workItems' tree and activeTree, built by treeOf)
-// keeps its rows, order and tree lines; and building it leaves nothing for QuickJS's cycle collector.
+// and the rows the list draws under an open task (model.displayRows) keep their rows, order, folds and
+// tree lines; and building them leaves nothing for QuickJS's cycle collector.
 // Already pinned elsewhere: a worker started outside the item hangs off the lead and nesting under a
 // worker (model.test.mjs, task x1's tree), the top level's last row when the quiet fold follows
 // (activeTree of task "top"), nothing active (calm). The cost of the list's draw and of the model pass:
-// listperf.test.mjs and perf.test.mjs's "model" case.
+// listperf.test.mjs and perf.test.mjs's "model" case. displayRows, already pinned in model.test.mjs: a
+// sub-lead's quiet workers fold under it, an open fold, a fold keeps its rows' own workers under it
+// (calm), a shell gets no row, done and idle fold apart.
 import assert from "node:assert/strict";
 import { spawnSync, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -46,6 +49,34 @@ assert.deepEqual(busy.quiet.map((r) => r.t.address), ["q1", "q2"]);
 const alone = itemOf([lead()]);
 assert.deepEqual([alone.tree, alone.activeTree, alone.quiet], [[], [], []]);
 console.log("tree rows ok");
+
+// displayRows: rows as "address:lines:status", folds as "fold key:its rows:lines[:open]".
+const drawn = (item, open) => model.displayRows(item, open).map((r) => (r.fold ? `fold ${r.key}:${r.rows.map((x) => x.t.address).join(",")}:${r.lines.join(".")}${r.open ? ":open" : ""}` : `${r.t.address}:${r.lines.join(".")}:${r.status}`));
+const shut = () => false;
+const open = () => true;
+const W = { status: "working" };
+// A shut fold hides what its rows started, three levels down; open, each is walked under it.
+const deepFold = itemOf([lead(W), term("a", "L"), term("b", "L"), term("a1", "a"), term("a1x", "a1"), term("a1y", "a1x"), term("b1", "b")]);
+assert.deepEqual(drawn(deepFold, shut), ["fold task:k1:quiet:L:idle:a,b:└"]);
+assert.deepEqual(drawn(deepFold, open), ["fold task:k1:quiet:L:idle:a,b:└:open", "a:.├:idle", "a1:.│.└:idle", "a1x:.│..└:idle", "a1y:.│...└:idle", "b:.└:idle", "b1:..└:idle"]);
+// A working great-grandchild keeps its whole chain listed; one done and one idle row are just listed.
+const chain = itemOf([lead(), term("s", "L"), term("s1", "s"), term("s2", "s1", {}, W), term("q", "L"), term("q2", "L", {}, { status: "done" })]);
+assert.deepEqual(drawn(chain, shut), ["s:├:idle", "s1:│.└:idle", "s2:│..└:working", "q2:├:done", "q:└:idle"]);
+// A row listed because a worker under it works: its quiet workers are listed after the working one.
+const mixed = itemOf([lead(W), term("f1", "L"), term("f2", "L"), term("f1a", "f1", {}, W), term("f1b", "f1"), term("f2a", "f2")]);
+assert.deepEqual(drawn(mixed, shut), ["f1:├:idle", "f1a:│.├:working", "f1b:│.└:idle", "f2:└:idle", "f2a:.└:idle"]);
+// A lead that has ended: its fold's key has no address.
+const gone = itemOf([lead({ state: "ended" }), term("g1", "L"), term("g2", "L"), term("g3", "L", {}, W)]);
+assert.deepEqual(drawn(gone, shut), ["g3:├:working", "fold task:k1:quiet::idle:g1,g2:└"]);
+assert.deepEqual(drawn(gone, open), ["g3:├:working", "fold task:k1:quiet::idle:g1,g2:└:open", "g1:.├:idle", "g2:.└:idle"]);
+// A parent loop never reaches the lead: each of it once, after the rest.
+const loop = itemOf([lead(W), term("w", "L", {}, W), term("x", "y"), term("y", "x", {}, W)]);
+assert.deepEqual(drawn(loop, shut), ["w:└:working", "x:└:idle", "y:└:working"]);
+// A blocked row stays listed like a working one; a worker that is its own parent sits at the top, its kid
+// under it (and the walk ends, though the parent chain loops).
+const ownParent = itemOf([lead(), term("o", "o"), term("o1", "o"), term("b", "L", {}, { status: "blocked" })]);
+assert.deepEqual(drawn(ownParent, shut), ["b:├:blocked", "o:└:idle", "o1:.└:idle"]);
+console.log("display rows ok");
 
 // Collector-only garbage: in QuickJS (Herdr's engine) an object nothing refers to is freed at once,
 // unless a reference cycle holds it, such as a closure that calls itself through its own binding.

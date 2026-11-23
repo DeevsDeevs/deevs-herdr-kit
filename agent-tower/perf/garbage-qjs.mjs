@@ -1,8 +1,9 @@
 // qjs --module perf/garbage-qjs.mjs <model.js>: builds the work items of a made-up task (nested
-// workers, a parent loop, a second task with the active tree and its quiet fold), drops them, and
-// prints {terms, alive, afterCollection}: the addresses whose terminal is still alive with no
-// collection run since (held by a reference cycle), and after one. A WeakRef reads it at once: an
-// object freed by its count is gone, one a cycle holds stays until the collector runs.
+// workers, a parent loop, a second task with the active tree and its quiet fold) and the rows the list
+// draws under each (displayRows, folds shut and open), drops them, and prints {terms, alive,
+// afterCollection}: the addresses whose terminal is still alive with no collection run since (held
+// by a reference cycle), and after one. A WeakRef reads it at once: an object freed by its count is
+// gone, one a cycle holds stays until the collector runs.
 import * as std from "std";
 
 const model = await import(scriptArgs[1]);
@@ -20,6 +21,7 @@ function build() {
   refs = terms.map((t) => [t.address, new WeakRef(t)]);
   const items = model.workItems(terms, new Map([["w", "working"]]), [{ id: "s1", name: "one" }, { id: "s2", name: "two" }]);
   if (items.length !== 2 || !items.every((i) => i.tree.length)) throw new Error(`unexpected items: ${items.map((i) => i.key)}`);
+  for (const i of items) for (const open of [() => false, () => true]) if (!model.displayRows(i, open).length) throw new Error(`no rows for ${i.key}`);
 }
 
 // A collection first, so only live objects are left from loading the module.
