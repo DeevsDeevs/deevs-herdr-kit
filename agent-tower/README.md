@@ -40,7 +40,12 @@ falls back to its default and a toast names it.
   and Sonnet (`--permission-mode auto`), `pi`, Codex (`codex --no-daemon`) and Antigravity
   (`agy -i`: agy takes its first message only after `-i`). A settings file with its own
   `agents` list shows only those: add `{ "id": "agy", "label": "Antigravity", "argv": ["agy", "-i"] }`
-  to it.
+  to it. An agent may give `resume`, the words Restart lead adds after its argv to continue a
+  conversation, one of them holding `{session}` for its id (`null`: no Restart lead for it); a
+  `resume` without `{session}` makes the whole `agents` setting fall back to the defaults. Its own
+  words count only while its argv runs the program the lead was started with. Otherwise, by
+  program: Claude `--resume {session}`, Codex `resume {session}`, pi `--session {session}`, agy
+  `--conversation {session}`; another program gets none.
 - `roles`: the default agent per role, by agent id: `eye`, `lead`, `worker` (default: Fable for
   the Eye and leads, Opus for workers); and `namer`, the command that names a new task (an argv;
   the task goes in after `-p`). A file may name just one.
@@ -141,6 +146,14 @@ The Eye on Codex, leads on Opus, workers on Sonnet:
   conversation when Tower never saw that twin (started outside the shown tasks). An agy conversation counts for a task or a folder only
   when `history.jsonl` puts it in one folder, runs `git` in their folders, `gh pr view` there when `gh` is
   installed, and `node ~/.agents/skills/chains/chain.mjs` for the newest chain link.
+- **Restart lead:** `hc get <lead>` for when hc saw its agent end; `hc read <lead> --lines 400` for the
+  exit line its agent printed (only the conversation id in it is used); `python3` with read.py on the
+  lead's machine to find the conversation it was started with (the transcripts above, by folder and
+  time; agy as for an ended agy); once per quit and again when chosen. Right before typing, `hc read
+  <lead>` for the screen's last line (only to see that it is an empty prompt). No terminal text is
+  kept. Then `hc send <lead> "cd <its folder> && env TOWER_TASK=… TOWER_WORKER=… <its argv> <resume
+  words>"`, which Herdr stops after 6 s: a terminal running no agent gets the text as typed, and a
+  send hc has not typed by then is dropped.
 - **Starting:** new spaces with the recipe's agent (default `claude --model fable
   --permission-mode auto` for leads and the Eye; workers `claude --model opus`). Nothing starts by itself, the Eye included. Closing ends only
   the terminals the question counted, and nothing at all if a machine does not answer.
@@ -151,7 +164,7 @@ The Eye on Codex, leads on Opus, workers on Sonnet:
   picks who leads. "New space" beside them is Herdr's own new space (its ▾: on which machine).
 - A row is a task, on every machine it runs on. Click it to select it (Details follows);
   click its lead or a worker under it to open that terminal. Right-click for Details, Pin to
-  the top, Rename, New lead, End.
+  the top, Rename, New lead, Restart lead, End.
 - **New lead** gives a task a fresh lead in a new tab of its space and folder, as the same task.
   The old lead stays as a worker while its agent runs, else as a plain shell; its question is
   cleared. The new lead asks the old one for a handover (a chain) unless it is blocked on you, asks
@@ -159,6 +172,15 @@ The Eye on Codex, leads on Opus, workers on Sonnet:
   to the new lead from then on (tower skill). A row whose lead
   ended says "lead ended". With a task selected, the composer's "in <title>" chip starts a lead
   or a worker inside it instead of a new task.
+- **Restart lead**, for a task whose lead says "lead ended" (its agent quit, its terminal kept a
+  shell: sh, bash, zsh, dash, ksh or fish), runs the same agent again in that terminal, in the
+  folder it started in, with its own flags and environment, on the conversation the lead was
+  started with: no first message, same labels. Only when nothing says it left that conversation:
+  the agent's exit line, when shown, names it; no other conversation of that agent in the folder
+  (a worker's apart) was written after it; it was not written after the quit; with no exit line
+  (a crash), it was written just before the quit. A conversation begun with `/clear` or `/new` is
+  never restarted: use New lead. It is looked up again when chosen, and nothing is typed unless the
+  shell shows an empty prompt.
 - The magnifier (`ctrl-s /`) searches every task, agent and machine in every area.
 - The eye icon in the header starts the shown area's Eye (in the whole window, the icon in the
   bar); right-click the Eye to end it.

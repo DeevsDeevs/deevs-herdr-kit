@@ -221,7 +221,8 @@ One column on `chrome`, 13px text, in the vocabulary of Herdr's shipped `agents`
   A task's lead that runs no agent 20 seconds after it was made (its program ended and a
   shell took its place) reads "lead ended" in `blocked` under its row, unless the task waits
   on you; a lead whose terminal ended reads "lead gone" in the age column instead. Either
-  way its item menu offers New lead.
+  way its item menu offers New lead; "lead ended" also Restart lead, when its conversation is
+  known (below).
 - **The title wins.** When the list is narrower than 300px (the sidebar's width from
   `layout()`; the window counts as 320px) no row prints a machine; it stays in the
   tooltip. At any width the space note gives way before the title (the machine glyph on an
@@ -285,7 +286,9 @@ One column on `chrome`, 13px text, in the vocabulary of Herdr's shipped `agents`
   5px padding, 12.8px; 31px items with a 14px `muted` icon: "Details" (`panel-right`, one
   item only), "Peek" (`monitor`, one item with a lead), "Pin to the top" / "Unpin" (`pin` /
   `pin-off`, one item whose lead has not ended), "Rename" (`square-pen`, not in the rail,
-  which has no row to rename in), "New lead" (`plus`, one task, not in the rail), "Make a
+  which has no row to rename in), "New lead" (`plus`, one task, not in the rail), "Restart lead"
+  (`terminal`, one task whose lead reads "lead ended" and whose conversation is known, the rail
+  too), "Make a
   task" (`plus`, for an agent that is not a task or a space of only shells),
   "End task…", "End agent…" for an unlabelled agent, "End all 6…" on a merged row (Herdr's
   word for a terminal and what it started; "Close" is for spaces and panes),
@@ -770,6 +773,81 @@ come from the app's program table.
     `Do exactly the task below. Start no other agents unless it says so; if it does, start them with --label task.id=<id> --label task.role=worker, and they report to you.`;
     `Put long answers in a result file. When done or blocked, report to the task's lead of the moment (hc ls --json --label task.id=<id> --label task.role=lead | jq -r '[.terminals[] | select(.status != null)][0].address // empty'): hc send it one plain sentence and the result path, then finish your turn; when that prints nothing, send nothing: keep the result file and say so in your last message.`;
     `Task: <words>`. It has no parent, and the lead may change, so it looks the lead up when it reports.
+- **Restart lead** (item menu): the lead's agent again in its own terminal, on the conversation the
+  lead was started with, and only when nothing says it left it. Offered (`model.restartable`) for one task whose lead still carries `task.role=lead` (a
+  replaced one is a shell or a worker), reads "lead ended" (`noAgent`), has its own shell in front
+  (`foreground.pid` is the terminal's `pid`; `model.shellKind` of `foreground.argv[0]`: sh, bash,
+  zsh, dash or ksh, or fish; no `foreground`, or another shell, offers nothing), a start Tower can
+  read back from hc's `argv` (`model.leadStart`: Herdr's wrapper, here `<shell> -ic|-lic <script>
+  <shell>` and on another machine `sh -c <script> sh`, the command from the fifth word; then `env
+  TOWER_TASK=<this task> …`, the agent's argv, its first message last) and resume words
+  (`model.resumeWords`: the `resume` of the settings' agent named by `task.lead` while that agent's
+  argv runs the lead's program, else `RESUME` by program: Claude `--resume {session}`, Codex
+  `resume {session}`, pi `--session {session}`, agy `--conversation {session}`), and only once
+  the lookup found the conversation, while no restart of that task is under way.
+  - **Which conversation** (`lookUpRestart`): every list copy's tick looks once per quit
+    (`model.restartKey`: address, terminal start, the time its state went null), about 20 s after
+    it. `hc get <lead> --json` first: hc's core stamps `status_ms` when the status word changes, so
+    with the status gone it is when the agent ended, on the lead's own machine (`hc get` of
+    `machine/tN` is answered there). No `status_ms`, or a status again, offers nothing: Tower's own
+    time (`changes.at`) is when a copy first saw the quit, which can be an hour late after a sleep
+    or another layout. Then `hc read <lead> --lines 400` and the last exit line of the lead's
+    program in it (`model.RESUME_SAID`: Claude "Resume this session with: claude --resume <id>",
+    Codex "To continue this session, run: codex resume <id>", pi "To resume this session: pi
+    --session <id>", agy "Resume with -c (or command below): agy --conversation=<id>"; a typed
+    `claude … --resume <id>` is not one); only the id is used, the text is not kept. Then read.py on
+    the lead's machine (`model.restartAsk`: the program, the agent's argv as started, hc's `cwd`,
+    the terminal's start and Tower's quit as seconds ago, `quit_ms` hc's `status_ms` as it is,
+    `named` when a line was there; `lead_session`, the quit being the earlier of the two):
+    1. the candidate: the one transcript of the program in the folder, written since the terminal
+       started (minus 120 s), whose first message (loose, its first 100 characters) is on the run
+       line's message and that began within 120 s of the start (agy: `agy_ended`, and not
+       `agy_left`). Codex 0.166's first message is its first `UserMessage` item (`codex_said`);
+    2. `named` must be the candidate's id (Claude's `sessionId`, Codex's `session_meta` id, pi's
+       session header, agy's conversation folder): any other (after `/clear`, `/new`, `/resume`,
+       an agent run there by hand, a line quoted from a worker) offers nothing. The line only
+       confirms; it never picks;
+    3. no other transcript of the program there, a worker's apart, was written after the
+       candidate's last write. A worker's: its first message ends "You are a worker on task <id>;
+       use the <skill> skill if you have it." (or "…task <id>.") or starts `You are a worker on task
+       <id>, "` (the list's);
+    4. without an exit line (a crash, a cleared screen): the candidate was written within 120 s
+       before the quit, as an agent that died at work leaves it; one that had gone quiet earlier
+       offers nothing;
+    5. it was not written more than 15 s (`RESTART_SLACK`) after the quit: another terminal may have
+       taken it up (`claude --continue`, `codex resume` in another pane).
+
+    Given up on purpose: a conversation begun with `/clear` or `/new` is never restarted; New lead
+    is the way there. Unsure, a failed run or a lookup that never answered (asked again after a
+    minute) offers nothing.
+  - **The run**: the menu asks the copy that opened it (`restartLead`), which marks the task
+    restarting (Restart lead hidden; a second request toasts "a restart of this lead is under
+    way"), looks the conversation up again and needs the same answer (else "its last conversation
+    is not known for sure"), then reads what is in front again (else "its terminal runs something
+    else now") and the screen's last line (`hc read <lead>`; `model.promptBare`: after a right-hand
+    word set off by two spaces, such as a clock, is dropped, it ends in `$ % # > ❯ ➜ λ »` and is not
+    a continuation prompt, zsh's `dquote>`, `cmdand>`, `pipe>`, `heredoc>`…, or bash's `>`; else
+    "nothing was typed: its shell's last line is not a known empty prompt", true for a line being
+    written, an unfinished command or a prompt sign it does not know; the text is not kept), and
+    types `cd <hc's cwd> && env <the lead's own env pairs> <its argv, agy's
+    trailing -i left out> <resume words>`, quoted for its shell (`shellQuote`, a word starting
+    with `=` quoted for zsh; `fishQuote` for fish, where `\\` and `\'` are escapes inside single
+    quotes; the id put in as it is), with `exec("hc", ["send", "--", <lead>, <line>], {timeout:
+    6000})`. hc pastes it with Enter (a terminal running no agent gets it untagged), after 3 s
+    without a key from the person and only once a line they are writing is sent or cleared (up to
+    a minute); Herdr stops hc after 6 s, and herdr-core drops a send whose caller has gone before it
+    typed ("send cancelled before typing", forwarded to another machine too): it never arrives
+    later. That toasts "nothing was typed: a line is being written in its shell"; another failure
+    toasts hc's words. No first message, no label changes: the same lead. The mark holds until the
+    send has returned and, after a send, a minute more; a lead still running no agent then toasts
+    "<program> did not start in the lead's terminal". Every toast is titled "The agent didn't
+    start". The mark lapses after 3 minutes whatever happens (a task cut off never settles).
+    Known gap: a program the person starts in the 3 s between that check and hc typing gets the
+    line.
+  - Seen working on Linux in Herdr's wrapper, typed into the shell after `/exit` or `/quit`:
+    Claude Code 2.1.316, Codex 0.166 (`codex --no-daemon resume <id>`), pi 1.4.0 (`pi --session
+    <id>`), Antigravity 1.5.12 (with `--settings` for trust). `restart.test.mjs` covers the menu,
+    the lookup and the run, the line per agent and shell, and `lead_session`.
 - **Close** (item menu): the question counts what would end: for a task, every terminal
   carrying its `task.id`; for an unlabelled agent, it and the live terminals that belong
   to it (not another task's workers); on a merged row, all of that for every member.
@@ -859,12 +937,14 @@ come from the app's program table.
   the props the shipped `spaces` mod passes.
 - The item menu is a `popup` overlay of this same mod (`props: { menu, from, keys, space }`,
   as Herdr's agents mod opens its sort menu; `keys` holds every member of a merged row). It
-  asks the copy that opened it to rename, close, start a new lead (`newLead`) or make a task
+  asks the copy that opened it to rename, close, start a new lead (`newLead`), restart its lead
+  (`restartLead`) or make a task
   (`adopt`, with `space`) through
   `setShared("agent-tower.request", { from, keys, action, addresses?, space? })`; only
   the copy whose random id is `from` acts on it, and clears it.
 - `hc(["label", address, "k=v", …])`, `hc(["kill", address])`, `hc(["rm", address])`,
-  `hc(["machine", "ls", "--json"])`, and for Connect `hc(["machine", "rm", …])` and
+  `hc(["send", "--", address, text])` (the Eye's input), `hc(["read", address, "--lines", "400"])`
+  and `exec("hc", ["send", "--", address, line], { timeout: 6000 })` (Restart lead), `hc(["machine", "ls", "--json"])`, and for Connect `hc(["machine", "rm", …])` and
   `hc(["machine", "add", …])`; `cx.write_to_clipboard` for Copy. Remote terminals are
   addressed `machine/tN`.
 - `exec("sh", ["-c", '"$@" </dev/null', "sh", namer[0], ...namerArgs(namer, prompt)], {

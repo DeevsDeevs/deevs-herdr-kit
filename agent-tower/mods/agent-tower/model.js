@@ -39,6 +39,16 @@ const AGENTS = [
   // agy refuses a bare trailing prompt: the first message Herdr (or the worker script) adds goes after -i.
   { id: "agy", label: "Antigravity", argv: ["agy", "-i"] },
 ];
+// Restart lead: the words that resume a conversation, after the lead's own argv (its first message
+// left out); {session} is the conversation's id. By program; an agent in the settings may give its
+// own `resume` (null: none). Each tried for real: Claude Code 2.1.316, Codex 0.166 (`codex
+// --no-daemon resume <id>`), pi 1.4.0, Antigravity 1.5.12.
+export const RESUME = {
+  claude: ["--resume", "{session}"],
+  codex: ["resume", "{session}"],
+  pi: ["--session", "{session}"],
+  agy: ["--conversation", "{session}"],
+};
 const ROLES = {
   eye: "claude-fable",
   lead: "claude-fable",
@@ -94,7 +104,8 @@ const VALID = {
       && (a.views === undefined || strings(a.views)) && (a.buttons === undefined || strings(a.buttons))
       && (a.taskRoot === undefined || typeof a.taskRoot === "string")),
   agents: (v) => Array.isArray(v) && v.length > 0
-    && v.every((a) => typeof a?.id === "string" && typeof a.label === "string" && argvOk(a.argv)),
+    && v.every((a) => typeof a?.id === "string" && typeof a.label === "string" && argvOk(a.argv)
+      && (a.resume === undefined || a.resume === null || (strings(a.resume) && a.resume.some((w) => w.includes("{session}"))))),
   roles: (v) => v !== null && typeof v === "object" && !Array.isArray(v)
     && Object.entries(v).every(([k, x]) => !ROLE_OK[k] || ROLE_OK[k](x)),
   recipes: (v) => Array.isArray(v)
@@ -158,7 +169,8 @@ export const workerScript = (argv) => needsTrust(argv)
 export const workerFile = (agentId) => `worker-${String(agentId).replace(/[^\w.-]/g, "_")}`;
 
 // A command line a shell reads back as these words.
-export const shellQuote = (argv) => argv.map((a) => (/^[\w@%+=:,./-]+$/.test(a) ? a : `'${a.replaceAll("'", "'\\''")}'`)).join(" ");
+// A word starting with = is quoted: zsh would read =cmd as that command's path.
+export const shellQuote = (argv) => argv.map((a) => (/^[\w@%+:,./-][\w@%+=:,./-]*$/.test(a) ? a : `'${a.replaceAll("'", "'\\''")}'`)).join(" ");
 
 // The namer's command with the prompt: right after "-p" (Claude's --tools takes every word after
 // it as a tool name), else at the end.
@@ -450,6 +462,98 @@ export function noAgent(item, now, changes) {
   if (!changes.get(lead.address)?.had) return false;
   const since = changes.get(lead.address)?.at ?? lead.created_ms ?? now;
   return now - since >= NO_AGENT_MS;
+}
+
+// ── Restart lead: a lead whose agent quit while its terminal lives on runs it again there, on the
+// conversation it left. ──
+
+// A lead's own start, read back from hc's argv: Herdr's wrapper (`<shell> -ic|-lic <script> <shell>`
+// here, `sh -c <script> sh` on another machine; the command from the fifth word), Tower's `env
+// TOWER_TASK=<its task> …`, the agent's argv, its first message last. {env, argv (agy's trailing -i
+// left out), run (the agent's argv as started, message and all), program}, or null.
+export function leadStart(t) {
+  const a = Array.isArray(t?.argv) ? t.argv : [];
+  if (a.length < 8 || !["-c", "-ic", "-lic"].includes(a[1]) || !/"\$@"|\$argv\[2\.\.\]/.test(a[2] ?? "") || a[4] !== "env") return null;
+  const env = {};
+  let i = 5;
+  for (; i < a.length && /^[A-Za-z_]\w*=/.test(a[i]); i++) env[a[i].slice(0, a[i].indexOf("="))] = a[i].slice(a[i].indexOf("=") + 1);
+  const run = a.slice(i);
+  if (!taskIdOf(t) || env.TOWER_TASK !== taskIdOf(t) || run.length < 2) return null;
+  const program = run[0].split("/").pop();
+  const argv = run.slice(0, -1);
+  return { env, argv: program === "agy" && argv.at(-1) === "-i" ? argv.slice(0, -1) : argv, run, program };
+}
+
+// The lead's resume words: its agent's own in the settings (by its task.lead), else its program's.
+export function resumeWords(config, t, program) {
+  const own = config.agents.find((a) => a.id === t.labels?.["task.lead"]);
+  // An agent's own words only for its own program: the settings may since run it with another.
+  return own && own.resume !== undefined && own.argv[0].split("/").pop() === program ? own.resume : RESUME[program] ?? null;
+}
+
+// What reads the typed line: the lead's shell in front (Herdr's wrapper made it the terminal's own
+// process), "posix" or "fish"; null for any other shell (its quoting and && are unknown here).
+export function shellKind(lead) {
+  const name = (lead.foreground?.argv?.[0] ?? "").split("/").pop().replace(/^-/, "");
+  return ["sh", "bash", "zsh", "dash", "ksh"].includes(name) ? "posix" : name === "fish" ? "fish" : null;
+}
+
+// Restart lead may be offered: a task's lead (still task.role=lead: a replaced one is a shell or a
+// worker) that reads "lead ended", its own shell in front, with a start Tower can read back and resume
+// words. Its start, or null.
+export function restartable(item, now, changes, config) {
+  const lead = item?.lead;
+  if (!lead || item.leadGone || lead.labels?.["task.role"] !== "lead" || !noAgent(item, now, changes)) return null;
+  if (lead.pid == null || lead.foreground?.pid !== lead.pid || !shellKind(lead)) return null;
+  const start = leadStart(lead);
+  return start && resumeWords(config, lead, start.program) ? start : null;
+}
+
+// One lookup per quit: the lead, its terminal's start and the time its agent quit.
+export const restartKey = (lead, changes) => `${lead.address}|${lead.created_ms ?? ""}|${changes.get(lead.address)?.at ?? ""}`;
+
+// What each agent prints when it quits: the id of the conversation it was in, whatever /new, /clear or
+// /resume came before (Claude Code 2.1.316, Codex 0.166, pi 1.4.0, Antigravity 1.5.12).
+export const RESUME_SAID = {
+  claude: /Resume this session with:\s*claude --resume ([0-9A-Za-z-]+)/g,
+  codex: /To continue this session, run:\s*codex resume ([0-9A-Za-z-]+)/g,
+  pi: /To resume this session: pi --session ([0-9A-Za-z-]+)/g,
+  agy: /Resume with -c \(or command below\):\s*agy --conversation=([0-9A-Za-z-]+)/g,
+};
+
+// The last conversation the lead's agent named in its terminal's text (hc read), or null.
+export function saidSession(text, program) {
+  const said = RESUME_SAID[program];
+  return said ? [...String(text ?? "").matchAll(said)].at(-1)?.[1] ?? null : null;
+}
+
+// read.py's restart request (lead_session): times as seconds ago, so clocks are never compared.
+// quitMs: hc's status_ms for the lead, on its own machine's clock, passed as it is.
+export function restartAsk(lead, start, now, changes, named = null, quitMs = null) {
+  const ago = (ms) => Math.max(0, (now - (ms ?? now)) / 1000);
+  return { restart: { program: start.program, argv: start.run, cwd: lead.cwd ?? null, created_s: ago(lead.created_ms), finished_s: ago(changes.get(lead.address)?.at),
+    quit_ms: quitMs, ...(named ? { named } : {}) } };
+}
+
+// Whether the shell's last screen line (hc read) is a bare prompt: it ends with a prompt sign, after a
+// right-hand prompt (a clock: a last word set off by two spaces) is dropped. Text after the sign is a
+// line the person is writing: hc send would type onto it once it has waited a minute for it. A
+// continuation prompt (zsh's "dquote>", "cmdand>", "pipe>"…, bash's ">") is an unfinished command.
+// shortcut: a prompt ending in another sign reads as busy (nothing typed); add its sign if one shows up.
+export function promptBare(screen) {
+  const last = (String(screen ?? "").split("\n").map((l) => l.trimEnd()).filter(Boolean).at(-1) ?? "").replace(/\s{2,}\S+$/, "");
+  return /[$%#>❯➜λ»]$/.test(last) && !/^(?:[a-z]+ )*[a-z]*>$/.test(last.trim());
+}
+
+// fish reads \\ and \' inside single quotes: its own quoting.
+export const fishQuote = (argv) => argv.map((a) => (/^[\w@%+:,./-][\w@%+=:,./-]*$/.test(a) ? a : `'${a.replaceAll("\\", "\\\\").replaceAll("'", "\\'")}'`)).join(" ");
+
+// The line typed into the lead's shell (shellKind): its folder, then its agent with its own
+// environment and flags, resuming that conversation.
+export function restartLine(start, folder, session, words, shell = "posix") {
+  const quote = shell === "fish" ? fishQuote : shellQuote;
+  const env = Object.entries(start.env).map(([k, v]) => `${k}=${v}`);
+  return `cd ${quote([folder])} && ${quote(["env", ...env, ...start.argv, ...words.map((w) => w.split("{session}").join(session))])}`;
 }
 
 // The rows under a task as the list draws them, depth first from the lead: a row that works or
