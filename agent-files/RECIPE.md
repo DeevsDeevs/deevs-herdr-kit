@@ -35,17 +35,22 @@ Folders named `.agent-files-*` are left out of the list.
   or on a folder row does the same.
 - Never overwrite: the copy is made in `<folder>/.agent-files-<id>/` and moved to the first free
   name, `name`, then `name 2`, `name 3` (before the extension for a file, never for a folder or
-  a dotfile), with `mv -n`. A half-copied file never shows under its real name.
+  a dotfile), with `mv -n` (`mv -nT` where mv is GNU, so a folder that takes the name meanwhile
+  never gets ours inside it). A half-copied file never shows under its real name. A link to a
+  folder or a file copies what it points to; links inside a folder stay links. Other transfers'
+  staging folders are never copied along (`--exclude`).
 - Every transfer runs as its own hc terminal (`hc run --bg --rm --no-notify --no-parent --name
   files-<id> --label agent-files=transfer -- sh transfer.sh run …`): it outlives the render, a
   closed panel and a quit app, and exec's 10-minute limit. The panel only reads files.
 - Its folder `<app home>/agent-files/transfers/<id>/`: `info.json` (written by the mod first:
-  kind, name, src, dest, from, to, started), `pid`, `log` (`size <KiB>` from `du -sk`, then
+  kind, name, src, dest, from, to, started), `pid`, `log` (`size <KiB>` from `du -skH`, then
   rsync's output), `err`, and `status` written last through a temp file ("done\n<name>" or
   "failed\n<stderr>"). `transfer.sh read` returns each with its log from an offset; ended ones
   over a day old are removed there.
 - The panel reads every second while one runs, else every 10 s; one read at a time, its guard a
-  time that lapses (a task Herdr cuts off never runs its `finally`). Progress folds each new
+  time that lapses (a task Herdr cuts off never runs its `finally`). Over 64 KB of new log, `read`
+  sends one line instead (bytes of finished files and du's size, summed by `awk`) and the last 20
+  lines, so a read costs the panel little whatever the log's size. Progress folds each new
   piece of log into `{done, cur, rate, size}` in a module map, replaced whole.
 - A menu's popup puts its job in a module queue and wakes the panel (`setShared`): the panel's
   task carries it out, since a closed popup's tasks are not relied on.
@@ -57,7 +62,8 @@ Folders named `.agent-files-*` are left out of the list.
 
 rsync over ssh, started on the Mac (the servers can't reach it), to the machine's ssh target
 from `hc machine ls --json` (`target`; `host` is the far core's own hostname, not an address),
-`-o BatchMode=yes -o ConnectTimeout=15`. Remote paths are quoted for the remote shell, and
+`-o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=4` (a link
+that goes silent ends the transfer within about a minute). Remote paths are quoted for the remote shell, and
 `RSYNC_OLD_ARGS=1` makes an rsync 3 client pass them as they are, as openrsync always does.
 Progress from `--progress`, both kinds:
 
