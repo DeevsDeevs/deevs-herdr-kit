@@ -15,6 +15,7 @@ agent-browser/
 | Mod | |
 | --- | --- |
 | [agent-browser](agent-browser/) | every browser your agents drive, here and on Herdr's machines, live in one window; watch or take over |
+| [agent-files](agent-files/) | Herdr's Files panel that also downloads from and uploads to the machine a space runs on: right-click, drop or paste, a line per transfer |
 | [agent-images](agent-images/) | the images in the focused agent's conversation: see them, hover them large, copy one into another agent |
 | [agent-tower](agent-tower/) | your agents' work as tasks instead of terminals, on every machine: one list, a Details card, Board, Timeline and Radar views, a window per area, and the Eye, one agent above it all |
 
@@ -37,4 +38,5 @@ Or let chezmoi keep them current, one entry per mod:
 {{ end -}}
 ```
 
-MIT, except the Lucide icons in agent-images (ISC, license beside them).
+MIT, except the Lucide icons in agent-images and agent-files (ISC, license beside them) and the
+parts of agent-files taken from Herdr's Files panel (Apache-2.0, license beside them).
