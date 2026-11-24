@@ -32,8 +32,9 @@ Before you install, what it reaches for:
 - A transfer runs as its own herdr-core terminal on this computer (`hc run`, named
   `files-<id>`, labelled `agent-files=transfer`, no parent, removed when it ends), so it goes on
   when the panel closes or Herdr quits. It runs [transfer.sh](mods/agent-files/transfer.sh):
-  `du -sk` for the size, `rsync -a --progress` over `ssh -o BatchMode=yes` to the machine's ssh
-  target (`target` in `hc machine ls --json`), then `mv -n` to the first free name and `rmdir`.
+  `du -skH` for the size, `rsync -a --progress` (`--copy-links` for a single file, staging folders
+  excluded) over `ssh -o BatchMode=yes` with keepalives to the machine's ssh target (`target` in
+  `hc machine ls --json`), then `mv -n` (`-nT` with GNU mv) to the first free name and `rmdir`.
   A failed or stopped transfer removes its own staging folder (`.agent-files-<id>`) with
   `rm -rf`, nothing else.
 - Its state is in `~/.config/herdr-app/agent-files/transfers/<id>/` (`info.json`, `pid`, `log`,
@@ -62,7 +63,6 @@ Linux.
 
 - A machine reached with `--via` can't transfer (its line says so); nor can an ssh target with a
   `:port` (use a `Host` alias in `~/.ssh/config`).
-- A file name with `*`, `?` or `[` on the far side may confuse rsync's own matching there.
 - Progress counts disk blocks (`du`), so a folder of many small files stays low until done.
 - Send path leaves the path on the clipboard.
 

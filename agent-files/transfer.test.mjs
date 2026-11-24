@@ -2,7 +2,7 @@
 // stand-in for ssh that runs the "remote" side here.
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, chmodSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, chmodSync, symlinkSync, lstatSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -60,6 +60,7 @@ await test("plain reasons", () => {
   assert.equal(T.plainReason('rsync: [sender] send_files failed to open "/p/secret.key": Permission denied (13)\n'), "Permission denied");
   assert.equal(T.plainReason("du: cannot access '/x/nope': No such file or directory\n"), "Cannot access '/x/nope': No such file or directory");
   assert.equal(T.plainReason("Warning: Permanently added 'h' (ED25519) to the list of known hosts.\nme@h: Permission denied (publickey).\n"), "Me@h: Permission denied (publickey).");
+  assert.equal(T.plainReason("Timeout, server box not responding.\nrsync: connection unexpectedly closed (5 bytes received so far) [Receiver]\n"), "Timeout, server box not responding.");
   assert.equal(T.plainReason(""), "Failed");
 });
 
@@ -121,6 +122,29 @@ await test("download and upload never overwrite: the next free name", () => {
   assert.deepEqual(staged(there), []);
 });
 
+await test("a link to a folder or a file downloads what it points to", () => {
+  symlinkSync(join(src, "a dir"), join(src, "linkdir"));
+  symlinkSync(join(src, "it's.txt"), join(src, "link.txt"));
+  symlinkSync("sub/big.bin", join(src, "a dir/inner-link"));
+  assert.equal(transfer("far", join(src, "linkdir"), "", down).status, "done\nlinkdir\n");
+  assert.ok(lstatSync(join(down, "linkdir")).isDirectory());
+  assert.equal(readFileSync(join(down, "linkdir/sub/big.bin")).length, 300000);
+  assert.ok(lstatSync(join(down, "linkdir/inner-link")).isSymbolicLink(), "links inside stay links");
+  assert.equal(transfer("far", join(src, "link.txt"), "", down).status, "done\nlink.txt\n");
+  assert.ok(lstatSync(join(down, "link.txt")).isFile());
+  assert.equal(readFileSync(join(down, "link.txt"), "utf8"), "hi\n");
+});
+
+await test("a copy never carries a staging folder", () => {
+  const proj = join(dir, "proj");
+  mkdirSync(join(proj, "sub"), { recursive: true });
+  mkdirSync(join(proj, `${T.STAGE}other`));
+  writeFileSync(join(proj, "sub/a"), "a");
+  assert.equal(transfer("", proj, "", proj).status, "done\nproj\n");
+  assert.equal(readFileSync(join(proj, "proj/sub/a"), "utf8"), "a");
+  assert.deepEqual(staged(join(proj, "proj")), []);
+});
+
 await test("a failure says why and leaves no staging folder", () => {
   const r = transfer("far", join(src, "nope"), "", down);
   assert.match(r.status, /^failed\n/);
@@ -157,6 +181,33 @@ await test("read: every transfer, its log from an offset", () => {
   assert.equal(p.size > 0 && p.done, 300000);
   assert.equal(T.stateOf(all.find((r) => r.id === "stop"), Date.now()).reason, "Stopped");
   assert.equal(execFileSync("sh", [SCRIPT, "read", join(dir, "none")], { encoding: "utf8" }), "");
+});
+
+await test("read: a 100k-file log costs the panel one small piece", () => {
+  const id = "big", files = 100000;
+  mkdirSync(join(root, id));
+  writeFileSync(join(root, id, "info.json"), JSON.stringify({ name: "many", started: Date.now() }));
+  const lines = ["size 98000", "sending incremental file list"];
+  for (let i = 1; i <= files; i++) lines.push(`node_modules/pkg${i}/index.js`, `\r          1,000 100%  976.56kB/s    0:00:00 (xfr#${i}, to-chk=${files - i}/${files + 1})`);
+  const log = lines.join("\n") + "\nlast/big.bin\n\r      1,500,000  50%    2.76MB/s    0:00:00";
+  writeFileSync(join(root, id, "log"), log);
+  let t = performance.now();
+  const out = execFileSync("sh", [SCRIPT, "read", root, "t0=5"], { encoding: "utf8", maxBuffer: 1 << 26 });
+  const shell = performance.now() - t;
+  t = performance.now();
+  const rec = T.parseRead(out).find((r) => r.id === id);
+  const p = T.advance(T.START, rec.chunk);
+  const panel = performance.now() - t;
+  console.log(`   log ${(log.length / 1e6).toFixed(1)} MB: read ${shell.toFixed(0)} ms in sh, piece ${rec.chunk.length} bytes, parse+advance ${panel.toFixed(1)} ms`);
+  assert.ok(rec.chunk.length < 4096);
+  const whole = T.advance(T.START, log);
+  assert.deepEqual({ ...p, carry: p.carry.trim() }, { ...whole, carry: whole.carry.trim() });
+  assert.equal(p.done, files * 1000);
+  assert.equal(T.percent(p), 99);
+  // The next read goes on from where this one ended, as before.
+  writeFileSync(join(root, id, "log"), log + "\r      3,000,000 100%    2.76MB/s    0:00:01 (xfr#100001, to-chk=0/100001)\n");
+  const next = T.parseRead(execFileSync("sh", [SCRIPT, "read", root, `${id}=${rec.size}`], { encoding: "utf8" })).find((r) => r.id === id);
+  assert.equal(T.advance(p, next.chunk).done, files * 1000 + 3000000);
 });
 
 execFileSync("rm", ["-rf", dir]);

@@ -41,7 +41,14 @@ export const START = { carry: "", done: 0, cur: 0, rate: null, size: null };
 
 // Folds more of the log into the progress so far. `done`: bytes of files finished, `cur`: of the
 // one under way, `size`: what du counted (bytes), `carry`: a line not ended yet.
+// A chunk that starts with "agent-files-so-far <bytes done> <du KiB>" (transfer.sh's so_far, for a
+// long log) says all that came before it: it replaces what was folded so far.
 export function advance(p, chunk) {
+  const sum = /^agent-files-so-far (\d+) (\d*)\n/.exec(chunk);
+  if (sum) {
+    p = { ...START, done: Number(sum[1]), size: sum[2] ? Number(sum[2]) * 1024 : null };
+    chunk = chunk.slice(sum[0].length);
+  }
   const parts = (p.carry + chunk).split(/[\r\n]/);
   const carry = parts.pop();
   let { done, cur, rate, size } = p;
